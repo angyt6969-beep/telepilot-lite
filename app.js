@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import bigInt from "big-integer";
 import { Bot, InlineKeyboard } from "grammy";
-import { TelegramClient } from "teleproto";
+import { Api, TelegramClient } from "teleproto";
 import { StoreSession } from "teleproto/sessions/index.js";
 import { createConnectService } from "./connect-server.js";
 
@@ -35,6 +36,7 @@ let ownerId = process.env.OWNER_ID ? Number(process.env.OWNER_ID) : (Number(save
 let userClient = null;
 let connectedUsername = null;
 let adMessage = typeof saved.adMessage === "string" ? saved.adMessage : "";
+let adEntities = Array.isArray(saved.adEntities) ? saved.adEntities : [];
 let groups = Array.isArray(saved.groups) ? saved.groups.filter((x) => typeof x === "string") : [];
 let intervalMinutes = [15, 30, 60, 120].includes(Number(saved.intervalMinutes)) ? Number(saved.intervalMinutes) : 30;
 let totalSent = Number.isFinite(Number(saved.totalSent)) ? Number(saved.totalSent) : 0;
@@ -45,12 +47,15 @@ let postingTimer = null;
 let posting = false;
 let nextRunAt = null;
 let awaiting = null;
+let awaitingPromptMessageId = null;
+let awaitingPromptChatId = null;
 
 function saveSettings() {
   const temp = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(temp, JSON.stringify({
     ownerId,
     adMessage,
+    adEntities,
     groups,
     intervalMinutes,
     totalSent,
@@ -70,6 +75,81 @@ function createUserClient() {
 function accountDisplay() {
   if (!connectedUsername) return "Not connected";
   return /^\d+$/.test(String(connectedUsername)) ? "Connected" : `@${connectedUsername}`;
+}
+
+function sanitizeBotEntities(entities = []) {
+  const allowed = new Set([
+    "bold", "italic", "underline", "strikethrough", "spoiler",
+    "blockquote", "expandable_blockquote", "code", "pre", "text_link", "custom_emoji",
+  ]);
+  return entities
+    .filter((entity) => allowed.has(entity?.type))
+    .map((entity) => ({
+      type: entity.type,
+      offset: Number(entity.offset),
+      length: Number(entity.length),
+      ...(entity.url ? { url: String(entity.url) } : {}),
+      ...(entity.language ? { language: String(entity.language) } : {}),
+      ...(entity.custom_emoji_id ? { custom_emoji_id: String(entity.custom_emoji_id) } : {}),
+    }))
+    .filter((entity) => Number.isInteger(entity.offset) && Number.isInteger(entity.length) && entity.offset >= 0 && entity.length > 0);
+}
+
+function toMtprotoEntities(entities = []) {
+  const out = [];
+  for (const entity of entities) {
+    const base = { offset: Number(entity.offset), length: Number(entity.length) };
+    try {
+      switch (entity.type) {
+        case "bold": out.push(new Api.MessageEntityBold(base)); break;
+        case "italic": out.push(new Api.MessageEntityItalic(base)); break;
+        case "underline": out.push(new Api.MessageEntityUnderline(base)); break;
+        case "strikethrough": out.push(new Api.MessageEntityStrike(base)); break;
+        case "spoiler": out.push(new Api.MessageEntitySpoiler(base)); break;
+        case "code": out.push(new Api.MessageEntityCode(base)); break;
+        case "pre": out.push(new Api.MessageEntityPre({ ...base, language: entity.language || "" })); break;
+        case "text_link": out.push(new Api.MessageEntityTextUrl({ ...base, url: entity.url || "" })); break;
+        case "blockquote": out.push(new Api.MessageEntityBlockquote({ ...base, collapsed: false })); break;
+        case "expandable_blockquote": out.push(new Api.MessageEntityBlockquote({ ...base, collapsed: true })); break;
+        case "custom_emoji":
+          if (/^\d+$/.test(entity.custom_emoji_id || "")) {
+            out.push(new Api.MessageEntityCustomEmoji({ ...base, documentId: bigInt(entity.custom_emoji_id) }));
+          }
+          break;
+      }
+    } catch (err) {
+      console.warn("Skipping unsupported saved message entity:", entity.type, err?.message || err);
+    }
+  }
+  return out;
+}
+
+async function safeDelete(chatId, messageId) {
+  if (!chatId || !messageId) return;
+  try { await bot.api.deleteMessage(chatId, messageId); } catch {}
+}
+
+async function autoDeleteNotice(chatId, text, milliseconds = 10000) {
+  try {
+    const message = await bot.api.sendMessage(chatId, text);
+    setTimeout(() => void safeDelete(chatId, message.message_id), milliseconds);
+  } catch {}
+}
+
+async function editDashboard(chatId, messageId) {
+  const options = { reply_markup: mainKeyboard() };
+  try {
+    await bot.api.editMessageText(chatId, messageId, dashboard(), options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearAwaiting() {
+  awaiting = null;
+  awaitingPromptMessageId = null;
+  awaitingPromptChatId = null;
 }
 
 async function restoreUserSession() {
@@ -106,9 +186,7 @@ const connectService = createConnectService({
     }
     userClient = client;
     connectedUsername = me?.username || String(me?.id || "connected");
-    try {
-      await bot.api.sendMessage(ownerId, `✅ Telegram account connected${me?.username ? ` as @${me.username}` : ""}.\n\nOpen /start to continue setting up TelePilot.`);
-    } catch {}
+    await autoDeleteNotice(ownerId, `✅ Connected${me?.username ? ` as @${me.username}` : ""}. Open /start to continue.`, 12000);
   },
 });
 connectService.listen(PORT);
@@ -166,7 +244,7 @@ function dashboard() {
 }
 
 async function showHome(ctx) {
-  awaiting = null;
+  clearAwaiting();
   const options = { reply_markup: mainKeyboard() };
   try {
     if (ctx.callbackQuery?.message) await ctx.editMessageText(dashboard(), options);
@@ -191,11 +269,15 @@ async function sendCycle() {
   if (!posting || !userClient || !adMessage || groups.length === 0) return;
   let success = 0;
   let failed = 0;
+  const formattingEntities = toMtprotoEntities(adEntities);
 
   for (const target of groups) {
     if (!posting) break;
     try {
-      await userClient.sendMessage(target, { message: adMessage });
+      await userClient.sendMessage(target, {
+        message: adMessage,
+        ...(formattingEntities.length ? { formattingEntities } : {}),
+      });
       success += 1;
       totalSent += 1;
       await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -284,7 +366,7 @@ bot.callbackQuery("disconnect_account", async (ctx) => {
 });
 
 bot.callbackQuery("disconnect_confirm", async (ctx) => {
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery({ text: "Account disconnected" });
   if (!isOwner(ctx)) return;
   stopPostingLoop();
   if (userClient) {
@@ -293,14 +375,13 @@ bot.callbackQuery("disconnect_confirm", async (ctx) => {
   }
   userClient = null;
   connectedUsername = null;
-  await ctx.reply("✅ Telegram account disconnected from TelePilot.");
   await showHome(ctx);
 });
 
 bot.callbackQuery("message", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  awaiting = null;
+  clearAwaiting();
   const keyboard = new InlineKeyboard();
   if (adMessage) keyboard.text("👁 Preview", "message_preview").text("✏️ Change", "message_change").row();
   else keyboard.text("➕ Set message", "message_change").row();
@@ -315,20 +396,28 @@ bot.callbackQuery("message_change", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
   awaiting = "message";
+  awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  awaitingPromptChatId = ctx.chat?.id || null;
   const keyboard = new InlineKeyboard().text("⬅️ Cancel", "message");
-  await ctx.editMessageText("✏️ SET AD MESSAGE\n\nSend the message you want TelePilot to post. Formatting, links and emoji are okay.", { reply_markup: keyboard });
+  await ctx.editMessageText("✏️ SET AD MESSAGE\n\nSend the message you want TelePilot to post. Formatting, links and Premium/custom emoji are supported.", { reply_markup: keyboard });
 });
 
 bot.callbackQuery("message_preview", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
   const keyboard = new InlineKeyboard().text("✏️ Change", "message_change").row().text("⬅️ Back", "message");
-  await ctx.editMessageText(`👁 MESSAGE PREVIEW\n\n${adMessage || "No message set."}`, { reply_markup: keyboard });
+  if (!adMessage) return ctx.editMessageText("No message set.", { reply_markup: keyboard });
+  try {
+    await ctx.editMessageText(adMessage, { reply_markup: keyboard, ...(adEntities.length ? { entities: adEntities } : {}) });
+  } catch {
+    await ctx.editMessageText(adMessage, { reply_markup: keyboard });
+  }
 });
 
 bot.callbackQuery("groups", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
+  clearAwaiting();
   const list = groups.length ? groups.map((g, i) => `${i + 1}. ${g}`).join("\n") : "No groups added.";
   const keyboard = new InlineKeyboard().text("➕ Add group", "add_group");
   if (groups.length) keyboard.text("➖ Remove", "remove_group_menu");
@@ -342,6 +431,8 @@ bot.callbackQuery("add_group", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
   awaiting = "group";
+  awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  awaitingPromptChatId = ctx.chat?.id || null;
   const keyboard = new InlineKeyboard().text("⬅️ Cancel", "groups");
   await ctx.editMessageText("➕ ADD GROUP\n\nSend an @username or t.me link for a group/channel the connected account is already allowed to post in.", { reply_markup: keyboard });
 });
@@ -356,14 +447,22 @@ bot.callbackQuery("remove_group_menu", async (ctx) => {
 });
 
 bot.callbackQuery(/^remove_group:(\d+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
   const index = Number(ctx.match[1]);
-  if (!Number.isInteger(index) || index < 0 || index >= groups.length) return ctx.reply("That group is no longer in your list.");
+  if (!Number.isInteger(index) || index < 0 || index >= groups.length) {
+    await ctx.answerCallbackQuery({ text: "That group is no longer in your list." });
+    return;
+  }
   const [removed] = groups.splice(index, 1);
   saveSettings();
-  await ctx.reply(`✅ Removed ${removed}`);
-  await showHome(ctx);
+  await ctx.answerCallbackQuery({ text: `Removed ${removed}` });
+  const list = groups.length ? groups.map((g, i) => `${i + 1}. ${g}`).join("\n") : "No groups added.";
+  const keyboard = new InlineKeyboard().text("➕ Add group", "add_group");
+  if (groups.length) keyboard.text("➖ Remove", "remove_group_menu");
+  keyboard.row();
+  if (groups.length) keyboard.text("🗑 Clear all", "clear_groups").row();
+  keyboard.text("⬅️ Back", "home");
+  await ctx.editMessageText(`👥 GROUPS\n\n${list}\n\nOnly add groups/channels where the connected account is allowed to post.`, { reply_markup: keyboard });
 });
 
 bot.callbackQuery("clear_groups", async (ctx) => {
@@ -374,7 +473,7 @@ bot.callbackQuery("clear_groups", async (ctx) => {
 });
 
 bot.callbackQuery("clear_groups_confirm", async (ctx) => {
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery({ text: "Groups cleared" });
   if (!isOwner(ctx)) return;
   groups = [];
   saveSettings();
@@ -415,12 +514,12 @@ bot.callbackQuery("activity", async (ctx) => {
 });
 
 bot.callbackQuery("start", async (ctx) => {
-  await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  if (posting) return ctx.reply("TelePilot is already running.");
-  if (!userClient || !connectedUsername) return ctx.reply("Connect your Telegram account first.");
-  if (!adMessage) return ctx.reply("Set an ad message first.");
-  if (!groups.length) return ctx.reply("Add at least one authorized group first.");
+  if (posting) return ctx.answerCallbackQuery({ text: "TelePilot is already running." });
+  if (!userClient || !connectedUsername) return ctx.answerCallbackQuery({ text: "Connect your Telegram account first.", show_alert: true });
+  if (!adMessage) return ctx.answerCallbackQuery({ text: "Set an ad message first.", show_alert: true });
+  if (!groups.length) return ctx.answerCallbackQuery({ text: "Add at least one authorized group first.", show_alert: true });
+  await ctx.answerCallbackQuery();
   const keyboard = new InlineKeyboard().text("▶️ Confirm start", "start_confirm").row().text("⬅️ Cancel", "home");
   await ctx.editMessageText(
     `▶️ START TELEPILOT\n\nDestinations: ${groups.length}\nInterval: ${intervalMinutes} min\n\nTelePilot will post once immediately, then continue on the selected interval.`,
@@ -429,7 +528,7 @@ bot.callbackQuery("start", async (ctx) => {
 });
 
 bot.callbackQuery("start_confirm", async (ctx) => {
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery({ text: "TelePilot started" });
   if (!isOwner(ctx)) return;
   if (!userClient || !connectedUsername || !adMessage || !groups.length) return showHome(ctx);
   startPostingLoop();
@@ -437,7 +536,7 @@ bot.callbackQuery("start_confirm", async (ctx) => {
 });
 
 bot.callbackQuery("stop", async (ctx) => {
-  await ctx.answerCallbackQuery({ text: posting ? "Stopping TelePilot…" : "TelePilot is already stopped." });
+  await ctx.answerCallbackQuery({ text: posting ? "TelePilot stopped" : "TelePilot is already stopped." });
   if (!isOwner(ctx)) return;
   if (!posting) return;
   stopPostingLoop();
@@ -446,21 +545,36 @@ bot.callbackQuery("stop", async (ctx) => {
 
 bot.on("message:text", async (ctx) => {
   if (!isOwner(ctx) || !awaiting) return;
+
   if (awaiting === "message") {
+    const promptMessageId = awaitingPromptMessageId;
+    const promptChatId = awaitingPromptChatId || ctx.chat.id;
     adMessage = ctx.message.text;
-    awaiting = null;
+    adEntities = sanitizeBotEntities(ctx.message.entities || []);
+    clearAwaiting();
     saveSettings();
-    await ctx.reply("✅ Message saved.");
-    return showHome(ctx);
+
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!(await editDashboard(promptChatId, promptMessageId))) await ctx.reply(dashboard(), { reply_markup: mainKeyboard() });
+    return;
   }
+
   if (awaiting === "group") {
     const target = normalizeTarget(ctx.message.text);
-    if (!target) return ctx.reply("I couldn't read that. Send an @username or a t.me/username link.");
+    if (!target) {
+      const notice = await ctx.reply("I couldn't read that. Send an @username or a t.me/username link.");
+      setTimeout(() => void safeDelete(ctx.chat.id, notice.message_id), 7000);
+      return;
+    }
+
+    const promptMessageId = awaitingPromptMessageId;
+    const promptChatId = awaitingPromptChatId || ctx.chat.id;
     if (!groups.includes(target)) groups.push(target);
-    awaiting = null;
+    clearAwaiting();
     saveSettings();
-    await ctx.reply(`✅ Added ${target}`);
-    return showHome(ctx);
+
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!(await editDashboard(promptChatId, promptMessageId))) await ctx.reply(dashboard(), { reply_markup: mainKeyboard() });
   }
 });
 
