@@ -1,19 +1,22 @@
-import { Bot } from "grammy";
+import { Api, Bot } from "grammy";
+import { installUiEnhancements } from "./ui.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
+installUiEnhancements(Api);
+
 const profileBot = new Bot(BOT_TOKEN);
 
 const description = [
-  "👋 Welcome to TelePilot",
+  "✈️ TelePilot",
   "",
-  "Automate Telegram posting with access keys, saved messages, group/channel destinations and scheduled intervals. You can optionally connect a personal Telegram account for posting. ✈️",
+  "Schedule Telegram posts from one clean control panel. Connect your personal account, save a message, choose destinations and go live.",
   "",
-  "Tap Start to get started.",
+  "Open the bot to get started.",
 ].join("\n");
 
-const shortDescription = "Scheduled Telegram posting from one simple dashboard ✈️";
+const shortDescription = "Personal Telegram autoposting from one clean dashboard ✈️";
 
 try {
   await profileBot.api.raw.setMyDescription({ description });
