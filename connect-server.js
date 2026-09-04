@@ -6,6 +6,7 @@ import { StoreSession } from "teleproto/sessions/index.js";
 const MAX_BODY = 8192;
 const CONNECT_TTL_MS = 10 * 60_000;
 const LOGIN_TTL_MS = 7 * 60_000;
+const INTERVAL_VALUES = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
 
 function json(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
@@ -188,11 +189,95 @@ if(!connect.uid||!connect.exp||!connect.sig){ show('failed'); $('failedText').te
 </body></html>`;
 }
 
-export function createConnectService({ botToken, apiId, apiHash, sessionName, publicUrl, onConnected }) {
+function intervalTemplate(nonce, currentMinutes) {
+  const currentIndex = Math.max(0, INTERVAL_VALUES.indexOf(Number(currentMinutes)));
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>TelePilot Interval</title>
+  <style>
+    :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(180deg,#0b1020,#111827 48%,#0b1020);color:#f8fafc;display:flex;align-items:center;justify-content:center;padding:24px}
+    .wrap{width:min(100%,440px)}.brand{text-align:center;margin-bottom:20px}.logo{width:66px;height:66px;border-radius:22px;margin:0 auto 12px;background:linear-gradient(145deg,#60a5fa,#7c3aed);display:grid;place-items:center;font-size:34px}.brand h1{margin:0;font-size:27px}.brand p{margin:7px 0 0;color:#94a3b8;font-size:14px}
+    .card{background:#111827e8;border:1px solid #ffffff17;border-radius:24px;padding:22px}.eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#7f8da3;margin-bottom:8px}h2{font-size:21px;margin:0 0 7px}.sub{color:#aeb9ca;line-height:1.45;margin:0 0 20px;font-size:15px}
+    .value{text-align:center;font-size:38px;font-weight:800;letter-spacing:-.03em;margin:12px 0 16px}.rangeRow{padding:2px 2px 8px}input[type=range]{width:100%;accent-color:#60a5fa;height:44px;padding:0;background:transparent;border:0}.ends{display:flex;justify-content:space-between;color:#718096;font-size:12px;margin-top:-3px}
+    .presets{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:18px}.preset{margin:0;padding:11px 6px;border:1px solid #ffffff17;background:#1e293b;color:#dbeafe;border-radius:11px;font-size:13px;font-weight:700}.preset.active{border-color:#60a5fa;background:#172554}
+    button{width:100%;border:0;border-radius:14px;padding:15px 16px;margin-top:15px;font-size:16px;font-weight:700;color:#fff;background:linear-gradient(90deg,#3b82f6,#7c3aed);cursor:pointer}button:disabled{opacity:.55}.ghost{background:transparent;color:#94a3b8;border:1px solid #ffffff17}.status{min-height:21px;margin-top:12px;color:#a7f3d0;text-align:center;font-size:14px}.hint{font-size:12px;color:#7f8da3;margin-top:12px;line-height:1.45}.success{text-align:center}.ok{font-size:50px;margin-bottom:8px}.hidden{display:none}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><div class="logo">⏱</div><h1>Posting interval</h1><p>Choose how often TelePilot posts</p></div>
+  <div class="card" id="picker">
+    <div class="eyebrow">Schedule</div>
+    <h2>Set your interval</h2>
+    <p class="sub">Drag the slider. It snaps to useful intervals instead of every single minute.</p>
+    <div class="value" id="valueLabel">30 min</div>
+    <div class="rangeRow">
+      <input id="intervalRange" type="range" min="0" max="${INTERVAL_VALUES.length - 1}" step="1" value="${currentIndex}" aria-label="Posting interval">
+      <div class="ends"><span>1 min</span><span>24 hours</span></div>
+    </div>
+    <div class="presets">
+      <button type="button" class="preset" data-minutes="15">15m</button>
+      <button type="button" class="preset" data-minutes="30">30m</button>
+      <button type="button" class="preset" data-minutes="60">1h</button>
+      <button type="button" class="preset" data-minutes="120">2h</button>
+    </div>
+    <button id="saveBtn">Save interval</button>
+    <button id="cancelBtn" class="ghost">Back to Telegram</button>
+    <div class="status" id="status"></div>
+    <div class="hint">Available stops: 1m, 5m, 10m, 15m, 30m, 45m, 1h, 1h30, 2h, 3h, 4h, 6h, 8h, 12h, 24h.</div>
+  </div>
+  <div class="card success hidden" id="done">
+    <div class="ok">✅</div>
+    <h2>Interval saved</h2>
+    <p class="sub" id="doneText">TelePilot has updated your schedule.</p>
+    <button id="returnBtn">Return to Telegram</button>
+  </div>
+</div>
+<script nonce="${nonce}">
+const values=${JSON.stringify(INTERVAL_VALUES)};
+const qs=new URLSearchParams(location.search);
+const auth={uid:qs.get('uid'),exp:qs.get('exp'),chat:qs.get('chat'),msg:qs.get('msg'),sig:qs.get('sig')};
+const range=document.getElementById('intervalRange');
+const label=document.getElementById('valueLabel');
+const save=document.getElementById('saveBtn');
+const status=document.getElementById('status');
+function pretty(m){ if(m<60)return m+' min'; if(m%60===0)return (m/60)+'h'; const h=Math.floor(m/60),r=m%60; return h+'h '+r+'m'; }
+function selected(){ return values[Number(range.value)]||30; }
+function render(){ const m=selected(); label.textContent=pretty(m); document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('active',Number(b.dataset.minutes)===m)); }
+range.addEventListener('input',render);
+document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',()=>{ const i=values.indexOf(Number(b.dataset.minutes)); if(i>=0){ range.value=String(i); render(); } }));
+save.addEventListener('click',async()=>{ save.disabled=true; status.textContent='Saving…'; try{ const r=await fetch('/api/interval/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...auth,minutes:selected()})}); const j=await r.json().catch(()=>({})); if(!r.ok)throw new Error(j.error||'Could not save interval'); document.getElementById('picker').classList.add('hidden'); document.getElementById('done').classList.remove('hidden'); document.getElementById('doneText').textContent='Posting interval set to '+pretty(j.minutes||selected())+'.'; }catch(e){ status.textContent=e.message; save.disabled=false; } });
+function back(){ location.href='tg://resolve?domain=TelePilottBot'; }
+document.getElementById('cancelBtn').addEventListener('click',back);
+document.getElementById('returnBtn').addEventListener('click',back);
+render();
+</script>
+</body></html>`;
+}
+
+export function createConnectService({
+  botToken,
+  apiId,
+  apiHash,
+  sessionName,
+  publicUrl,
+  onConnected,
+  getIntervalMinutes = () => 30,
+  onIntervalChanged = async () => {},
+}) {
   const pending = new Map();
 
   function signature(uid, exp) {
     return crypto.createHmac("sha256", botToken).update(`${uid}.${exp}.telepilot-connect-v1`).digest("hex");
+  }
+
+  function intervalSignature(uid, exp, chat, msg) {
+    return crypto.createHmac("sha256", botToken).update(`${uid}.${exp}.${chat}.${msg}.telepilot-interval-v1`).digest("hex");
   }
 
   function makeConnectUrl(uid) {
@@ -201,11 +286,24 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
     return `${publicUrl}/connect?uid=${encodeURIComponent(uid)}&exp=${exp}&sig=${sig}`;
   }
 
+  function makeIntervalUrl(uid, chat, msg) {
+    const exp = Date.now() + CONNECT_TTL_MS;
+    const sig = intervalSignature(uid, exp, chat, msg);
+    return `${publicUrl}/interval?uid=${encodeURIComponent(uid)}&exp=${exp}&chat=${encodeURIComponent(chat)}&msg=${encodeURIComponent(msg)}&sig=${sig}`;
+  }
+
   function verifyConnect(uid, expRaw, sig) {
     const exp = Number(expRaw);
     if (!/^\d+$/.test(String(uid || "")) || !Number.isFinite(exp)) return false;
     if (Date.now() > exp || exp - Date.now() > CONNECT_TTL_MS + 30_000) return false;
     return safeEqualHex(signature(uid, exp), String(sig || ""));
+  }
+
+  function verifyInterval(uid, expRaw, chat, msg, sig) {
+    const exp = Number(expRaw);
+    if (!/^\d+$/.test(String(uid || "")) || !/^-?\d+$/.test(String(chat || "")) || !/^\d+$/.test(String(msg || "")) || !Number.isFinite(exp)) return false;
+    if (Date.now() > exp || exp - Date.now() > CONNECT_TTL_MS + 30_000) return false;
+    return safeEqualHex(intervalSignature(uid, exp, chat, msg), String(sig || ""));
   }
 
   function getLogin(req) {
@@ -290,6 +388,30 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         return html(res, 200, pageTemplate(nonce), nonce);
       }
 
+      if (req.method === "GET" && url.pathname === "/interval") {
+        const uid = url.searchParams.get("uid");
+        const exp = url.searchParams.get("exp");
+        const chat = url.searchParams.get("chat");
+        const msg = url.searchParams.get("msg");
+        const sig = url.searchParams.get("sig");
+        const nonce = crypto.randomBytes(18).toString("base64");
+        if (!verifyInterval(uid, exp, chat, msg, sig)) return html(res, 403, "<p>That TelePilot interval link is invalid or expired.</p>", nonce);
+        const current = Number(await getIntervalMinutes(String(uid)));
+        const normalized = INTERVAL_VALUES.includes(current) ? current : 30;
+        return html(res, 200, intervalTemplate(nonce, normalized), nonce);
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/interval/save") {
+        const body = await readJson(req);
+        if (!verifyInterval(body.uid, body.exp, body.chat, body.msg, body.sig)) {
+          return json(res, 403, { error: "This interval link expired. Open TelePilot and try again." });
+        }
+        const minutes = Number(body.minutes);
+        if (!INTERVAL_VALUES.includes(minutes)) return json(res, 400, { error: "Choose one of the available interval stops." });
+        await onIntervalChanged(String(body.uid), minutes, Number(body.chat), Number(body.msg));
+        return json(res, 200, { ok: true, minutes });
+      }
+
       if (req.method === "POST" && url.pathname === "/api/login/start") {
         const body = await readJson(req);
         if (!verifyConnect(body.uid, body.exp, body.sig)) return json(res, 403, { error: "This connection link expired. Open TelePilot and try again." });
@@ -350,13 +472,15 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
 
       return json(res, 404, { error: "Not found" });
     } catch (err) {
+      console.error("TelePilot web service error:", err?.message || err);
       if (String(err?.message || "") === "REQUEST_TOO_LARGE") return json(res, 413, { error: "Request too large" });
-      return json(res, 500, { error: "TelePilot Connect hit an unexpected error." });
+      return json(res, 500, { error: "TelePilot hit an unexpected error." });
     }
   });
 
   return {
     makeConnectUrl,
+    makeIntervalUrl,
     listen(port) {
       server.listen(port, "0.0.0.0", () => console.log(`TelePilot Connect listening on port ${port}`));
     },
