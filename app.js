@@ -32,6 +32,9 @@ function userDir(uid) { return path.join(USERS_DIR, String(uid)); }
 function settingsFile(uid) { return path.join(userDir(uid), "settings.json"); }
 function sessionDir(uid) { return path.join(userDir(uid), "telegram-session"); }
 function sessionName(uid) { return path.relative(process.cwd(), sessionDir(uid)) || `../data/users/${uid}/telegram-session`; }
+function ensureSessionDir(uid) {
+  fs.mkdirSync(sessionDir(uid), { recursive: true, mode: 0o700 });
+}
 function hasStoredSession(uid) {
   try { return fs.existsSync(sessionDir(uid)) && fs.readdirSync(sessionDir(uid)).length > 0; }
   catch { return false; }
@@ -134,6 +137,7 @@ function saveState(state) {
 
 const bot = new Bot(BOT_TOKEN);
 function createUserClient(uid) {
+  ensureSessionDir(uid);
   return new TelegramClient(new StoreSession(sessionName(uid)), API_ID, API_HASH, {
     connectionRetries: 5,
     floodSleepThreshold: 60,
@@ -386,7 +390,7 @@ const connectService = createConnectService({
   apiId: API_ID,
   apiHash: API_HASH,
   publicUrl: PUBLIC_URL,
-  getSessionName: async uid => { fs.mkdirSync(userDir(uid), { recursive: true }); return sessionName(uid); },
+  getSessionName: async uid => { ensureSessionDir(uid); return sessionName(uid); },
   onConnected: async (uid, client, me) => {
     const state = getState(uid);
     stopPostingLoop(state);
