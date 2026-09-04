@@ -1,6 +1,6 @@
 {
   "name": "telepilot-lite",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,6 +10,8 @@
     "start": "node startup.js"
   },
   "dependencies": {
-    "grammy": "^1.46.0"
+    "big-integer": "^1.6.52",
+    "grammy": "^1.46.0",
+    "teleproto": "1.229.0"
   }
 }
