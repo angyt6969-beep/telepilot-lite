@@ -84,13 +84,14 @@ function pageTemplate(nonce) {
   <title>TelePilot Connect</title>
   <style>
     :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:linear-gradient(180deg,#0b1020,#111827 48%,#0b1020);color:#f8fafc;display:flex;align-items:center;justify-content:center;padding:24px}
-    .wrap{width:min(100%,440px)} .brand{text-align:center;margin-bottom:20px}.logo{width:66px;height:66px;border-radius:22px;margin:0 auto 12px;background:linear-gradient(145deg,#60a5fa,#7c3aed);display:grid;place-items:center;font-size:34px;box-shadow:0 18px 45px #0007}.brand h1{margin:0;font-size:27px}.brand p{margin:7px 0 0;color:#94a3b8;font-size:14px}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(180deg,#0b1020,#111827 48%,#0b1020);color:#f8fafc;display:flex;align-items:center;justify-content:center;padding:24px}
+    .wrap{width:min(100%,440px)}.brand{text-align:center;margin-bottom:20px}.logo{width:66px;height:66px;border-radius:22px;margin:0 auto 12px;background:linear-gradient(145deg,#60a5fa,#7c3aed);display:grid;place-items:center;font-size:34px;box-shadow:0 18px 45px #0007}.brand h1{margin:0;font-size:27px}.brand p{margin:7px 0 0;color:#94a3b8;font-size:14px}
     .card{background:#111827e8;border:1px solid #ffffff17;border-radius:24px;padding:22px;box-shadow:0 24px 70px #0008;backdrop-filter:blur(18px)}
-    .step{display:none}.step.active{display:block} h2{font-size:21px;margin:0 0 8px}.sub{color:#aeb9ca;line-height:1.45;margin:0 0 18px;font-size:15px}
+    .step{display:none}.step.active{display:block}h2{font-size:21px;margin:0 0 8px}.sub{color:#aeb9ca;line-height:1.45;margin:0 0 18px;font-size:15px}.eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#7f8da3;margin-bottom:8px}
     label{display:block;font-size:13px;color:#cbd5e1;margin:0 0 8px}input{width:100%;font-size:18px;padding:15px 16px;border-radius:14px;border:1px solid #ffffff22;background:#070b14;color:#fff;outline:none}input:focus{border-color:#60a5fa;box-shadow:0 0 0 3px #60a5fa22}
-    button{width:100%;border:0;border-radius:14px;padding:15px 16px;margin-top:13px;font-size:16px;font-weight:700;color:#fff;background:linear-gradient(90deg,#3b82f6,#7c3aed);cursor:pointer}button:disabled{opacity:.55;cursor:default}.secondary{background:#1e293b;color:#dbeafe}.status{min-height:21px;margin-top:12px;color:#fca5a5;font-size:14px;line-height:1.4}.hint{font-size:12px;color:#7f8da3;margin-top:14px;line-height:1.45}.ok{font-size:52px;margin-bottom:10px}.success{text-align:center}.success .sub{margin-bottom:6px}.pill{display:inline-block;margin-top:10px;border:1px solid #34d39955;background:#10b98118;color:#a7f3d0;padding:8px 12px;border-radius:999px;font-size:13px}
+    button{width:100%;border:0;border-radius:14px;padding:15px 16px;margin-top:13px;font-size:16px;font-weight:700;color:#fff;background:linear-gradient(90deg,#3b82f6,#7c3aed);cursor:pointer}button:disabled{opacity:.55;cursor:default}.secondary{background:#1e293b;color:#dbeafe}.ghost{background:transparent;color:#94a3b8;border:1px solid #ffffff17}.status{min-height:21px;margin-top:12px;color:#fca5a5;font-size:14px;line-height:1.4}.hint{font-size:12px;color:#7f8da3;margin-top:14px;line-height:1.45}.ok{font-size:52px;margin-bottom:10px}.success{text-align:center}.success .sub{margin-bottom:6px}.pill{display:inline-block;margin-top:10px;border:1px solid #34d39955;background:#10b98118;color:#a7f3d0;padding:8px 12px;border-radius:999px;font-size:13px}
     .spinner{width:34px;height:34px;border:3px solid #ffffff20;border-top-color:#60a5fa;border-radius:50%;animation:s 1s linear infinite;margin:8px auto 18px}@keyframes s{to{transform:rotate(360deg)}}
+    .passwordWrap{position:relative}.passwordWrap input{padding-right:72px}.showPass{position:absolute;right:8px;top:8px;width:auto;margin:0;padding:8px 10px;font-size:13px;border-radius:10px;background:#1e293b;color:#dbeafe}
   </style>
 </head>
 <body>
@@ -98,48 +99,55 @@ function pageTemplate(nonce) {
   <div class="brand"><div class="logo">✈️</div><h1>TelePilot Connect</h1><p>Secure Telegram account connection</p></div>
   <div class="card">
     <section id="phone" class="step active">
+      <div class="eyebrow">Step 1</div>
       <h2>Connect your Telegram</h2>
       <p class="sub">Enter the phone number on the Telegram account you want TelePilot to use.</p>
-      <label for="phoneInput">Phone number</label>
-      <input id="phoneInput" type="tel" autocomplete="tel" inputmode="tel" placeholder="+371 2XXXXXXX">
+      <label for="phoneInput">Phone number with country code</label>
+      <input id="phoneInput" type="tel" autocomplete="tel" inputmode="tel" placeholder="+___ __________" autofocus>
       <button id="phoneBtn">Continue</button>
       <div class="status" id="phoneStatus"></div>
-      <div class="hint">Your login code and 2FA password are used only for this Telegram authorization attempt. TelePilot does not save those values.</div>
+      <div class="hint">Start with + and your country code. TelePilot does not prefill or infer your country.</div>
     </section>
 
-    <section id="waiting" class="step"><div class="spinner"></div><h2 style="text-align:center">Connecting to Telegram…</h2><p class="sub" style="text-align:center">This normally takes a few seconds.</p></section>
+    <section id="waiting" class="step"><div class="spinner"></div><h2 style="text-align:center">Connecting to Telegram…</h2><p class="sub" style="text-align:center">This normally takes a few seconds.</p><button class="ghost cancelLogin">Cancel</button></section>
 
     <section id="code" class="step">
+      <div class="eyebrow">Step 2</div>
       <h2>Enter your Telegram code</h2>
       <p class="sub" id="codeSub">Telegram sent a login code. Enter the newest code below.</p>
       <label for="codeInput">Login code</label>
       <input id="codeInput" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="12" placeholder="12345">
-      <button id="codeBtn">Verify code</button><div class="status" id="codeStatus"></div>
+      <button id="codeBtn">Verify code</button><button class="ghost cancelLogin">Cancel</button><div class="status" id="codeStatus"></div>
     </section>
 
     <section id="password" class="step">
+      <div class="eyebrow">Final security check</div>
       <h2>2-step verification</h2><p class="sub" id="passwordSub">This Telegram account has an additional password.</p>
       <label for="passwordInput">Telegram 2FA password</label>
-      <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Password">
-      <button id="passwordBtn">Continue</button><div class="status" id="passwordStatus"></div>
+      <div class="passwordWrap"><input id="passwordInput" type="password" autocomplete="off" placeholder="Password"><button class="showPass" id="showPass" type="button">Show</button></div>
+      <button id="passwordBtn">Continue</button><button class="ghost cancelLogin">Cancel</button><div class="status" id="passwordStatus"></div>
+      <div class="hint">This password is used for the current Telegram authorization request and is not written to TelePilot settings.</div>
     </section>
 
     <section id="email" class="step">
+      <div class="eyebrow">Telegram security check</div>
       <h2>Email verification</h2><p class="sub">Telegram requires an email address before continuing this login.</p>
       <label for="emailInput">Email address</label>
       <input id="emailInput" type="email" autocomplete="email" placeholder="you@example.com">
-      <button id="emailBtn">Continue</button><div class="status" id="emailStatus"></div>
+      <button id="emailBtn">Continue</button><button class="ghost cancelLogin">Cancel</button><div class="status" id="emailStatus"></div>
     </section>
 
     <section id="email_code" class="step">
+      <div class="eyebrow">Telegram security check</div>
       <h2>Check your email</h2><p class="sub" id="emailCodeSub">Enter the verification code Telegram sent to your email.</p>
       <label for="emailCodeInput">Email code</label>
       <input id="emailCodeInput" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="16" placeholder="Code">
-      <button id="emailCodeBtn">Verify email</button><div class="status" id="emailCodeStatus"></div>
+      <button id="emailCodeBtn">Verify email</button><button class="ghost cancelLogin">Cancel</button><div class="status" id="emailCodeStatus"></div>
     </section>
 
     <section id="done" class="step success"><div class="ok">✅</div><h2>Account connected</h2><p class="sub" id="doneText">You can return to TelePilot.</p><div class="pill">Session saved on your TelePilot service</div><button class="secondary" id="closeBtn">Return to Telegram</button></section>
-    <section id="failed" class="step"><h2>Couldn’t connect</h2><p class="sub" id="failedText">Please try again.</p><button class="secondary" id="retryBtn">Try again</button></section>
+    <section id="cancelled" class="step success"><div class="ok">↩️</div><h2>Login cancelled</h2><p class="sub">No changes were made. You can return to TelePilot whenever you're ready.</p><button class="secondary returnTelegram">Return to Telegram</button></section>
+    <section id="failed" class="step"><h2>Couldn’t connect</h2><p class="sub" id="failedText">Please try again.</p><button class="secondary" id="retryBtn">Try again</button><button class="ghost returnTelegram">Return to Telegram</button></section>
   </div>
 </div>
 <script nonce="${nonce}">
@@ -165,11 +173,14 @@ async function checkStatus(){
   }catch{}
 }
 $('phoneBtn').onclick=async()=>{ const phone=$('phoneInput').value.trim(); $('phoneStatus').textContent=''; setBusy($('phoneBtn'),true); try{ await post('/api/login/start',{...connect,phone}); show('waiting'); startPolling(); }catch(e){ $('phoneStatus').textContent=e.message; } finally{setBusy($('phoneBtn'),false);} };
-async function submit(kind,input,status,btn){ const value=$(input).value; $(status).textContent=''; setBusy($(btn),true); try{ await post('/api/login/input',{kind,value}); show('waiting'); }catch(e){ $(status).textContent=e.message; } finally{ if(kind!=='password') $(input).value=''; else $(input).value=''; setBusy($(btn),false); } }
+async function submit(kind,input,status,btn){ const value=$(input).value; $(status).textContent=''; setBusy($(btn),true); try{ await post('/api/login/input',{kind,value}); show('waiting'); }catch(e){ $(status).textContent=e.message; } finally{ $(input).value=''; setBusy($(btn),false); } }
 $('codeBtn').onclick=()=>submit('code','codeInput','codeStatus','codeBtn');
 $('passwordBtn').onclick=()=>submit('password','passwordInput','passwordStatus','passwordBtn');
 $('emailBtn').onclick=()=>submit('email','emailInput','emailStatus','emailBtn');
 $('emailCodeBtn').onclick=()=>submit('email_code','emailCodeInput','emailCodeStatus','emailCodeBtn');
+$('showPass').onclick=()=>{ const input=$('passwordInput'); const show=input.type==='password'; input.type=show?'text':'password'; $('showPass').textContent=show?'Hide':'Show'; };
+document.querySelectorAll('.cancelLogin').forEach(btn=>btn.onclick=async()=>{ btn.disabled=true; try{ await post('/api/login/cancel',{}); }catch{} clearInterval(pollTimer); show('cancelled'); });
+document.querySelectorAll('.returnTelegram').forEach(btn=>btn.onclick=()=>{ location.href='tg://resolve?domain=TelePilottBot'; });
 $('retryBtn').onclick=()=>location.reload();
 $('closeBtn').onclick=()=>{ location.href='tg://resolve?domain=TelePilottBot'; };
 if(!connect.uid||!connect.exp||!connect.sig){ show('failed'); $('failedText').textContent='This TelePilot connection link is invalid. Open Account → Connect account again.'; }
@@ -283,7 +294,7 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         const body = await readJson(req);
         if (!verifyConnect(body.uid, body.exp, body.sig)) return json(res, 403, { error: "This connection link expired. Open TelePilot and try again." });
         const phone = cleanPhone(body.phone);
-        if (!phone) return json(res, 400, { error: "Enter your phone number in international format, for example +371…" });
+        if (!phone) return json(res, 400, { error: "Enter your full phone number starting with + and the country code." });
 
         for (const login of pending.values()) {
           if (String(login.uid) === String(body.uid) && !login.finished) stopLogin(login, "A newer login attempt was started.");
@@ -329,6 +340,12 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         login.error = null;
         resolve(value);
         return json(res, 200, { ok: true });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/login/cancel") {
+        const login = getLogin(req);
+        if (login && !login.finished) stopLogin(login, "Login cancelled.");
+        return json(res, 200, { ok: true }, { "set-cookie": "tp_login=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0" });
       }
 
       return json(res, 404, { error: "Not found" });
