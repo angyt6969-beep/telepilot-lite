@@ -45,6 +45,7 @@ let postingTimer = null;
 let posting = false;
 let awaiting = null;
 let qrLoginRunning = false;
+let loginAbortController = null;
 
 function saveSettings() {
   const payload = {
@@ -184,6 +185,9 @@ async function connectAccount(ctx) {
   let loginMessageId = null;
   let loginChatId = null;
   const client = createUserClient();
+  const abortController = new AbortController();
+  loginAbortController = abortController;
+  const timeout = setTimeout(() => abortController.abort(), 120_000);
 
   try {
     await client.connect();
@@ -198,7 +202,7 @@ async function connectAccount(ctx) {
     }
 
     await ctx.reply(
-      "🔐 ONE-TIME ACCOUNT CONNECTION\n\nUse another Telegram device that is already signed into this account to approve the login once. After that, TelePilot remembers the session across Railway restarts and deploys.",
+      "🔐 ONE-TIME ACCOUNT CONNECTION\n\nUse another Telegram device that is already signed into this account to approve the login once. After that, TelePilot remembers the session across Railway restarts and deploys.\n\nThis login attempt expires after 2 minutes and will not block the rest of the bot.",
     );
 
     const me = await client.signInUserWithQrCode(
@@ -228,6 +232,7 @@ async function connectAccount(ctx) {
           console.error("QR login error:", err?.message || err);
           return false;
         },
+        abortSignal: abortController.signal,
       },
     );
 
@@ -238,10 +243,17 @@ async function connectAccount(ctx) {
     );
     await showHome(ctx);
   } catch (err) {
-    console.error("Account connection failed:", err);
+    console.error("Account connection failed:", err?.message || err);
     try { await client.disconnect(); } catch {}
-    await ctx.reply("❌ Account connection failed. Tap Account → Connect account and try the one-time approval again.");
+
+    if (err?.name === "AbortError") {
+      await ctx.reply("⌛ Account login expired. The rest of TelePilot is still working; tap Account → Connect account when you're ready to try again.");
+    } else {
+      await ctx.reply("❌ Account connection failed. Tap Account → Connect account and try the one-time approval again.");
+    }
   } finally {
+    clearTimeout(timeout);
+    if (loginAbortController === abortController) loginAbortController = null;
     qrLoginRunning = false;
   }
 }
@@ -276,7 +288,9 @@ bot.callbackQuery("account", async (ctx) => {
 bot.callbackQuery("connect_account", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  await connectAccount(ctx);
+  void connectAccount(ctx).catch((err) => {
+    console.error("Background account login failed:", err?.message || err);
+  });
 });
 
 bot.callbackQuery("message", async (ctx) => {
