@@ -70,7 +70,6 @@ function humanizeAuthError(err) {
   if (raw.includes("PASSWORD_HASH_INVALID")) return "That 2-step verification password is incorrect.";
   if (raw.includes("PHONE_NUMBER_INVALID")) return "Telegram did not accept that phone number.";
   if (raw.includes("FLOOD")) return "Telegram temporarily limited login attempts. Please wait before trying again.";
-  if (raw.includes("EMAIL")) return "Telegram needs an email verification step. Follow the prompt below.";
   if (raw.includes("AUTH_USER_CANCEL")) return "Login cancelled.";
   return "Telegram could not complete that step. Please try again.";
 }
@@ -139,7 +138,7 @@ function pageTemplate(nonce) {
       <button id="emailCodeBtn">Verify email</button><div class="status" id="emailCodeStatus"></div>
     </section>
 
-    <section id="done" class="step success"><div class="ok">✅</div><h2>Account connected</h2><p class="sub" id="doneText">You can return to TelePilot.</p><div class="pill">Session saved securely on your TelePilot service</div><button class="secondary" id="closeBtn">Return to Telegram</button></section>
+    <section id="done" class="step success"><div class="ok">✅</div><h2>Account connected</h2><p class="sub" id="doneText">You can return to TelePilot.</p><div class="pill">Session saved on your TelePilot service</div><button class="secondary" id="closeBtn">Return to Telegram</button></section>
     <section id="failed" class="step"><h2>Couldn’t connect</h2><p class="sub" id="failedText">Please try again.</p><button class="secondary" id="retryBtn">Try again</button></section>
   </div>
 </div>
@@ -157,16 +156,16 @@ async function checkStatus(){
     const r=await fetch('/api/login/status',{cache:'no-store'}); const s=await r.json();
     if(!r.ok) return;
     if(s.step==='code'){ show('code'); $('codeSub').textContent=s.viaApp?'Telegram sent the code inside your Telegram app. Enter the newest code below.':'Telegram sent a login code. Enter it below.'; if(s.error) $('codeStatus').textContent=s.error; }
-    else if(s.step==='password'){ show('password'); $('passwordSub').textContent=s.hint?`This account has 2FA enabled. Hint: ${s.hint}`:'This Telegram account has 2-step verification enabled.'; if(s.error) $('passwordStatus').textContent=s.error; }
+    else if(s.step==='password'){ show('password'); $('passwordSub').textContent=s.hint?('This account has 2FA enabled. Hint: '+s.hint):'This Telegram account has 2-step verification enabled.'; if(s.error) $('passwordStatus').textContent=s.error; }
     else if(s.step==='email'){ show('email'); if(s.error) $('emailStatus').textContent=s.error; }
-    else if(s.step==='email_code'){ show('email_code'); $('emailCodeSub').textContent=s.emailPattern?`Telegram sent a code to ${s.emailPattern}.`:'Telegram sent a verification code to your email.'; if(s.error) $('emailCodeStatus').textContent=s.error; }
-    else if(s.step==='done'){ clearInterval(pollTimer); show('done'); $('doneText').textContent=s.username?`Connected as @${s.username}. You can return to TelePilot.`:'Your Telegram account is connected. You can return to TelePilot.'; }
+    else if(s.step==='email_code'){ show('email_code'); $('emailCodeSub').textContent=s.emailPattern?('Telegram sent a code to '+s.emailPattern+'.'):'Telegram sent a verification code to your email.'; if(s.error) $('emailCodeStatus').textContent=s.error; }
+    else if(s.step==='done'){ clearInterval(pollTimer); show('done'); $('doneText').textContent=s.username?('Connected as @'+s.username+'. You can return to TelePilot.'):'Your Telegram account is connected. You can return to TelePilot.'; }
     else if(s.step==='failed'){ clearInterval(pollTimer); show('failed'); $('failedText').textContent=s.error||'Telegram could not complete the login.'; }
     else if(!['phone','waiting'].includes(current)) show('waiting');
   }catch{}
 }
 $('phoneBtn').onclick=async()=>{ const phone=$('phoneInput').value.trim(); $('phoneStatus').textContent=''; setBusy($('phoneBtn'),true); try{ await post('/api/login/start',{...connect,phone}); show('waiting'); startPolling(); }catch(e){ $('phoneStatus').textContent=e.message; } finally{setBusy($('phoneBtn'),false);} };
-async function submit(kind,input,status,btn){ const value=$(input).value; $(status).textContent=''; setBusy($(btn),true); try{ await post('/api/login/input',{kind,value}); show('waiting'); }catch(e){ $(status).textContent=e.message; } finally{ $(input).value=''; setBusy($(btn),false); } }
+async function submit(kind,input,status,btn){ const value=$(input).value; $(status).textContent=''; setBusy($(btn),true); try{ await post('/api/login/input',{kind,value}); show('waiting'); }catch(e){ $(status).textContent=e.message; } finally{ if(kind!=='password') $(input).value=''; else $(input).value=''; setBusy($(btn),false); } }
 $('codeBtn').onclick=()=>submit('code','codeInput','codeStatus','codeBtn');
 $('passwordBtn').onclick=()=>submit('password','passwordInput','passwordStatus','passwordBtn');
 $('emailBtn').onclick=()=>submit('email','emailInput','emailStatus','emailBtn');
@@ -223,7 +222,7 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
       login.waiting.reject(new Error("AUTH_USER_CANCEL"));
       login.waiting = null;
     }
-    try { login.client.disconnect(); } catch {}
+    void login.client.disconnect().catch(() => {});
   }
 
   async function startAuth(login, phone) {
@@ -241,7 +240,7 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         onError: async (err) => {
           const raw = String(err?.errorMessage || err?.message || "").toUpperCase();
           login.nextError = humanizeAuthError(err);
-          if (raw.includes("FLOOD") || raw.includes("PHONE_NUMBER_INVALID") || raw.includes("PHONE_CODE_EXPIRED") || raw.includes("AUTH_USER_CANCEL")) return true;
+          if (raw.includes("FLOOD") || raw.includes("PHONE_CODE_EXPIRED") || raw.includes("AUTH_USER_CANCEL")) return true;
           return false;
         },
       });
@@ -276,9 +275,7 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         const exp = url.searchParams.get("exp");
         const sig = url.searchParams.get("sig");
         const nonce = crypto.randomBytes(18).toString("base64");
-        if (!verifyConnect(uid, exp, sig)) {
-          return html(res, 403, pageTemplate(nonce), nonce);
-        }
+        if (!verifyConnect(uid, exp, sig)) return html(res, 403, pageTemplate(nonce), nonce);
         return html(res, 200, pageTemplate(nonce), nonce);
       }
 
@@ -322,7 +319,8 @@ export function createConnectService({ botToken, apiId, apiHash, sessionName, pu
         if (!login || login.finished) return json(res, 409, { error: "This login is no longer active." });
         const body = await readJson(req);
         const kind = String(body.kind || "");
-        const value = String(body.value || "").trim();
+        const rawValue = String(body.value ?? "");
+        const value = kind === "password" ? rawValue : rawValue.trim();
         if (!login.waiting || login.waiting.kind !== kind) return json(res, 409, { error: "Telegram is not waiting for that step yet." });
         if (!value || value.length > 256) return json(res, 400, { error: "Enter a valid value." });
         const { resolve } = login.waiting;
