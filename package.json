@@ -1,18 +1,15 @@
 {
   "name": "telepilot-lite",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "postinstall": "node patch-teleproto-store-session.cjs",
     "start": "node startup.js"
   },
   "dependencies": {
-    "big-integer": "^1.6.52",
-    "grammy": "^1.46.0",
-    "teleproto": "1.229.0"
+    "grammy": "^1.46.0"
   }
 }
