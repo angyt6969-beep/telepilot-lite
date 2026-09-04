@@ -1,17 +1,16 @@
 {
   "name": "telepilot-lite",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "start": "node index.js"
+    "start": "node app.js"
   },
   "dependencies": {
     "grammy": "^1.46.0",
-    "qrcode": "^1.5.4",
     "teleproto": "^1.229.0"
   }
 }
