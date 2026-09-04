@@ -36,6 +36,9 @@ function hasStoredSession(uid) {
   try { return fs.existsSync(sessionDir(uid)) && fs.readdirSync(sessionDir(uid)).length > 0; }
   catch { return false; }
 }
+function removeStoredSession(uid) {
+  try { fs.rmSync(sessionDir(uid), { recursive: true, force: true }); } catch {}
+}
 
 function markMigrationComplete() {
   try { fs.writeFileSync(LEGACY_MIGRATION_MARKER, "ok\n", { mode: 0o600 }); } catch {}
@@ -140,12 +143,17 @@ function createUserClient(uid) {
 async function ensureSession(state) {
   if (state.client && state.connectedUsername) return true;
   if (state.restorePromise) return state.restorePromise;
+  if (connectService?.hasActiveLogin?.(state.uid)) return false;
   if (!hasStoredSession(state.uid)) return false;
   state.restorePromise = (async () => {
     const client = createUserClient(state.uid);
     try {
       await client.connect();
-      if (!(await client.checkAuthorization())) { await client.disconnect(); return false; }
+      if (!(await client.checkAuthorization())) {
+        await client.disconnect();
+        if (!connectService?.hasActiveLogin?.(state.uid)) removeStoredSession(state.uid);
+        return false;
+      }
       const me = await client.getMe();
       state.client = client;
       state.connectedUsername = me?.username || String(me?.id || "connected");
@@ -276,6 +284,7 @@ async function invalidateConnectedSession(state, notice) {
   state.client = null;
   state.connectedUsername = null;
   try { await client?.disconnect(); } catch {}
+  removeStoredSession(state.uid);
   if (notice) await autoDeleteNotice(state.uid, notice, 12000);
 }
 
@@ -409,8 +418,18 @@ bot.callbackQuery("account", async ctx => {
   if (state.connectedUsername) {
     return ctx.editMessageText(`👤 ACCOUNT\n\n✅ Connected: ${accountDisplay(state)}\n🔒 Your session is stored separately from other TelePilot users.`, { reply_markup: new InlineKeyboard().text("🔌 Disconnect account", "disconnect_account").row().text("⬅️ Back", "home") });
   }
+  if (connectService.hasActiveLogin?.(state.uid)) {
+    return ctx.editMessageText("👤 ACCOUNT\n\n⏳ A Telegram login is currently in progress for your TelePilot profile. Finish it in the browser, or cancel it and start again.", { reply_markup: new InlineKeyboard().text("🔄 Refresh", "account").row().text("✖️ Cancel login", "cancel_connect_login").row().text("⬅️ Back", "home") });
+  }
   const url = connectService.makeConnectUrl(state.uid);
   await ctx.editMessageText("👤 ACCOUNT\n\nConnect your Telegram account to your private TelePilot profile. Your session, groups, message and schedule are isolated from every other user.", { reply_markup: new InlineKeyboard().url("🔐 Connect account on this phone", url).row().text("⬅️ Back", "home") });
+});
+bot.callbackQuery("cancel_connect_login", async ctx => {
+  const state = stateFromCtx(ctx);
+  await ctx.answerCallbackQuery({ text: "Cancelling login…" });
+  await connectService.cancelUserLogins?.(state.uid);
+  const url = connectService.makeConnectUrl(state.uid);
+  await ctx.editMessageText("👤 ACCOUNT\n\nLogin cancelled. You can start a fresh account connection when you're ready.", { reply_markup: new InlineKeyboard().url("🔐 Connect account on this phone", url).row().text("⬅️ Back", "home") });
 });
 bot.callbackQuery("disconnect_account", async ctx => {
   await ctx.answerCallbackQuery();
@@ -424,7 +443,7 @@ bot.callbackQuery("disconnect_confirm", async ctx => {
   if (state.client) { try { await state.client.logOut(); } catch {} try { await state.client.disconnect(); } catch {} }
   state.client = null;
   state.connectedUsername = null;
-  try { fs.rmSync(sessionDir(state.uid), { recursive: true, force: true }); } catch {}
+  removeStoredSession(state.uid);
   await showHome(ctx, state);
 });
 
@@ -494,13 +513,16 @@ bot.callbackQuery("start", async ctx => {
   if (state.posting) return ctx.answerCallbackQuery({ text: "TelePilot is already running." });
   if (!state.adMessage) return ctx.answerCallbackQuery({ text: "Set an ad message first.", show_alert: true });
   if (!state.groups.length) return ctx.answerCallbackQuery({ text: "Add at least one authorized group first.", show_alert: true });
+  if (connectService.hasActiveLogin?.(state.uid)) return ctx.answerCallbackQuery({ text: "Finish or cancel your Telegram login first.", show_alert: true });
   await ctx.answerCallbackQuery(state.client ? {} : { text: "Checking your Telegram account…" });
   await ensureSession(state);
   if (!state.client || !state.connectedUsername) { await autoDeleteNotice(state.uid, "Connect your Telegram account first."); return showHome(ctx, state); }
   await ctx.editMessageText(`▶️ START TELEPILOT\n\nDestinations: ${state.groups.length}\nInterval: ${formatInterval(state.intervalMinutes)}\n\nTelePilot will post once immediately, then continue on your selected interval.`, { reply_markup: new InlineKeyboard().text("▶️ Confirm start", "start_confirm").row().text("⬅️ Cancel", "home") });
 });
 bot.callbackQuery("start_confirm", async ctx => {
-  const state = stateFromCtx(ctx); await ctx.answerCallbackQuery({ text: "Starting…" }); await ensureSession(state);
+  const state = stateFromCtx(ctx); await ctx.answerCallbackQuery({ text: "Starting…" });
+  if (connectService.hasActiveLogin?.(state.uid)) return showHome(ctx, state);
+  await ensureSession(state);
   if (!state.client || !state.connectedUsername || !state.adMessage || !state.groups.length) return showHome(ctx, state);
   startPostingLoop(state); await showHome(ctx, state);
 });
@@ -531,7 +553,7 @@ bot.on("message:text", async ctx => {
 const idleSweep = setInterval(() => {
   const cutoff = Date.now() - IDLE_STATE_MS;
   for (const [key, state] of states) {
-    if (state.posting || state.awaiting || state.restorePromise || state.cyclePromise || state.lastTouchedAt > cutoff) continue;
+    if (state.posting || state.awaiting || state.restorePromise || state.cyclePromise || connectService.hasActiveLogin?.(state.uid) || state.lastTouchedAt > cutoff) continue;
     const client = state.client;
     state.client = null;
     state.connectedUsername = null;
