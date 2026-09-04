@@ -12,7 +12,7 @@ const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = process.env.PUBLIC_URL || "https://telepilot-lite-production.up.railway.app";
-const INTERVAL_VALUES = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
+const INTERVAL_VALUES = [1, 5, 10, 15, 30, 45, 60, 90, 120];
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!API_ID) throw new Error("Missing API_ID");
@@ -504,18 +504,27 @@ bot.callbackQuery("clear_groups_confirm", async (ctx) => {
 bot.callbackQuery("interval", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  const chatId = ctx.chat?.id;
-  const messageId = ctx.callbackQuery.message?.message_id;
-  if (!chatId || !messageId) return;
-  const url = connectService.makeIntervalUrl(ctx.from.id, chatId, messageId);
   const keyboard = new InlineKeyboard()
-    .url("🎚 Open interval slider", url).row()
+    .text("1m", "i1").text("5m", "i5").text("10m", "i10").row()
+    .text("15m", "i15").text("30m", "i30").text("45m", "i45").row()
+    .text("1h", "i60").text("1h 30m", "i90").text("2h", "i120").row()
     .text("⬅️ Back", "home");
   await ctx.editMessageText(
-    `⏱ INTERVAL\n\nCurrent: ${formatInterval(intervalMinutes)}\n\nOpen the slider to choose from 1 minute up to 24 hours. Saving there updates this dashboard automatically.`,
+    `⏱ INTERVAL\n\nCurrent: ${formatInterval(intervalMinutes)}\n\nChoose how often TelePilot should post:`,
     { reply_markup: keyboard },
   );
 });
+
+for (const minutes of INTERVAL_VALUES) {
+  bot.callbackQuery(`i${minutes}`, async (ctx) => {
+    if (!isOwner(ctx)) return;
+    intervalMinutes = minutes;
+    saveSettings();
+    if (posting) scheduleNextCycle();
+    await ctx.answerCallbackQuery({ text: `Interval set to ${formatInterval(minutes)}` });
+    await showHome(ctx);
+  });
+}
 
 bot.callbackQuery("activity", async (ctx) => {
   await ctx.answerCallbackQuery();
