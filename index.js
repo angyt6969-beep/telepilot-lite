@@ -1,32 +1,102 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Bot, InlineKeyboard } from "grammy";
 import { TelegramClient } from "teleproto";
-import { StringSession } from "teleproto/sessions/index.js";
+import { StoreSession } from "teleproto/sessions/index.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
+const DATA_DIR = process.env.DATA_DIR || "/data";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!API_ID) throw new Error("Missing API_ID");
 if (!API_HASH) throw new Error("Missing API_HASH");
 
-const bot = new Bot(BOT_TOKEN);
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-let ownerId = process.env.OWNER_ID ? Number(process.env.OWNER_ID) : null;
+const SETTINGS_FILE = path.join(DATA_DIR, "telepilot-settings.json");
+const sessionDirectory = path.join(DATA_DIR, "telepilot-user-session");
+const SESSION_NAME = path.relative(process.cwd(), sessionDirectory) || "telepilot-user-session";
+
+function loadSettings() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+  } catch (err) {
+    console.error("Failed to load settings:", err?.message || err);
+    return {};
+  }
+}
+
+const saved = loadSettings();
+
+let ownerId = process.env.OWNER_ID
+  ? Number(process.env.OWNER_ID)
+  : (Number(saved.ownerId) || null);
 let userClient = null;
 let connectedUsername = null;
-let adMessage = "";
-let groups = [];
-let intervalMinutes = 30;
+let adMessage = typeof saved.adMessage === "string" ? saved.adMessage : "";
+let groups = Array.isArray(saved.groups) ? saved.groups.filter((x) => typeof x === "string") : [];
+let intervalMinutes = [15, 30, 60, 120].includes(Number(saved.intervalMinutes))
+  ? Number(saved.intervalMinutes)
+  : 30;
 let postingTimer = null;
 let posting = false;
 let awaiting = null;
 let qrLoginRunning = false;
 
+function saveSettings() {
+  const payload = {
+    ownerId,
+    adMessage,
+    groups,
+    intervalMinutes,
+  };
+
+  const temp = `${SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  fs.renameSync(temp, SETTINGS_FILE);
+}
+
+const bot = new Bot(BOT_TOKEN);
+
+function createUserClient() {
+  return new TelegramClient(new StoreSession(SESSION_NAME), API_ID, API_HASH, {
+    connectionRetries: 5,
+  });
+}
+
+async function restoreUserSession() {
+  const client = createUserClient();
+
+  try {
+    await client.connect();
+    if (!(await client.checkAuthorization())) {
+      await client.disconnect();
+      return;
+    }
+
+    const me = await client.getMe();
+    userClient = client;
+    connectedUsername = me?.username || String(me?.id || "connected");
+    console.log(`Restored Telegram account ${me?.username ? `@${me.username}` : "session"}`);
+  } catch (err) {
+    console.error("Could not restore Telegram session:", err?.message || err);
+    try { await client.disconnect(); } catch {}
+  }
+}
+
 function isOwner(ctx) {
   const id = ctx.from?.id;
   if (!id) return false;
-  if (!ownerId) ownerId = id;
+
+  if (!ownerId) {
+    ownerId = id;
+    saveSettings();
+    console.log(`TelePilot owner locked to Telegram user ${id}`);
+  }
+
   return id === ownerId;
 }
 
@@ -74,6 +144,7 @@ function normalizeTarget(input) {
 
 async function sendCycle() {
   if (!posting || !userClient || !adMessage || groups.length === 0) return;
+
   for (const target of groups) {
     if (!posting) break;
     try {
@@ -104,17 +175,31 @@ async function connectAccount(ctx) {
     return;
   }
 
+  if (userClient && connectedUsername) {
+    await ctx.reply(`✅ Already connected as @${connectedUsername}. The session is saved persistently.`);
+    return;
+  }
+
   qrLoginRunning = true;
   let loginMessageId = null;
   let loginChatId = null;
-
-  const client = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
-    connectionRetries: 5,
-  });
+  const client = createUserClient();
 
   try {
     await client.connect();
-    await ctx.reply("🔐 Opening Telegram account connection…\n\nTelegram refreshes this login token automatically. You will now see only one login button.");
+
+    if (await client.checkAuthorization()) {
+      const me = await client.getMe();
+      userClient = client;
+      connectedUsername = me?.username || String(me?.id || "connected");
+      await ctx.reply(`✅ Restored ${me?.username ? `@${me.username}` : "your Telegram account"}.`);
+      await showHome(ctx);
+      return;
+    }
+
+    await ctx.reply(
+      "🔐 ONE-TIME ACCOUNT CONNECTION\n\nUse another Telegram device that is already signed into this account to approve the login once. After that, TelePilot remembers the session across Railway restarts and deploys.",
+    );
 
     const me = await client.signInUserWithQrCode(
       { apiId: API_ID, apiHash: API_HASH },
@@ -124,7 +209,7 @@ async function connectAccount(ctx) {
           const keyboard = new InlineKeyboard().url("✅ Connect this Telegram account", url);
 
           if (!loginMessageId) {
-            const sent = await ctx.reply("Tap to connect your Telegram account:", {
+            const sent = await ctx.reply("Open this from the device you are using for the login flow:", {
               reply_markup: keyboard,
             });
             loginMessageId = sent.message_id;
@@ -143,24 +228,26 @@ async function connectAccount(ctx) {
           console.error("QR login error:", err?.message || err);
           return false;
         },
-      }
+      },
     );
 
     userClient = client;
     connectedUsername = me?.username || String(me?.id || "connected");
-    await ctx.reply(`✅ Connected as ${me?.username ? `@${me.username}` : "your Telegram account"}.`);
+    await ctx.reply(
+      `✅ Connected as ${me?.username ? `@${me.username}` : "your Telegram account"}.\n\n🔒 This login is now saved on TelePilot's persistent Railway storage.`,
+    );
     await showHome(ctx);
   } catch (err) {
     console.error("Account connection failed:", err);
     try { await client.disconnect(); } catch {}
-    await ctx.reply("❌ Account connection failed. We can switch this to a one-phone login page next so you don't need a second device.");
+    await ctx.reply("❌ Account connection failed. Tap Account → Connect account and try the one-time approval again.");
   } finally {
     qrLoginRunning = false;
   }
 }
 
 bot.command("start", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🔒 This Telepilot bot is private.");
+  if (!isOwner(ctx)) return ctx.reply("🔒 This TelePilot bot is private.");
   awaiting = null;
   await showHome(ctx);
 });
@@ -175,11 +262,13 @@ bot.callbackQuery("home", async (ctx) => {
 bot.callbackQuery("account", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
+
   const keyboard = new InlineKeyboard()
-    .text(connectedUsername ? "🔄 Reconnect" : "➕ Connect account", "connect_account").row()
+    .text(connectedUsername ? "✅ Account connected" : "➕ Connect account", "connect_account").row()
     .text("⬅️ Back", "home");
+
   await ctx.editMessageText(
-    `👤 ACCOUNT\n\n${connectedUsername ? `Connected: @${connectedUsername}` : "No account connected."}`,
+    `👤 ACCOUNT\n\n${connectedUsername ? `Connected: @${connectedUsername}\nSession: ✅ Saved` : "No account connected.\n\nConnection only needs to be completed once because the session is saved persistently."}`,
     { reply_markup: keyboard },
   );
 });
@@ -229,6 +318,7 @@ bot.callbackQuery("clear_groups", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
   groups = [];
+  saveSettings();
   await showHome(ctx);
 });
 
@@ -248,6 +338,7 @@ for (const minutes of [15, 30, 60, 120]) {
     await ctx.answerCallbackQuery({ text: `Set to ${minutes} min` });
     if (!isOwner(ctx)) return;
     intervalMinutes = minutes;
+    saveSettings();
     if (posting) startPostingLoop();
     await showHome(ctx);
   });
@@ -276,7 +367,8 @@ bot.on("message:text", async (ctx) => {
   if (awaiting === "message") {
     adMessage = ctx.message.text;
     awaiting = null;
-    await ctx.reply("✅ Message saved for this running session.");
+    saveSettings();
+    await ctx.reply("✅ Message saved.");
     return showHome(ctx);
   }
 
@@ -285,6 +377,7 @@ bot.on("message:text", async (ctx) => {
     if (!target) return ctx.reply("I couldn't read that. Send an @username or a t.me/username link.");
     if (!groups.includes(target)) groups.push(target);
     awaiting = null;
+    saveSettings();
     await ctx.reply(`✅ Added ${target}`);
     return showHome(ctx);
   }
@@ -294,7 +387,8 @@ bot.catch((err) => console.error("Bot error:", err.error));
 process.once("SIGINT", () => bot.stop());
 process.once("SIGTERM", () => bot.stop());
 
-console.log("Telepilot Lite starting…");
+console.log("TelePilot Lite starting…");
+await restoreUserSession();
 await bot.start({
   onStart: (info) => console.log(`Control bot running as @${info.username}`),
 });
