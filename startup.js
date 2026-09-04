@@ -8,12 +8,12 @@ const profileBot = new Bot(BOT_TOKEN);
 const description = [
   "👋 Welcome to TelePilot",
   "",
-  "Automate your Telegram posting, manage your account, groups and message, choose an interval, and run everything from one simple dashboard. ✈️",
+  "Automate Telegram posting with access keys, saved messages, group/channel destinations and scheduled intervals — all from one simple dashboard. ✈️",
   "",
   "Tap Start to get started.",
 ].join("\n");
 
-const shortDescription = "Automate Telegram posting from one simple dashboard ✈️";
+const shortDescription = "Scheduled Telegram posting from one simple dashboard ✈️";
 
 try {
   await profileBot.api.raw.setMyDescription({ description });
