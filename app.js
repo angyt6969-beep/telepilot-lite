@@ -12,6 +12,7 @@ const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = process.env.PUBLIC_URL || "https://telepilot-lite-production.up.railway.app";
+const INTERVAL_VALUES = [1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!API_ID) throw new Error("Missing API_ID");
@@ -38,7 +39,7 @@ let connectedUsername = null;
 let adMessage = typeof saved.adMessage === "string" ? saved.adMessage : "";
 let adEntities = Array.isArray(saved.adEntities) ? saved.adEntities : [];
 let groups = Array.isArray(saved.groups) ? saved.groups.filter((x) => typeof x === "string") : [];
-let intervalMinutes = [15, 30, 60, 120].includes(Number(saved.intervalMinutes)) ? Number(saved.intervalMinutes) : 30;
+let intervalMinutes = INTERVAL_VALUES.includes(Number(saved.intervalMinutes)) ? Number(saved.intervalMinutes) : 30;
 let totalSent = Number.isFinite(Number(saved.totalSent)) ? Number(saved.totalSent) : 0;
 let lastRunAt = Number.isFinite(Number(saved.lastRunAt)) ? Number(saved.lastRunAt) : null;
 let lastCycleSuccess = Number.isFinite(Number(saved.lastCycleSuccess)) ? Number(saved.lastCycleSuccess) : 0;
@@ -75,6 +76,13 @@ function createUserClient() {
 function accountDisplay() {
   if (!connectedUsername) return "Not connected";
   return /^\d+$/.test(String(connectedUsername)) ? "Connected" : `@${connectedUsername}`;
+}
+
+function formatInterval(minutes) {
+  const value = Number(minutes);
+  if (value < 60) return `${value} min`;
+  if (value % 60 === 0) return `${value / 60}h`;
+  return `${Math.floor(value / 60)}h ${value % 60}m`;
 }
 
 function sanitizeBotEntities(entities = []) {
@@ -188,6 +196,18 @@ const connectService = createConnectService({
     connectedUsername = me?.username || String(me?.id || "connected");
     await autoDeleteNotice(ownerId, `✅ Connected${me?.username ? ` as @${me.username}` : ""}. Open /start to continue.`, 12000);
   },
+  getIntervalMinutes: async (uid) => {
+    if (!ownerId || Number(uid) !== Number(ownerId)) throw new Error("Not authorized");
+    return intervalMinutes;
+  },
+  onIntervalChanged: async (uid, minutes, chatId, messageId) => {
+    if (!ownerId || Number(uid) !== Number(ownerId)) throw new Error("Not authorized");
+    if (!INTERVAL_VALUES.includes(Number(minutes))) throw new Error("Unsupported interval");
+    intervalMinutes = Number(minutes);
+    saveSettings();
+    if (posting) scheduleNextCycle();
+    await editDashboard(chatId, messageId);
+  },
 });
 connectService.listen(PORT);
 
@@ -226,7 +246,8 @@ function formatUntil(timestamp) {
   if (!timestamp || !posting) return "—";
   const seconds = Math.max(0, Math.ceil((timestamp - Date.now()) / 1000));
   if (seconds < 60) return "<1 min";
-  return `${Math.ceil(seconds / 60)} min`;
+  const minutes = Math.ceil(seconds / 60);
+  return formatInterval(minutes);
 }
 
 function dashboard() {
@@ -238,7 +259,7 @@ function dashboard() {
     `👤 Account: ${accountDisplay()}`,
     `📝 Message: ${adMessage ? `✅ Set (${adMessage.length} chars)` : "❌ Not set"}`,
     `👥 Groups: ${groups.length}`,
-    `⏱ Interval: ${intervalMinutes} min`,
+    `⏱ Interval: ${formatInterval(intervalMinutes)}`,
     posting ? `⏳ Next post: ${formatUntil(nextRunAt)}` : null,
   ].filter(Boolean).join("\n");
 }
@@ -483,20 +504,18 @@ bot.callbackQuery("clear_groups_confirm", async (ctx) => {
 bot.callbackQuery("interval", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  const keyboard = new InlineKeyboard().text("15m", "i15").text("30m", "i30").text("1h", "i60").text("2h", "i120").row().text("⬅️ Back", "home");
-  await ctx.editMessageText(`⏱ INTERVAL\n\nCurrent: ${intervalMinutes} minutes\n\nChanging the interval while running will reset the countdown without sending an extra post immediately.`, { reply_markup: keyboard });
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.callbackQuery.message?.message_id;
+  if (!chatId || !messageId) return;
+  const url = connectService.makeIntervalUrl(ctx.from.id, chatId, messageId);
+  const keyboard = new InlineKeyboard()
+    .url("🎚 Open interval slider", url).row()
+    .text("⬅️ Back", "home");
+  await ctx.editMessageText(
+    `⏱ INTERVAL\n\nCurrent: ${formatInterval(intervalMinutes)}\n\nOpen the slider to choose from 1 minute up to 24 hours. Saving there updates this dashboard automatically.`,
+    { reply_markup: keyboard },
+  );
 });
-
-for (const minutes of [15, 30, 60, 120]) {
-  bot.callbackQuery(`i${minutes}`, async (ctx) => {
-    await ctx.answerCallbackQuery({ text: `Set to ${minutes} min` });
-    if (!isOwner(ctx)) return;
-    intervalMinutes = minutes;
-    saveSettings();
-    if (posting) scheduleNextCycle();
-    await showHome(ctx);
-  });
-}
 
 bot.callbackQuery("activity", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -522,7 +541,7 @@ bot.callbackQuery("start", async (ctx) => {
   await ctx.answerCallbackQuery();
   const keyboard = new InlineKeyboard().text("▶️ Confirm start", "start_confirm").row().text("⬅️ Cancel", "home");
   await ctx.editMessageText(
-    `▶️ START TELEPILOT\n\nDestinations: ${groups.length}\nInterval: ${intervalMinutes} min\n\nTelePilot will post once immediately, then continue on the selected interval.`,
+    `▶️ START TELEPILOT\n\nDestinations: ${groups.length}\nInterval: ${formatInterval(intervalMinutes)}\n\nTelePilot will post once immediately, then continue on the selected interval.`,
     { reply_markup: keyboard },
   );
 });
