@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from "grammy";
+import QRCode from "qrcode";
 import { TelegramClient } from "teleproto";
 import { StoreSession } from "teleproto/sessions/index.js";
 
@@ -31,30 +32,21 @@ function loadSettings() {
 
 const saved = loadSettings();
 
-let ownerId = process.env.OWNER_ID
-  ? Number(process.env.OWNER_ID)
-  : (Number(saved.ownerId) || null);
+let ownerId = process.env.OWNER_ID ? Number(process.env.OWNER_ID) : (Number(saved.ownerId) || null);
 let userClient = null;
 let connectedUsername = null;
 let adMessage = typeof saved.adMessage === "string" ? saved.adMessage : "";
 let groups = Array.isArray(saved.groups) ? saved.groups.filter((x) => typeof x === "string") : [];
-let intervalMinutes = [15, 30, 60, 120].includes(Number(saved.intervalMinutes))
-  ? Number(saved.intervalMinutes)
-  : 30;
+let intervalMinutes = [15, 30, 60, 120].includes(Number(saved.intervalMinutes)) ? Number(saved.intervalMinutes) : 30;
 let postingTimer = null;
 let posting = false;
 let awaiting = null;
 let qrLoginRunning = false;
 let loginAbortController = null;
+let loginStatus = null;
 
 function saveSettings() {
-  const payload = {
-    ownerId,
-    adMessage,
-    groups,
-    intervalMinutes,
-  };
-
+  const payload = { ownerId, adMessage, groups, intervalMinutes };
   const temp = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(payload, null, 2), { mode: 0o600 });
   fs.renameSync(temp, SETTINGS_FILE);
@@ -70,14 +62,12 @@ function createUserClient() {
 
 async function restoreUserSession() {
   const client = createUserClient();
-
   try {
     await client.connect();
     if (!(await client.checkAuthorization())) {
       await client.disconnect();
       return;
     }
-
     const me = await client.getMe();
     userClient = client;
     connectedUsername = me?.username || String(me?.id || "connected");
@@ -91,13 +81,11 @@ async function restoreUserSession() {
 function isOwner(ctx) {
   const id = ctx.from?.id;
   if (!id) return false;
-
   if (!ownerId) {
     ownerId = id;
     saveSettings();
     console.log(`TelePilot owner locked to Telegram user ${id}`);
   }
-
   return id === ownerId;
 }
 
@@ -145,7 +133,6 @@ function normalizeTarget(input) {
 
 async function sendCycle() {
   if (!posting || !userClient || !adMessage || groups.length === 0) return;
-
   for (const target of groups) {
     if (!posting) break;
     try {
@@ -170,20 +157,55 @@ function stopPostingLoop() {
   postingTimer = null;
 }
 
+function accountKeyboard() {
+  const keyboard = new InlineKeyboard();
+  if (connectedUsername) {
+    keyboard.text("✅ Connected", "account_status").row();
+  } else if (qrLoginRunning) {
+    keyboard.text("✖️ Cancel login", "cancel_login").row();
+  } else {
+    keyboard.text("➕ Connect account", "connect_account").row();
+  }
+  return keyboard.text("⬅️ Back", "home");
+}
+
+async function safeEditLoginMedia(media, replyMarkup) {
+  if (!loginStatus) return;
+  try {
+    await bot.api.editMessageMedia(
+      loginStatus.chatId,
+      loginStatus.messageId,
+      media,
+      { reply_markup: replyMarkup },
+    );
+  } catch (err) {
+    console.error("Failed to refresh QR card:", err?.message || err);
+  }
+}
+
+async function safeEditLoginCaption(caption, replyMarkup) {
+  if (!loginStatus) return;
+  try {
+    await bot.api.editMessageCaption(loginStatus.chatId, loginStatus.messageId, {
+      caption,
+      reply_markup: replyMarkup,
+    });
+  } catch (err) {
+    console.error("Failed to update login card:", err?.message || err);
+  }
+}
+
 async function connectAccount(ctx) {
   if (qrLoginRunning) {
-    await ctx.reply("A login is already in progress.");
+    await ctx.reply("⏳ A Telegram login is already in progress.");
     return;
   }
-
   if (userClient && connectedUsername) {
-    await ctx.reply(`✅ Already connected as @${connectedUsername}. The session is saved persistently.`);
+    await ctx.reply(`✅ Already connected as @${connectedUsername}.`);
     return;
   }
 
   qrLoginRunning = true;
-  let loginMessageId = null;
-  let loginChatId = null;
   const client = createUserClient();
   const abortController = new AbortController();
   loginAbortController = abortController;
@@ -196,37 +218,41 @@ async function connectAccount(ctx) {
       const me = await client.getMe();
       userClient = client;
       connectedUsername = me?.username || String(me?.id || "connected");
-      await ctx.reply(`✅ Restored ${me?.username ? `@${me.username}` : "your Telegram account"}.`);
-      await showHome(ctx);
+      await ctx.reply(`✅ Connected as ${me?.username ? `@${me.username}` : "your Telegram account"}.`);
       return;
     }
 
-    await ctx.reply(
-      "🔐 ONE-TIME ACCOUNT CONNECTION\n\nUse another Telegram device that is already signed into this account to approve the login once. After that, TelePilot remembers the session across Railway restarts and deploys.\n\nThis login attempt expires after 2 minutes and will not block the rest of the bot.",
+    const placeholder = Buffer.from(
+      await QRCode.toBuffer("tg://login", { type: "png", width: 420, margin: 2, errorCorrectionLevel: "M" }),
     );
+    const firstKeyboard = new InlineKeyboard().text("✖️ Cancel", "cancel_login");
+    const sent = await ctx.replyWithPhoto(new InputFile(placeholder, "telepilot-login.png"), {
+      caption: "🔐 CONNECT TELEGRAM\n\nPreparing your one-time login QR…",
+      reply_markup: firstKeyboard,
+    });
+    loginStatus = { chatId: sent.chat.id, messageId: sent.message_id };
 
     const me = await client.signInUserWithQrCode(
       { apiId: API_ID, apiHash: API_HASH },
       {
         qrCode: async ({ token }) => {
           const url = `tg://login?token=${token.toString("base64url")}`;
-          const keyboard = new InlineKeyboard().url("✅ Connect this Telegram account", url);
-
-          if (!loginMessageId) {
-            const sent = await ctx.reply("Open this from the device you are using for the login flow:", {
-              reply_markup: keyboard,
-            });
-            loginMessageId = sent.message_id;
-            loginChatId = sent.chat.id;
-          } else {
-            try {
-              await bot.api.editMessageReplyMarkup(loginChatId, loginMessageId, {
-                reply_markup: keyboard,
-              });
-            } catch (err) {
-              console.error("Failed to refresh login button:", err?.message || err);
-            }
-          }
+          const png = await QRCode.toBuffer(url, {
+            type: "png",
+            width: 520,
+            margin: 2,
+            errorCorrectionLevel: "M",
+          });
+          const keyboard = new InlineKeyboard().text("✖️ Cancel", "cancel_login");
+          const media = InputMediaBuilder.photo(new InputFile(png, "telepilot-login.png"), {
+            caption:
+              "🔐 CONNECT TELEGRAM\n\n" +
+              "On another device already signed into this Telegram account:\n" +
+              "Settings → Devices → Link Desktop Device → scan this QR.\n\n" +
+              "✅ TelePilot finishes automatically after approval.\n" +
+              "⏳ Login expires after 2 minutes.",
+          });
+          await safeEditLoginMedia(media, keyboard);
         },
         onError: async (err) => {
           console.error("QR login error:", err?.message || err);
@@ -238,18 +264,24 @@ async function connectAccount(ctx) {
 
     userClient = client;
     connectedUsername = me?.username || String(me?.id || "connected");
-    await ctx.reply(
-      `✅ Connected as ${me?.username ? `@${me.username}` : "your Telegram account"}.\n\n🔒 This login is now saved on TelePilot's persistent Railway storage.`,
+    await safeEditLoginCaption(
+      `✅ CONNECTED\n\n${me?.username ? `@${me.username}` : "Telegram account"}\n\n🔒 Session saved. You do not need to reconnect after normal restarts or deploys.`,
+      new InlineKeyboard().text("⬅️ Back to account", "account"),
     );
-    await showHome(ctx);
   } catch (err) {
     console.error("Account connection failed:", err?.message || err);
     try { await client.disconnect(); } catch {}
 
     if (err?.name === "AbortError") {
-      await ctx.reply("⌛ Account login expired. The rest of TelePilot is still working; tap Account → Connect account when you're ready to try again.");
+      await safeEditLoginCaption(
+        "⌛ LOGIN ENDED\n\nThe login was cancelled or expired. No account was connected.",
+        new InlineKeyboard().text("🔄 Try again", "connect_account").row().text("⬅️ Back", "account"),
+      );
     } else {
-      await ctx.reply("❌ Account connection failed. Tap Account → Connect account and try the one-time approval again.");
+      await safeEditLoginCaption(
+        "❌ LOGIN FAILED\n\nTelegram could not complete the account connection. You can safely try again.",
+        new InlineKeyboard().text("🔄 Try again", "connect_account").row().text("⬅️ Back", "account"),
+      );
     }
   } finally {
     clearTimeout(timeout);
@@ -274,23 +306,28 @@ bot.callbackQuery("home", async (ctx) => {
 bot.callbackQuery("account", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
+  const text = connectedUsername
+    ? `👤 ACCOUNT\n\n✅ Connected: @${connectedUsername}\n🔒 Session: Saved`
+    : qrLoginRunning
+      ? "👤 ACCOUNT\n\n⏳ Telegram login is waiting for approval."
+      : "👤 ACCOUNT\n\nNo account connected.\n\nConnection is one-time; the session is saved after approval.";
+  await ctx.editMessageText(text, { reply_markup: accountKeyboard() });
+});
 
-  const keyboard = new InlineKeyboard()
-    .text(connectedUsername ? "✅ Account connected" : "➕ Connect account", "connect_account").row()
-    .text("⬅️ Back", "home");
-
-  await ctx.editMessageText(
-    `👤 ACCOUNT\n\n${connectedUsername ? `Connected: @${connectedUsername}\nSession: ✅ Saved` : "No account connected.\n\nConnection only needs to be completed once because the session is saved persistently."}`,
-    { reply_markup: keyboard },
-  );
+bot.callbackQuery("account_status", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: connectedUsername ? `Connected as @${connectedUsername}` : "Not connected" });
 });
 
 bot.callbackQuery("connect_account", async (ctx) => {
   await ctx.answerCallbackQuery();
   if (!isOwner(ctx)) return;
-  void connectAccount(ctx).catch((err) => {
-    console.error("Background account login failed:", err?.message || err);
-  });
+  void connectAccount(ctx).catch((err) => console.error("Background account login failed:", err?.message || err));
+});
+
+bot.callbackQuery("cancel_login", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Cancelling login…" });
+  if (!isOwner(ctx)) return;
+  if (loginAbortController) loginAbortController.abort();
 });
 
 bot.callbackQuery("message", async (ctx) => {
@@ -342,9 +379,7 @@ bot.callbackQuery("interval", async (ctx) => {
   const keyboard = new InlineKeyboard()
     .text("15m", "i15").text("30m", "i30").text("1h", "i60").text("2h", "i120").row()
     .text("⬅️ Back", "home");
-  await ctx.editMessageText(`⏱ INTERVAL\n\nCurrent: ${intervalMinutes} minutes`, {
-    reply_markup: keyboard,
-  });
+  await ctx.editMessageText(`⏱ INTERVAL\n\nCurrent: ${intervalMinutes} minutes`, { reply_markup: keyboard });
 });
 
 for (const minutes of [15, 30, 60, 120]) {
@@ -377,7 +412,6 @@ bot.callbackQuery("stop", async (ctx) => {
 
 bot.on("message:text", async (ctx) => {
   if (!isOwner(ctx) || !awaiting) return;
-
   if (awaiting === "message") {
     adMessage = ctx.message.text;
     awaiting = null;
@@ -385,7 +419,6 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply("✅ Message saved.");
     return showHome(ctx);
   }
-
   if (awaiting === "group") {
     const target = normalizeTarget(ctx.message.text);
     if (!target) return ctx.reply("I couldn't read that. Send an @username or a t.me/username link.");
@@ -403,6 +436,4 @@ process.once("SIGTERM", () => bot.stop());
 
 console.log("TelePilot Lite starting…");
 await restoreUserSession();
-await bot.start({
-  onStart: (info) => console.log(`Control bot running as @${info.username}`),
-});
+await bot.start({ onStart: (info) => console.log(`Control bot running as @${info.username}`) });
