@@ -54,11 +54,8 @@ function dashboard() {
 async function showHome(ctx) {
   const options = { reply_markup: mainKeyboard() };
   try {
-    if (ctx.callbackQuery?.message) {
-      await ctx.editMessageText(dashboard(), options);
-    } else {
-      await ctx.reply(dashboard(), options);
-    }
+    if (ctx.callbackQuery?.message) await ctx.editMessageText(dashboard(), options);
+    else await ctx.reply(dashboard(), options);
   } catch {
     await ctx.reply(dashboard(), options);
   }
@@ -77,7 +74,6 @@ function normalizeTarget(input) {
 
 async function sendCycle() {
   if (!posting || !userClient || !adMessage || groups.length === 0) return;
-
   for (const target of groups) {
     if (!posting) break;
     try {
@@ -109,13 +105,16 @@ async function connectAccount(ctx) {
   }
 
   qrLoginRunning = true;
+  let loginMessageId = null;
+  let loginChatId = null;
+
   const client = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
     connectionRetries: 5,
   });
 
   try {
     await client.connect();
-    await ctx.reply("🔐 Opening Telegram account connection…\n\nTap the newest login button below and approve the new session in Telegram.");
+    await ctx.reply("🔐 Opening Telegram account connection…\n\nTelegram refreshes this login token automatically. You will now see only one login button.");
 
     const me = await client.signInUserWithQrCode(
       { apiId: API_ID, apiHash: API_HASH },
@@ -123,7 +122,22 @@ async function connectAccount(ctx) {
         qrCode: async ({ token }) => {
           const url = `tg://login?token=${token.toString("base64url")}`;
           const keyboard = new InlineKeyboard().url("✅ Connect this Telegram account", url);
-          await ctx.reply("This login link expires quickly. Tap it now:", { reply_markup: keyboard });
+
+          if (!loginMessageId) {
+            const sent = await ctx.reply("Tap to connect your Telegram account:", {
+              reply_markup: keyboard,
+            });
+            loginMessageId = sent.message_id;
+            loginChatId = sent.chat.id;
+          } else {
+            try {
+              await bot.api.editMessageReplyMarkup(loginChatId, loginMessageId, {
+                reply_markup: keyboard,
+              });
+            } catch (err) {
+              console.error("Failed to refresh login button:", err?.message || err);
+            }
+          }
         },
         onError: async (err) => {
           console.error("QR login error:", err?.message || err);
@@ -139,7 +153,7 @@ async function connectAccount(ctx) {
   } catch (err) {
     console.error("Account connection failed:", err);
     try { await client.disconnect(); } catch {}
-    await ctx.reply("❌ Account connection failed. If your account uses Telegram 2-step verification, this Lite login flow may need one extra step. Try again first; if it repeats, send me the exact error from Railway logs.");
+    await ctx.reply("❌ Account connection failed. We can switch this to a one-phone login page next so you don't need a second device.");
   } finally {
     qrLoginRunning = false;
   }
@@ -164,7 +178,10 @@ bot.callbackQuery("account", async (ctx) => {
   const keyboard = new InlineKeyboard()
     .text(connectedUsername ? "🔄 Reconnect" : "➕ Connect account", "connect_account").row()
     .text("⬅️ Back", "home");
-  await ctx.editMessageText(`👤 ACCOUNT\n\n${connectedUsername ? `Connected: @${connectedUsername}` : "No account connected."}`, { reply_markup: keyboard });
+  await ctx.editMessageText(
+    `👤 ACCOUNT\n\n${connectedUsername ? `Connected: @${connectedUsername}` : "No account connected."}`,
+    { reply_markup: keyboard },
+  );
 });
 
 bot.callbackQuery("connect_account", async (ctx) => {
@@ -178,7 +195,10 @@ bot.callbackQuery("message", async (ctx) => {
   if (!isOwner(ctx)) return;
   awaiting = "message";
   const keyboard = new InlineKeyboard().text("⬅️ Cancel", "home");
-  await ctx.editMessageText(`📝 AD MESSAGE\n\n${adMessage ? `Current:\n${adMessage}\n\n` : ""}Send the new message to this bot now.`, { reply_markup: keyboard });
+  await ctx.editMessageText(
+    `📝 AD MESSAGE\n\n${adMessage ? `Current:\n${adMessage}\n\n` : ""}Send the new message to this bot now.`,
+    { reply_markup: keyboard },
+  );
 });
 
 bot.callbackQuery("groups", async (ctx) => {
@@ -188,7 +208,10 @@ bot.callbackQuery("groups", async (ctx) => {
   const keyboard = new InlineKeyboard()
     .text("➕ Add group", "add_group").text("🗑 Clear all", "clear_groups").row()
     .text("⬅️ Back", "home");
-  await ctx.editMessageText(`👥 GROUPS\n\n${list}\n\nOnly add groups/channels where this account is allowed to post.`, { reply_markup: keyboard });
+  await ctx.editMessageText(
+    `👥 GROUPS\n\n${list}\n\nOnly add groups/channels where this account is allowed to post.`,
+    { reply_markup: keyboard },
+  );
 });
 
 bot.callbackQuery("add_group", async (ctx) => {
@@ -196,7 +219,10 @@ bot.callbackQuery("add_group", async (ctx) => {
   if (!isOwner(ctx)) return;
   awaiting = "group";
   const keyboard = new InlineKeyboard().text("⬅️ Cancel", "home");
-  await ctx.editMessageText("➕ ADD GROUP\n\nSend a public @username or t.me link for a group/channel the connected account is already allowed to post in.", { reply_markup: keyboard });
+  await ctx.editMessageText(
+    "➕ ADD GROUP\n\nSend a public @username or t.me link for a group/channel the connected account is already allowed to post in.",
+    { reply_markup: keyboard },
+  );
 });
 
 bot.callbackQuery("clear_groups", async (ctx) => {
@@ -212,7 +238,9 @@ bot.callbackQuery("interval", async (ctx) => {
   const keyboard = new InlineKeyboard()
     .text("15m", "i15").text("30m", "i30").text("1h", "i60").text("2h", "i120").row()
     .text("⬅️ Back", "home");
-  await ctx.editMessageText(`⏱ INTERVAL\n\nCurrent: ${intervalMinutes} minutes`, { reply_markup: keyboard });
+  await ctx.editMessageText(`⏱ INTERVAL\n\nCurrent: ${intervalMinutes} minutes`, {
+    reply_markup: keyboard,
+  });
 });
 
 for (const minutes of [15, 30, 60, 120]) {
@@ -243,8 +271,7 @@ bot.callbackQuery("stop", async (ctx) => {
 });
 
 bot.on("message:text", async (ctx) => {
-  if (!isOwner(ctx)) return;
-  if (!awaiting) return;
+  if (!isOwner(ctx) || !awaiting) return;
 
   if (awaiting === "message") {
     adMessage = ctx.message.text;
@@ -264,7 +291,6 @@ bot.on("message:text", async (ctx) => {
 });
 
 bot.catch((err) => console.error("Bot error:", err.error));
-
 process.once("SIGINT", () => bot.stop());
 process.once("SIGTERM", () => bot.stop());
 
