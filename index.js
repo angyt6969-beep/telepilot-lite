@@ -1,6 +1,6 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { TelegramClient } from "teleproto";
-import { StringSession } from "teleproto/sessions";
+import { StringSession } from "teleproto/sessions/index.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_ID = Number(process.env.API_ID || 0);
