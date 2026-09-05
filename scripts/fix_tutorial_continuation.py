@@ -1,0 +1,176 @@
+from pathlib import Path
+
+app = Path('app.js')
+s = app.read_text()
+imp = 'import { advanceTutorialAfterAction } from "./onboarding.js";\n'
+if imp not in s:
+    anchor = 'import { StringSession } from "teleproto/sessions/index.js";\n'
+    if anchor not in s:
+        raise SystemExit('app import anchor missing')
+    s = s.replace(anchor, anchor + imp, 1)
+
+old_login = '''  try {
+    await bot.api.sendMessage(
+      attempt.uid,
+      `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\\n\\nTelePilot will now post using this personal account.`,
+      { reply_markup: new InlineKeyboard().text("✈️ Open TelePilot", "home") },
+    );
+  } catch {}
+'''
+new_login = '''  const tutorialScreen = advanceTutorialAfterAction(attempt.uid, 2, 3);
+  try {
+    if (tutorialScreen) {
+      await bot.api.sendMessage(
+        attempt.uid,
+        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\\n\\n${tutorialScreen.text}`,
+        { reply_markup: tutorialScreen.keyboard },
+      );
+    } else {
+      await bot.api.sendMessage(
+        attempt.uid,
+        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\\n\\nTelePilot will now post using this personal account.`,
+        { reply_markup: new InlineKeyboard().text("✈️ Open TelePilot", "home") },
+      );
+    }
+  } catch {}
+'''
+if old_login in s:
+    s = s.replace(old_login, new_login, 1)
+elif new_login not in s:
+    raise SystemExit('completeLogin block not found')
+
+old_message = '''    state.adMessage = ctx.message.text;
+    state.adEntities = sanitizeBotEntities(ctx.message.entities || []);
+    clearAwaiting(state);
+    saveState(state);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+    return;
+'''
+new_message = '''    state.adMessage = ctx.message.text;
+    state.adEntities = sanitizeBotEntities(ctx.message.entities || []);
+    clearAwaiting(state);
+    saveState(state);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 4, 5);
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+    return;
+'''
+if old_message in s:
+    s = s.replace(old_message, new_message, 1)
+elif new_message not in s:
+    raise SystemExit('message save block not found')
+
+old_group = '''    if (!state.groups.some(g => g.id === destination.id)) state.groups.push(destination);
+    clearAwaiting(state);
+    saveState(state);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+  }
+'''
+new_group = '''    if (!state.groups.some(g => g.id === destination.id)) state.groups.push(destination);
+    clearAwaiting(state);
+    saveState(state);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+  }
+'''
+if old_group in s:
+    s = s.replace(old_group, new_group, 1)
+elif new_group not in s:
+    raise SystemExit('destination save block not found')
+
+old_interval = '''    state.intervalMinutes = minutes;
+    saveState(state);
+    if (state.posting) scheduleNextCycle(state);
+    await ctx.answerCallbackQuery({ text: `Set to ${formatInterval(minutes)}` });
+    await showHome(ctx, state);
+'''
+new_interval = '''    state.intervalMinutes = minutes;
+    saveState(state);
+    if (state.posting) scheduleNextCycle(state);
+    await ctx.answerCallbackQuery({ text: `Set to ${formatInterval(minutes)}` });
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 5, 6);
+    if (tutorialScreen) {
+      await ctx.editMessageText(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard });
+      return;
+    }
+    await showHome(ctx, state);
+'''
+if old_interval in s:
+    s = s.replace(old_interval, new_interval, 1)
+elif new_interval not in s:
+    raise SystemExit('interval block not found')
+
+old_addhere = '''  await ctx.reply(`✅ ${destinationLabel(destination)} added to your TelePilot profile.`);
+});
+'''
+new_addhere = '''  await ctx.reply(`✅ ${destinationLabel(destination)} added to your TelePilot profile.`);
+  const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
+  if (tutorialScreen) {
+    try { await bot.api.sendMessage(state.uid, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); } catch {}
+  }
+});
+'''
+if old_addhere in s:
+    s = s.replace(old_addhere, new_addhere, 1)
+elif new_addhere not in s:
+    raise SystemExit('addhere continuation block not found')
+
+app.write_text(s)
+
+onb = Path('onboarding.js')
+o = onb.read_text()
+helper = '''export function advanceTutorialAfterAction(uid, expectedStep, nextStep) {
+  const id = String(uid || "");
+  if (!id) return null;
+  const current = onboardingState(id);
+  if (current.completed || current.step !== Number(expectedStep)) return null;
+  setTutorialStep(id, Number(nextStep));
+  return tutorialPage(id, Number(nextStep));
+}
+
+'''
+if helper not in o:
+    anchor = '''function tutorialPage(uid, page) {
+  if (Number(page) === 2) return setupPage2(uid);
+  if (Number(page) === 3) return setupPage3(uid);
+  if (Number(page) === 4) return setupPage4(uid);
+  if (Number(page) === 5) return setupPage5(uid);
+  if (Number(page) === 6) return setupPage6(uid);
+  if (Number(page) === 7) return setupPage7(uid);
+  return setupPage1(uid);
+}
+
+'''
+    if anchor not in o:
+        raise SystemExit('tutorialPage anchor missing')
+    o = o.replace(anchor, anchor + helper, 1)
+old_copy = 'The tutorial is interactive: each step opens the real TelePilot control you need. If you leave the tutorial to configure something, send /start afterward and TelePilot will resume from the same step.'
+new_copy = 'The tutorial is interactive: each step opens the real TelePilot control you need. TelePilot will continue the tutorial automatically after setup actions; if anything is interrupted, /start resumes your saved step.'
+if old_copy in o:
+    o = o.replace(old_copy, new_copy, 1)
+onb.write_text(o)
+
+Path('onboarding-continuation-test.mjs').write_text('''import fs from "node:fs";\nimport path from "node:path";\nimport os from "node:os";\nconst root = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-onboarding-"));\nprocess.env.DATA_DIR = root;\nconst uid = "123456";\nconst dir = path.join(root, "users", uid);\nfs.mkdirSync(dir, { recursive: true });\nfs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ accessLifetime: true, groups: [] }));\nfs.writeFileSync(path.join(dir, "onboarding.json"), JSON.stringify({ version: 2, welcomeSeen: true, completed: false, step: 2 }));\nconst { advanceTutorialAfterAction } = await import("./onboarding.js");\nconst screen = advanceTutorialAfterAction(uid, 2, 3);\nif (!screen || !screen.text.includes("Step 2 of 5")) throw new Error("sender continuation did not advance to destination step");\nconst saved = JSON.parse(fs.readFileSync(path.join(dir, "onboarding.json"), "utf8"));\nif (saved.step !== 3 || saved.completed) throw new Error("onboarding progress was not persisted");\nif (advanceTutorialAfterAction(uid, 2, 3) !== null) throw new Error("stale action advanced tutorial twice");\nconsole.log("onboarding continuation test ok");\n''')
+
+print('Tutorial continuation patch applied')
