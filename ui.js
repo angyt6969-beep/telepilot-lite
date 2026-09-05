@@ -22,6 +22,7 @@ const CALLBACK_LABELS = new Map([
 ]);
 
 function cb(text, callback_data) { return { text, callback_data }; }
+
 function cloneMarkup(markup) {
   if (!markup?.inline_keyboard) return markup;
   return {
@@ -29,19 +30,24 @@ function cloneMarkup(markup) {
     inline_keyboard: markup.inline_keyboard.map(row => row.map(button => ({ ...button }))),
   };
 }
+
 function withKeyboard(other, rows) {
   return { ...(other || {}), reply_markup: { inline_keyboard: rows } };
 }
+
 function lineValue(text, prefix) {
   const line = String(text).split("\n").find(value => value.startsWith(prefix));
   return line ? line.slice(prefix.length).trim() : "";
 }
+
 function callbackIds(other) {
   return new Set((other?.reply_markup?.inline_keyboard || []).flat().map(b => b.callback_data).filter(Boolean));
 }
+
 function firstUrl(other) {
   return (other?.reply_markup?.inline_keyboard || []).flat().find(b => b.url)?.url || "";
 }
+
 function normalizeExistingButtons(other) {
   const markup = cloneMarkup(other?.reply_markup);
   if (!markup?.inline_keyboard) return other;
@@ -55,9 +61,22 @@ function normalizeExistingButtons(other) {
   return { ...(other || {}), reply_markup: markup };
 }
 
+function displaySender(raw) {
+  const value = String(raw || "").trim();
+  if (!value || value === "Bot posting" || value === "@TelePilottBot") return "TelePilot Bot";
+  return value;
+}
+
+function dashboardMessageLabel(raw) {
+  if (!String(raw || "").startsWith("✅")) return "Not set";
+  const chars = String(raw).match(/\((\d+) chars\)/)?.[1];
+  return chars ? `Ready · ${chars} chars` : "Ready";
+}
+
 function transformDashboard(text, other) {
   const running = text.includes("🟢 Running");
-  const sender = lineValue(text, "👤 Posting as: ") || "@TelePilottBot";
+  const senderRaw = lineValue(text, "👤 Posting as: ") || "@TelePilottBot";
+  const sender = displaySender(senderRaw);
   const access = lineValue(text, "🔑 Access: ") || "Active";
   const message = lineValue(text, "📝 Message: ");
   const groupsRaw = lineValue(text, "👥 Groups: ");
@@ -66,55 +85,67 @@ function transformDashboard(text, other) {
   const groups = Number.parseInt(groupsRaw, 10) || 0;
   const messageReady = message.startsWith("✅");
   const ready = messageReady && groups > 0;
+  const setupComplete = 1 + (messageReady ? 1 : 0) + (groups > 0 ? 1 : 0);
 
   const stateLine = running
-    ? "● LIVE · Autoposting"
+    ? "● LIVE · Autoposting active"
     : ready
       ? "● READY · Everything is set"
-      : "○ SETUP · Finish the last step";
+      : `○ SETUP · ${setupComplete}/3 complete`;
 
-  const messageLabel = messageReady
-    ? (message.match(/\((\d+) chars\)/)?.[1] ? `Ready · ${message.match(/\((\d+) chars\)/)[1]} chars` : "Ready")
-    : "Not set";
+  let focusLine;
+  if (running) focusLine = `Next post  ${next || "after current cycle"}`;
+  else if (!messageReady) focusLine = "Next step  →  Create your message";
+  else if (!groups) focusLine = "Next step  →  Add a destination";
+  else focusLine = "Ready when you are. First post sends immediately.";
 
-  let footer;
-  if (running) footer = `Next post  ${next || "after this cycle"}`;
-  else if (!messageReady) footer = "Next step  →  Create your message";
-  else if (!groups) footer = "Next step  →  Add a destination";
-  else footer = "Ready when you are. First post sends immediately.";
+  const progressLine = !running && !ready
+    ? `Setup  ${setupComplete}/3  ·  Sender ✓  Message ${messageReady ? "✓" : "○"}  Destination ${groups > 0 ? "✓" : "○"}`
+    : null;
 
   const newText = [
     "✈️ TelePilot",
     stateLine,
     "",
     `Sender  ${sender}`,
-    `Message  ${messageLabel}`,
+    `Message  ${dashboardMessageLabel(message)}`,
     `Destinations  ${groups}`,
     `Schedule  ${interval}`,
+    progressLine ? "" : null,
+    progressLine,
     "",
-    footer,
+    focusLine,
     `Access  ${access}`,
-  ].join("\n");
+  ].filter(value => value !== null).join("\n");
 
   const rows = [];
   if (running) rows.push([cb("⏹ Stop posting", "stop")]);
   else if (!messageReady) rows.push([cb("✍️ Create message", "message_change")]);
   else if (!groups) rows.push([cb("＋ Add destination", "add_group")]);
   else rows.push([cb("▶ Start posting", "start")]);
+
   rows.push([cb("👤 Sender", "account"), cb("📝 Message", "message")]);
   rows.push([cb("📍 Destinations", "groups"), cb("⏱ Schedule", "interval")]);
   rows.push([cb("📊 Activity", "activity"), cb("🔑 Access", "access")]);
   rows.push([cb("↻ Refresh", "home")]);
+
   return { text: newText, other: withKeyboard(other, rows) };
 }
 
 function transformAccess(text, other) {
   if (text.startsWith("🔐 TELEPILOT ACCESS")) {
     return {
-      text: "🔒 TelePilot Access\n\nA valid access key is required to unlock posting and account controls.\n\nPaste your key once and this device/account stays linked to your TelePilot profile.",
+      text: [
+        "🔒 TelePilot Access",
+        "",
+        "Enter a valid access key to unlock TelePilot.",
+        "",
+        "Once redeemed, access stays linked to this Telegram profile.",
+      ].join("\n"),
       other: withKeyboard(other, [[cb("Redeem access key", "redeem_key")]]),
     };
   }
+
   const plan = lineValue(text, "Plan: ") || "Active";
   const expires = lineValue(text, "Expires: ");
   return {
@@ -122,12 +153,15 @@ function transformAccess(text, other) {
       "🔑 Access",
       "● Active",
       "",
-      plan,
+      `Plan  ${plan}`,
       expires && expires !== plan ? `Expires  ${expires}` : null,
       "",
-      "Your TelePilot features are unlocked.",
+      "TelePilot controls are unlocked.",
     ].filter(Boolean).join("\n"),
-    other: withKeyboard(other, [[cb("Redeem another key", "redeem_key")], [cb("← Dashboard", "home")]]),
+    other: withKeyboard(other, [
+      [cb("Redeem another key", "redeem_key")],
+      [cb("← Dashboard", "home")],
+    ]),
   };
 }
 
@@ -138,25 +172,33 @@ function transformAccount(text, other) {
     return {
       text: [
         "👤 Sender",
-        "● Connected",
+        "● Personal account connected",
         "",
-        sender,
+        `Posting as  ${sender}`,
         "",
-        "Scheduled posts are sent from this personal Telegram account.",
+        "Scheduled posts are sent from this Telegram account.",
       ].join("\n"),
-      other: withKeyboard(other, [[cb("Disconnect", "account_disconnect")], [cb("← Dashboard", "home")]]),
+      other: withKeyboard(other, [
+        [cb("Disconnect", "account_disconnect")],
+        [cb("← Dashboard", "home")],
+      ]),
     };
   }
+
   return {
     text: [
       "👤 Sender",
-      "○ Personal account not connected",
+      "● TelePilot Bot active",
       "",
-      "Connect your Telegram account to send scheduled posts as yourself instead of the TelePilot bot.",
+      "Posting as  TelePilot Bot",
       "",
-      "Your login code and 2FA stay on the secure connection page.",
+      "You can optionally connect a personal Telegram account to post as yourself.",
+      "Bot posting remains available as the fallback sender.",
     ].join("\n"),
-    other: withKeyboard(other, [[cb("Connect personal account", "account_phone")], [cb("← Dashboard", "home")]]),
+    other: withKeyboard(other, [
+      [cb("Connect personal account", "account_phone")],
+      [cb("← Dashboard", "home")],
+    ]),
   };
 }
 
@@ -187,7 +229,7 @@ function transformLoginRequested(text, other) {
       "",
       appDelivery ? "Telegram sent the login code to your Telegram app." : "Telegram requested a login code.",
       "",
-      "Open the secure page to finish verification. If 2FA is enabled, it will ask for your password there too.",
+      "Finish verification on the secure TelePilot page. If 2FA is enabled, enter it there too.",
     ].join("\n"),
     other: withKeyboard(other, rows),
   };
@@ -196,17 +238,18 @@ function transformLoginRequested(text, other) {
 function transformMessage(text, other) {
   const saved = text.includes("✅ Saved");
   const chars = text.match(/(\d+) characters/)?.[1];
-  const rows = saved
-    ? [[cb("Preview", "message_preview"), cb("✏️ Edit message", "message_change")], [cb("← Dashboard", "home")]]
-    : [[cb("✍️ Create message", "message_change")], [cb("← Dashboard", "home")]];
   return {
     text: [
       "📝 Message",
       saved ? `● Ready${chars ? ` · ${chars} characters` : ""}` : "○ Not set",
       "",
-      saved ? "Formatting, links and custom emoji are preserved exactly as sent." : "Create the message TelePilot should send on every cycle.",
+      saved
+        ? "Your formatting, links and custom emoji are preserved."
+        : "Create the message TelePilot should send on every cycle.",
     ].join("\n"),
-    other: withKeyboard(other, rows),
+    other: withKeyboard(other, saved
+      ? [[cb("Preview", "message_preview"), cb("✏️ Edit message", "message_change")], [cb("← Dashboard", "home")]]
+      : [[cb("✍️ Create message", "message_change")], [cb("← Dashboard", "home")]]),
   };
 }
 
@@ -214,9 +257,10 @@ function transformMessageEditor(text, other) {
   return {
     text: [
       "📝 Message",
-      "Send the exact message you want TelePilot to post.",
+      "Create your post",
       "",
-      "Formatting, links and Telegram emoji are preserved.",
+      "Send the exact message you want TelePilot to publish.",
+      "Formatting, links and Telegram custom emoji are preserved.",
     ].join("\n"),
     other: withKeyboard(other, [[cb("Cancel", "message")]]),
   };
@@ -227,9 +271,7 @@ function transformGroups(text, other) {
   const list = sections[1] || "No destinations added.";
   const none = /No destinations added/i.test(list);
   const count = none ? 0 : list.split("\n").filter(line => /^\d+\./.test(line.trim())).length;
-  const rows = count
-    ? [[cb("＋ Add destination", "add_group"), cb("Manage", "remove_group_menu")], [cb("Clear all", "clear_groups")], [cb("← Dashboard", "home")]]
-    : [[cb("＋ Add destination", "add_group")], [cb("← Dashboard", "home")]];
+
   return {
     text: [
       `📍 Destinations${count ? ` · ${count}` : ""}`,
@@ -237,12 +279,21 @@ function transformGroups(text, other) {
       none ? "No destinations yet." : list,
       "",
       none
-        ? "Add a group or channel you manage."
-        : "TelePilot will post to every destination in this list.",
+        ? "Add the first group or channel you manage."
+        : "TelePilot will send every cycle to all destinations above.",
       "",
-      "Private group? Use /addhere inside the group while you are an admin.",
+      "Private group? Run /addhere inside the group while you are an admin.",
     ].join("\n"),
-    other: withKeyboard(other, rows),
+    other: withKeyboard(other, count
+      ? [
+          [cb("＋ Add destination", "add_group"), cb("Manage", "remove_group_menu")],
+          [cb("Clear all", "clear_groups")],
+          [cb("← Dashboard", "home")],
+        ]
+      : [
+          [cb("＋ Add destination", "add_group")],
+          [cb("← Dashboard", "home")],
+        ]),
   };
 }
 
@@ -250,9 +301,10 @@ function transformAddDestination(text, other) {
   return {
     text: [
       "📍 Add destination",
+      "Quick setup",
       "",
       "1 · Add @TelePilottBot as an admin",
-      "2 · Allow posting in channels",
+      "2 · For channels, allow it to post",
       "3 · Send the public @username or t.me link here",
       "",
       "Private group? Run /addhere inside that group instead.",
@@ -265,6 +317,7 @@ function transformSchedule(text, other) {
   const current = lineValue(text, "Current: ") || "30 min";
   const selected = current.endsWith(" min") ? `${current.replace(" min", "")}m` : current;
   const markup = cloneMarkup(other?.reply_markup);
+
   if (markup?.inline_keyboard) {
     for (const row of markup.inline_keyboard) {
       for (const button of row) {
@@ -273,12 +326,14 @@ function transformSchedule(text, other) {
       }
     }
   }
+
   return {
     text: [
       "⏱ Schedule",
-      `Every ${current}`,
+      `Current  ${current}`,
       "",
       "Choose how often TelePilot should repeat your message.",
+      "Your selection applies immediately.",
     ].join("\n"),
     other: { ...(other || {}), reply_markup: markup },
   };
@@ -286,64 +341,94 @@ function transformSchedule(text, other) {
 
 function transformActivity(text, other) {
   const status = lineValue(text, "Status: ");
-  const sender = lineValue(text, "Posting as: ");
-  const total = lineValue(text, "Total successful posts: ");
-  const last = lineValue(text, "Last cycle: ");
-  const result = lineValue(text, "Last result: ");
-  const next = lineValue(text, "Next cycle: ");
+  const sender = displaySender(lineValue(text, "Posting as: "));
+  const total = lineValue(text, "Total successful posts: ") || "0";
+  const last = lineValue(text, "Last cycle: ") || "Never";
+  const result = lineValue(text, "Last result: ") || "No runs yet";
+  const next = lineValue(text, "Next cycle: ") || "—";
   const running = status.includes("Running");
+  const sent = Number(result.match(/✅\s*(\d+)\s*sent/)?.[1] || 0);
+  const failed = Number(result.match(/❌\s*(\d+)\s*failed/)?.[1] || 0);
+
+  const resultLine = result === "No runs yet"
+    ? "No posting cycles yet"
+    : failed > 0
+      ? `⚠️ Last result  ${sent} sent · ${failed} failed`
+      : `✅ Last result  ${sent} sent · 0 failed`;
+
+  const rows = [[cb("↻ Refresh", "activity")]];
+  if (failed > 0) rows.push([cb("📍 Check destinations", "groups")]);
+  rows.push([cb("← Dashboard", "home")]);
+
   return {
     text: [
       "📊 Activity",
-      running ? "● LIVE" : "○ Idle",
+      running ? "● LIVE · Autoposting active" : "○ Idle",
       "",
-      `Last run  ${last || "Never"}`,
-      `Result  ${result || "No runs yet"}`,
-      `Total sent  ${total || "0"}`,
-      running ? `Next run  ${next || "—"}` : null,
+      `Last post  ${last}`,
+      resultLine,
+      `Total sent  ${total}`,
+      running ? `Next post  ${next}` : null,
       "",
-      `Sender  ${sender || "@TelePilottBot"}`,
+      `Sender  ${sender || "TelePilot Bot"}`,
+      failed > 0 ? "⚠️ One or more destinations may need permission or access fixes." : null,
     ].filter(Boolean).join("\n"),
-    other: withKeyboard(other, [[cb("↻ Refresh", "activity")], [cb("← Dashboard", "home")]]),
+    other: withKeyboard(other, rows),
   };
 }
 
 function transformStart(text, other) {
-  const sender = lineValue(text, "Posting as: ");
+  const sender = displaySender(lineValue(text, "Posting as: "));
   const destinations = lineValue(text, "Destinations: ");
   const interval = lineValue(text, "Interval: ");
+
   return {
     text: [
       "🚀 Ready to launch",
+      "● READY · Final check",
       "",
       `Sender  ${sender}`,
       `Destinations  ${destinations}`,
       `Schedule  ${interval}`,
       "",
-      "The first post sends immediately. Repeats begin after your selected interval.",
+      "The first post sends immediately. Repeats begin after the selected schedule.",
     ].join("\n"),
-    other: withKeyboard(other, [[cb("▶ Go live", "start_confirm")], [cb("← Dashboard", "home")]]),
+    other: withKeyboard(other, [
+      [cb("▶ Go live", "start_confirm")],
+      [cb("← Dashboard", "home")],
+    ]),
   };
 }
 
 function transformRemoveDestination(text, other) {
   return {
-    text: text.replace("➖ REMOVE DESTINATION", "📍 Manage destinations").replace("Choose a destination to remove:", "Choose one to remove:"),
+    text: text
+      .replace("➖ REMOVE DESTINATION", "📍 Manage destinations")
+      .replace("Choose a destination to remove:", "Choose one to remove:"),
     other: normalizeExistingButtons(other),
   };
 }
 
 function transformClearDestinations(text, other) {
   return {
-    text: text.replace("🗑 CLEAR DESTINATIONS", "Clear destinations").replace("Remove all", "Remove all"),
-    other: withKeyboard(other, [[cb("Clear all", "clear_groups_confirm")], [cb("Cancel", "groups")]]),
+    text: text.replace("🗑 CLEAR DESTINATIONS", "Clear destinations"),
+    other: withKeyboard(other, [
+      [cb("Clear all", "clear_groups_confirm")],
+      [cb("Cancel", "groups")],
+    ]),
   };
 }
 
 function transformPreviewButtons(text, other) {
   const ids = callbackIds(other);
   if (ids.has("message_change") && ids.has("message")) {
-    return { text, other: withKeyboard(other, [[cb("✏️ Edit message", "message_change")], [cb("← Message", "message")]]) };
+    return {
+      text,
+      other: withKeyboard(other, [
+        [cb("✏️ Edit message", "message_change")],
+        [cb("← Message", "message")],
+      ]),
+    };
   }
   return { text, other: normalizeExistingButtons(other) };
 }
@@ -369,6 +454,7 @@ export function transformUi(text, other) {
 
 export function installUiEnhancements(ApiClass) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotUiInstalled) return;
+
   const originalSendMessage = ApiClass.prototype.sendMessage;
   const originalEditMessageText = ApiClass.prototype.editMessageText;
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") {
