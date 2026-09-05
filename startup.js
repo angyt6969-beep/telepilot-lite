@@ -13,6 +13,7 @@ import { installProUiEnhancements } from "./pro-ui.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
 import { installSupportCenter } from "./support-center.js";
+import { installSupportCenterEarly } from "./support-bootstrap.js";
 import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
@@ -44,8 +45,9 @@ installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
 // Support wraps app routes before onboarding so a previously deleted account cannot
-// fall through to the new-user tutorial with stale in-memory access.
-installSupportCenter(Bot);
+// fall through to the new-user tutorial with stale in-memory access. The early adapter
+// registers Support callbacks before grammY starts polling, so inline buttons are always answered.
+installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
