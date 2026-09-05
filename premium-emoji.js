@@ -64,18 +64,31 @@ const FALLBACK_PREFIXES = new Map([
   ["add_group", ["＋ "]],
   ["interval", ["⏱ "]],
   ["activity", ["📊 "]],
-  ["access", ["🔑 "]],
+  ["access", ["🔑 ", "🪪 "]],
+  ["redeem_key", ["🔑 ", "🪪 "]],
   ["start", ["▶ ", "▶️ "]],
   ["start_confirm", ["▶ ", "▶️ "]],
   ["stop", ["⏹ ", "⏹️ "]],
 ]);
 
 const PREMIUM_TEXT_EMOJI = [
-  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "🔑", "⚡️", "❗️", "✍️", "👀", "⏳",
+  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "🔑", "🪪", "⚡️", "❗️", "✍️", "👀", "⏳",
 ];
 
 function customEmojiId(alt) {
-  return premiumEnabled ? premiumEmojiByAlt.get(alt) || "" : "";
+  if (!premiumEnabled) return "";
+  return premiumEmojiByAlt.get(alt)
+    || premiumEmojiByAlt.get(String(alt || "").replace(/[\uFE0E\uFE0F]/g, ""))
+    || "";
+}
+
+function semanticCustomEmojiId(alt) {
+  const exact = customEmojiId(alt);
+  if (exact) return exact;
+  if (String(alt || "").replace(/[\uFE0E\uFE0F]/g, "") === "🔑") {
+    return customEmojiId("🪪") || customEmojiId("🎟");
+  }
+  return "";
 }
 
 export function configurePremiumEmojiStickers(stickers = []) {
@@ -83,12 +96,15 @@ export function configurePremiumEmojiStickers(stickers = []) {
   for (const sticker of Array.isArray(stickers) ? stickers : []) {
     const alt = typeof sticker?.emoji === "string" ? sticker.emoji : "";
     const id = typeof sticker?.custom_emoji_id === "string" ? sticker.custom_emoji_id : "";
-    if (alt && id && !premiumEmojiByAlt.has(alt)) premiumEmojiByAlt.set(alt, id);
+    if (!alt || !id) continue;
+    if (!premiumEmojiByAlt.has(alt)) premiumEmojiByAlt.set(alt, id);
+    const normalized = alt.replace(/[\uFE0E\uFE0F]/g, "");
+    if (normalized && !premiumEmojiByAlt.has(normalized)) premiumEmojiByAlt.set(normalized, id);
   }
   premiumEnabled = premiumEmojiByAlt.size > 0;
   return {
     available: premiumEmojiByAlt.size,
-    selected: PREMIUM_TEXT_EMOJI.filter(emoji => premiumEmojiByAlt.has(emoji)).length,
+    selected: PREMIUM_TEXT_EMOJI.filter(emoji => customEmojiId(emoji)).length,
   };
 }
 
@@ -170,11 +186,7 @@ function firstLineTitle(text) {
 
 function addUiFormatting(text, other) {
   if (!isUiText(text) || other?.parse_mode) return other;
-
-  const entities = Array.isArray(other?.entities)
-    ? other.entities.map(entity => ({ ...entity }))
-    : [];
-
+  const entities = Array.isArray(other?.entities) ? other.entities.map(entity => ({ ...entity })) : [];
   const title = firstLineTitle(text);
   if (title) addStyle(entities, text, title);
 
@@ -195,17 +207,13 @@ function addUiFormatting(text, other) {
       "Personal account setup", "TelePilot Bot setup", "Quick setup",
       "Personal account connected", "TelePilot Bot active", "Active", "Idle",
       "Create your post", "Final check",
-    ]) {
-      addStyle(entities, text, subtitle, true);
-    }
+    ]) addStyle(entities, text, subtitle, true);
 
     for (const label of [
       "Posting as", "Current", "Plan", "Expires", "Last post",
       "Last result", "Total sent", "Next post", "Sender",
       "Destinations", "Schedule", "Setup", "Step 1 of 2", "Step 2 of 2",
-    ]) {
-      addStyle(entities, text, label);
-    }
+    ]) addStyle(entities, text, label);
   }
 
   entities.sort((a, b) => a.offset - b.offset || a.length - b.length);
@@ -214,10 +222,7 @@ function addUiFormatting(text, other) {
 
 function addPremiumEntities(text, other) {
   if (!premiumEnabled || !isUiText(text) || other?.parse_mode) return other;
-
-  const entities = Array.isArray(other?.entities)
-    ? other.entities.map(entity => ({ ...entity }))
-    : [];
+  const entities = Array.isArray(other?.entities) ? other.entities.map(entity => ({ ...entity })) : [];
 
   if (text.startsWith("✈️ TelePilot")) {
     pushEntityOnce(entities, {
@@ -229,7 +234,7 @@ function addPremiumEntities(text, other) {
   }
 
   for (const emoji of PREMIUM_TEXT_EMOJI) {
-    const id = customEmojiId(emoji);
+    const id = emoji === "🔑" ? semanticCustomEmojiId(emoji) : customEmojiId(emoji);
     if (!id) continue;
     let from = 0;
     while (from < text.length) {
@@ -267,12 +272,11 @@ function enhanceMarkup(other) {
 
     if (data) {
       const iconAlt = BUTTON_ICONS.get(data);
-      const id = iconAlt ? customEmojiId(iconAlt) : "";
+      const id = iconAlt ? semanticCustomEmojiId(iconAlt) : "";
       if (id) {
         button.icon_custom_emoji_id = id;
         button.text = stripFallbackIcon(button.text, data);
       }
-
       const style = BUTTON_STYLES.get(data);
       if (style) button.style = style;
     } else if (button.url && /continue securely/i.test(button.text || "")) {
@@ -290,11 +294,7 @@ function enhanceMarkup(other) {
 function stripPremiumFeatures(other) {
   if (!other) return other;
   const clean = { ...other };
-
-  if (Array.isArray(clean.entities)) {
-    clean.entities = clean.entities.filter(entity => entity?.type !== "custom_emoji");
-  }
-
+  if (Array.isArray(clean.entities)) clean.entities = clean.entities.filter(entity => entity?.type !== "custom_emoji");
   if (clean.reply_markup?.inline_keyboard) {
     clean.reply_markup = {
       ...clean.reply_markup,
@@ -306,7 +306,6 @@ function stripPremiumFeatures(other) {
       })),
     };
   }
-
   return clean;
 }
 
@@ -329,7 +328,6 @@ function enhancePayload(text, other) {
 
 export function installPremiumEmojiEnhancements(ApiClass) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotPremiumEmojiInstalled) return;
-
   const originalSendMessage = ApiClass.prototype.sendMessage;
   const originalEditMessageText = ApiClass.prototype.editMessageText;
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") {
