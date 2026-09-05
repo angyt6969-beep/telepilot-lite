@@ -19,6 +19,10 @@ import {
   configurePremiumEmojiStickers,
   installPremiumEmojiEnhancements,
 } from "./premium-emoji.js";
+import {
+  configureDeepPremiumEmojiStickers,
+  installDeepPremiumEmojiEnhancements,
+} from "./premium-deep-ui.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
@@ -38,8 +42,10 @@ installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 
 // Wrapper order is intentional. From app.js outward the screen travels through:
-// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> v1 typography -> v1 engine -> Telegram.
-// v1 UI is installed before premium so it receives the premium layer's final text/entities.
+// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> v1 typography
+// -> deep premium UI -> v1 engine -> Telegram.
+// Deep premium is installed before v1 UI so it receives the final v1-added buttons and text.
+installDeepPremiumEmojiEnhancements(Api);
 installV1Ui(Api);
 installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
@@ -52,7 +58,8 @@ const profileBot = new Bot(BOT_TOKEN);
 try {
   const stickers = await profileBot.api.raw.getForumTopicIconStickers();
   const palette = configurePremiumEmojiStickers(stickers);
-  console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available`);
+  const deepPalette = configureDeepPremiumEmojiStickers(stickers);
+  console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available; deep UI ${deepPalette.enabled ? "enabled" : "disabled"}`);
 } catch (err) {
   console.warn("Could not load Telegram premium emoji palette; using standard emoji UI:", err?.message || err);
 }
