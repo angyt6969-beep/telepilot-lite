@@ -1,12 +1,27 @@
 import { Api, Bot } from "grammy";
 import { installUiEnhancements } from "./ui.js";
+import {
+  configurePremiumEmojiStickers,
+  installPremiumEmojiEnhancements,
+} from "./premium-emoji.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
+// Install premium decoration first so the regular UI transformer feeds its
+// finished dashboard text/buttons through the premium layer afterwards.
+installPremiumEmojiEnhancements(Api);
 installUiEnhancements(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
+
+try {
+  const stickers = await profileBot.api.raw.getForumTopicIconStickers();
+  const palette = configurePremiumEmojiStickers(stickers);
+  console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available`);
+} catch (err) {
+  console.warn("Could not load Telegram premium emoji palette; using standard emoji UI:", err?.message || err);
+}
 
 const description = [
   "✈️ TelePilot",
