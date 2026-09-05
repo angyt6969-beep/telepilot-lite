@@ -3,12 +3,18 @@ import { TelegramClient } from "teleproto";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
+import { installOnboarding } from "./onboarding.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
 import { installProUiEnhancements } from "./pro-ui.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
+import { installV1Controls } from "./v1-controls.js";
+import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
+import { installV1Extras } from "./v1-extras.js";
+import { startV1Scheduler } from "./v1-scheduler.js";
+import { installV1Ui } from "./v1-ui.js";
 import {
   configurePremiumEmojiStickers,
   installPremiumEmojiEnhancements,
@@ -22,10 +28,19 @@ installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
 installProControls(Bot);
 installMediaClearControl(Bot);
+installV1Controls(Bot);
+installV1Extras(Bot);
+installOnboarding(Bot);
+
+// Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
+prepareV1Engine(Api, TelegramClient);
+installPostingEngineEnhancements(Api, TelegramClient);
+installV1Engine(Api, TelegramClient);
 
 // Wrapper order is intentional. From app.js outward the screen travels through:
-// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> posting engine -> Telegram.
-installPostingEngineEnhancements(Api, TelegramClient);
+// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> v1 typography -> v1 engine -> Telegram.
+// v1 UI is installed before premium so it receives the premium layer's final text/entities.
+installV1Ui(Api);
 installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
 installProUiEnhancements(Api);
@@ -60,4 +75,5 @@ try {
   console.error("Could not update TelePilot bot description:", err?.message || err);
 }
 
+startV1Scheduler();
 await import("./app.js");
