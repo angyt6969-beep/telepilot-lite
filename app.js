@@ -729,7 +729,9 @@ async function showAccess(ctx, state, locked = false) {
   clearAwaiting(state);
   const text = hasAccess(state)
     ? `🔑 ACCESS\n\n✅ Active\nPlan: ${accessLabel(state)}\nExpires: ${formatAccessExpiry(state)}\n\nYou can redeem another key to extend your access.`
-    : "🔐 TELEPILOT ACCESS\n\nRedeem a valid access key to use TelePilot.";
+    : "🔐 TELEPILOT ACCESS\n\nAn access key is required to use TelePilot.\
+\
+Need a key? Message @noahxrp to get yours.";
   const opts = { reply_markup: accessKeyboard(hasAccess(state)) };
   try {
     if (ctx.callbackQuery?.message) await ctx.editMessageText(text, opts);
@@ -2216,7 +2218,9 @@ bot.callbackQuery("redeem_key", async ctx => {
   state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
   state.awaitingPromptChatId = ctx.chat?.id || null;
   await ctx.editMessageText(
-    "🔑 REDEEM KEY\n\nSend your TelePilot access key.\n\nExample: TP-XXXX-XXXX-XXXX",
+    "🔑 REDEEM KEY\n\nSend your TelePilot access key below.\
+\
+Need a key? Message @noahxrp to get yours.\n\nExample: TP-XXXXX-XXXXX-XXXXX-XXXXX",
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "access") },
   );
 });
