@@ -1,6 +1,11 @@
 import { Api, Bot } from "grammy";
+import { TelegramClient } from "teleproto";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
+import { installMediaClearControl } from "./media-clear-control.js";
+import { installProControls } from "./pro-controls.js";
+import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
+import { installProUiEnhancements } from "./pro-ui.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
 import {
@@ -11,13 +16,17 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Owner helper + interaction polish must be installed before app.js registers handlers.
+// Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
+installProControls(Bot);
+installMediaClearControl(Bot);
 
-// Wrapper order is intentional: regular UI builds the screen, the sender-aware
-// layer adapts destination instructions, then premium UI adds styling/emojis.
+// API wrapper order is intentional. The proven core app stays unchanged:
+// regular UI -> sender-aware UI -> pro UI -> premium styling -> posting engine -> Telegram.
+installPostingEngineEnhancements(Api, TelegramClient);
 installPremiumEmojiEnhancements(Api);
+installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
 installUiEnhancements(Api);
 
