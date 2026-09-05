@@ -95,6 +95,12 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
       // registration that must be the pre-support implementation, otherwise supportIntent()
       // skips the very route being registered.
       withPreSupportUse(instance, () => registerSupport.call(instance));
+
+      // Support report descriptions must not depend on some later app message:text handler
+      // existing. Register one dedicated intake route through support-center's own `on()`
+      // wrapper. The wrapper consumes pending report text (or deleted-user text) and this
+      // no-op handler only passes through normal messages.
+      withPreSupportUse(instance, () => supportOn.call(instance, "message:text", async (_ctx, next) => next()));
     } finally {
       ensuring = false;
     }
