@@ -2582,7 +2582,7 @@ function connectCookie(token, maxAge = 600) {
   return `__Host-telepilot_connect=${encodeURIComponent(token || "")}; Path=/; Max-Age=${Math.max(0, maxAge)}; HttpOnly; Secure; SameSite=Strict`;
 }
 function authAttemptFromRequest(req, fallbackToken = "") {
-  const cookieToken = readCookies(req).__Host-telepilot_connect || "";
+  const cookieToken = readCookies(req)["__Host-telepilot_connect"] || "";
   return getAttemptByBrowserToken(cookieToken) || getAttemptByToken(fallbackToken);
 }
 function enforceHttpRate(req, res, scope, limit, windowMs) {
