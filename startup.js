@@ -63,7 +63,12 @@ try {
   const stickers = await profileBot.api.raw.getForumTopicIconStickers();
   const palette = configurePremiumEmojiStickers(stickers);
   const deepPalette = configureDeepPremiumEmojiStickers(stickers);
+  const normalize = value => String(value || "").replace(/[\uFE0E\uFE0F]/g, "");
+  const available = new Set(stickers.map(sticker => normalize(sticker?.emoji)).filter(Boolean));
+  const targets = ["🔑", "⚙️", "👀", "👁", "🔐", "🛠️", "⚡️", "🧰"];
+  const presentTargets = targets.filter(emoji => available.has(normalize(emoji)));
   console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available; deep UI ${deepPalette.enabled ? "enabled" : "disabled"}`);
+  console.log(`TelePilot premium target icons available: ${presentTargets.join(" ") || "none"}`);
 } catch (err) {
   console.warn("Could not load Telegram premium emoji palette; using standard emoji UI:", err?.message || err);
 }
