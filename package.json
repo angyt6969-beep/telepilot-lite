@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node startup.js",
+    "test": "npm run test:security",
     "test:security": "node security-tests.mjs"
   },
   "dependencies": {
