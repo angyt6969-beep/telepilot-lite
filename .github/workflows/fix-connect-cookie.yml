@@ -1,7 +1,8 @@
-name: Fix TelePilot connect cookie
+name: Repair TelePilot tutorial continuation
 
 on:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/fix-connect-cookie.yml'
 
@@ -17,28 +18,24 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Repair cookie lookup and add regression check
-        shell: bash
+          node-version: '22'
+      - name: Apply continuation patch
+        run: python3 scripts/fix_tutorial_continuation.py
+      - name: Validate
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('app.js')
-          s = p.read_text()
-          bad = 'const cookieToken = readCookies(req).__Host-telepilot_connect || "";'
-          good = 'const cookieToken = readCookies(req)["__Host-telepilot_connect"] || "";'
-          if bad not in s:
-              raise SystemExit('Expected broken cookie lookup was not found; refusing to patch a different source state.')
-          p.write_text(s.replace(bad, good, 1))
-          Path('connect-cookie-regression-test.mjs').write_text('''import fs from "node:fs";\nconst source = fs.readFileSync(new URL("./app.js", import.meta.url), "utf8");\nconst good = 'readCookies(req)["__Host-telepilot_connect"]';\nconst bad = 'readCookies(req).__Host-telepilot_connect';\nif (!source.includes(good)) throw new Error("Secure connect cookie lookup is missing");\nif (source.includes(bad)) throw new Error("Broken hyphenated cookie property lookup returned");\nconsole.log("connect cookie regression check ok");\n''')
-          PY
+          npm ci --ignore-scripts --no-audit --no-fund
           node --check app.js
-          node connect-cookie-regression-test.mjs
+          node --check onboarding.js
+          node onboarding-continuation-test.mjs
+          grep -q 'advanceTutorialAfterAction(attempt.uid, 2, 3)' app.js
+          grep -q 'advanceTutorialAfterAction(state.uid, 3, 4)' app.js
+          grep -q 'advanceTutorialAfterAction(state.uid, 4, 5)' app.js
+          grep -q 'advanceTutorialAfterAction(state.uid, 5, 6)' app.js
+          npm test
       - name: Commit repair
-        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app.js connect-cookie-regression-test.mjs
-          git commit -m "Fix secure connect cookie lookup"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.js onboarding.js onboarding-continuation-test.mjs
+          git commit -m 'Keep interactive tutorial moving after setup actions'
           git push origin HEAD:main
