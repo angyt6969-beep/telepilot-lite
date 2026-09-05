@@ -43,8 +43,10 @@ installProControls(Bot);
 installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
-installOnboarding(Bot);
+// Support wraps app routes before onboarding so a previously deleted account cannot
+// fall through to the new-user tutorial with stale in-memory access.
 installSupportCenter(Bot);
+installOnboarding(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
 prepareV1Engine(Api, TelegramClient);
