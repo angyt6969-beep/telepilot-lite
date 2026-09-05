@@ -40,7 +40,12 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   },
 });
 
-bot.callbackQuery("baseline", async ctx => { await ctx.answerCallbackQuery(); });
+bot.callbackQuery("baseline", async ctx => {
+  if (ctx.chat?.type !== "private" || String(ctx.from?.id || "") !== "123") {
+    throw new Error(`${MODE}: callback context is not private/user-bound`);
+  }
+  await ctx.answerCallbackQuery();
+});
 
 if (MODE === "all-use" || MODE === "all-handlers" || MODE === "all") {
   bot.use(async (ctx, next) => next());
