@@ -5,6 +5,7 @@ import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
+import { installProTypography } from "./pro-typography.js";
 import { installProUiEnhancements } from "./pro-ui.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
@@ -22,10 +23,11 @@ installInteractionEnhancements(Bot);
 installProControls(Bot);
 installMediaClearControl(Bot);
 
-// API wrapper order is intentional. The proven core app stays unchanged:
-// regular UI -> sender-aware UI -> pro UI -> premium styling -> posting engine -> Telegram.
+// Wrapper order is intentional. From app.js outward the screen travels through:
+// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> posting engine -> Telegram.
 installPostingEngineEnhancements(Api, TelegramClient);
 installPremiumEmojiEnhancements(Api);
+installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
 installUiEnhancements(Api);
