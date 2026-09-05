@@ -9,6 +9,7 @@ function uidOf(ctx) { return ctx?.from?.id ? String(ctx.from.id) : ""; }
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function settingsPath(uid) { return path.join(userDir(uid), "settings.json"); }
 function onboardingPath(uid) { return path.join(userDir(uid), "onboarding.json"); }
+function personalSessionPath(uid) { return path.join(userDir(uid), "personal-session.enc"); }
 
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
@@ -22,106 +23,261 @@ function writeJson(file, value) {
   fs.renameSync(temp, file);
 }
 
-function isExistingProfile(uid) {
-  try { return fs.existsSync(settingsPath(uid)) && fs.statSync(settingsPath(uid)).size > 2; }
+function onboardingState(uid) {
+  const saved = readJson(onboardingPath(uid), {});
+  return {
+    version: 2,
+    welcomeSeen: saved.welcomeSeen === true,
+    completed: saved.completed === true,
+    step: Number.isInteger(Number(saved.step)) ? Math.max(1, Math.min(7, Number(saved.step))) : 1,
+    completedAt: Number(saved.completedAt || 0) || null,
+  };
+}
+
+function saveOnboarding(uid, patch) {
+  const current = onboardingState(uid);
+  writeJson(onboardingPath(uid), { ...current, ...patch, version: 2 });
+}
+
+function tutorialSeen(uid) { return onboardingState(uid).completed === true; }
+function markWelcomeSeen(uid) { saveOnboarding(uid, { welcomeSeen: true }); }
+function setTutorialStep(uid, step) { saveOnboarding(uid, { welcomeSeen: true, step: Math.max(1, Math.min(7, Number(step) || 1)) }); }
+function markTutorialSeen(uid) { saveOnboarding(uid, { welcomeSeen: true, completed: true, step: 7, completedAt: Date.now() }); }
+
+function settingsFor(uid) { return readJson(settingsPath(uid), {}); }
+function accessActive(uid) {
+  const saved = settingsFor(uid);
+  if (saved.accessRevoked === true) return false;
+  if (saved.accessLifetime === true) return true;
+  return Number(saved.accessUntil || 0) > Date.now();
+}
+function hasPersonalSession(uid) {
+  try { return fs.existsSync(personalSessionPath(uid)) && fs.statSync(personalSessionPath(uid)).size > 20; }
   catch { return false; }
 }
-
-function tutorialSeen(uid) {
-  return readJson(onboardingPath(uid), {}).completed === true;
+function formatInterval(minutes) {
+  const n = Number(minutes || 30);
+  if (n === 60) return "1 hour";
+  if (n === 90) return "1 hour 30 min";
+  if (n === 120) return "2 hours";
+  return `${n} min`;
 }
 
-function markTutorialSeen(uid) {
-  writeJson(onboardingPath(uid), { version: 1, completed: true, completedAt: Date.now() });
-}
-
-function page1() {
+function welcomePage() {
   return {
     text: [
       "👋 Welcome to TelePilot",
-      "Your Telegram posting control panel.",
       "",
-      "TelePilot can automatically send a saved post to the groups and channels you choose.",
+      "Automate your Telegram posting from one clean control panel.",
       "",
-      "Setup is only four things:",
-      "Sender — who sends the post",
-      "Message — what gets posted",
-      "Destinations — where it goes",
-      "Schedule — when it posts",
+      "• Post to multiple groups and channels",
+      "• Schedule and repeat posts",
+      "• Post from TelePilot Bot or your personal Telegram account",
+      "• Preview, manage and monitor everything from the bot",
       "",
-      "This quick tutorial takes about 30 seconds.",
+      "Continue to activate your TelePilot access.",
     ].join("\n"),
-    keyboard: new InlineKeyboard().text("Next →", "tutorial:2").row().text("Skip tutorial", "tutorial:finish"),
+    keyboard: new InlineKeyboard()
+      .text("Continue →", "onboarding:access").row()
+      .text("✨ What do I get?", "onboarding:features"),
   };
 }
 
-function page2() {
+function featuresPage() {
   return {
     text: [
-      "📱 Sender & Message",
-      "Step 1 of 3",
+      "✨ What you get with TelePilot",
       "",
-      "Sender — choose TelePilot Bot or connect your own Telegram account.",
+      "📱 Personal-account or bot posting",
+      "👥 Multiple Telegram destinations",
+      "📝 Saved messages, media and templates",
+      "⏱ Repeating intervals and scheduling",
+      "👀 Smart Preview before you publish",
+      "📊 Activity and destination health",
+      "⚙️ Posting tools and safety controls",
+      "💬 Built-in support",
       "",
-      "If your account is connected, posts come from that account. Your saved setup stays even if you reconnect later.",
-      "",
-      "Message — save the text/media you want to post. You can also keep templates and test a post before going LIVE.",
+      "When you're ready, continue to the access-key screen.",
     ].join("\n"),
-    keyboard: new InlineKeyboard().text("← Back", "tutorial:1").text("Next →", "tutorial:3"),
+    keyboard: new InlineKeyboard()
+      .text("← Back", "onboarding:welcome")
+      .text("Continue →", "onboarding:access"),
   };
 }
 
-function page3() {
+function setupPage1(uid) {
+  const saved = settingsFor(uid);
+  const plan = saved.accessLifetime === true ? "Lifetime" : "Active";
   return {
     text: [
-      "📁 Destinations & Schedule",
-      "Step 2 of 3",
+      "✅ Access activated",
       "",
-      "Destinations — the groups/channels TelePilot is allowed to post to.",
+      `Access: ${plan}`,
       "",
-      "You can paste many public destinations at once — one @username or t.me link per line.",
+      "Now we'll set up TelePilot together.",
       "",
-      "Schedule — choose a repeating interval, posting hours, exact times, or a one-time future post.",
+      "The tutorial is interactive: each step opens the real TelePilot control you need. If you leave the tutorial to configure something, send /start afterward and TelePilot will resume from the same step.",
       "",
-      "You can disable a destination without deleting it whenever you want.",
+      "Setup takes just a few minutes.",
     ].join("\n"),
-    keyboard: new InlineKeyboard().text("← Back", "tutorial:2").text("Next →", "tutorial:4"),
+    keyboard: new InlineKeyboard()
+      .text("🚀 Start Setup", "tutorial:2").row()
+      .text("Skip tutorial", "tutorial:skip"),
   };
 }
 
-function page4() {
+function setupPage2(uid) {
+  const connected = hasPersonalSession(uid);
   return {
     text: [
-      "⚙️ Tools & Safety",
-      "Step 3 of 3",
+      "📱 Step 1 of 5 — Choose your sender",
       "",
-      "Test Send — preview a post before publishing.",
-      "Templates — save reusable messages and rotate them automatically.",
-      "Health — see which destinations can post successfully.",
-      "Activity — sent, failed and skipped posting history.",
-      "Pause / Emergency Stop — immediately prevent future scheduled sends.",
+      connected
+        ? "✅ Your personal Telegram account is connected."
+        : "Choose who should send your posts.",
       "",
-      "When Message + Destination are ready, the dashboard gives you a green Start posting button.",
+      "TelePilot Bot is the simplest option. A personal account lets posts appear from your own Telegram account.",
       "",
-      "You can replay this tutorial from Tools at any time.",
+      connected ? "You're ready for the next step." : "You can connect a personal account now, or use TelePilot Bot and continue.",
     ].join("\n"),
-    keyboard: new InlineKeyboard().text("← Back", "tutorial:3").row().text("✅ Open TelePilot", "tutorial:finish"),
+    keyboard: connected
+      ? new InlineKeyboard().text("← Back", "tutorial:1").text("Next →", "tutorial:3").row().text("Skip tutorial", "tutorial:skip")
+      : new InlineKeyboard()
+          .text("👤 Connect Personal Account", "account").row()
+          .text("🤖 Use TelePilot Bot", "tutorial:3").row()
+          .text("← Back", "tutorial:1").text("Skip tutorial", "tutorial:skip"),
   };
 }
 
-function tutorialPage(page) {
-  if (Number(page) === 2) return page2();
-  if (Number(page) === 3) return page3();
-  if (Number(page) === 4) return page4();
-  return page1();
+function setupPage3(uid) {
+  const saved = settingsFor(uid);
+  const count = Array.isArray(saved.groups) ? saved.groups.length : 0;
+  return {
+    text: [
+      "👥 Step 2 of 5 — Add a destination",
+      "",
+      count > 0 ? `✅ ${count} destination${count === 1 ? "" : "s"} configured.` : "Add at least one group or channel where TelePilot should post.",
+      "",
+      "Public destinations can be added by @username or t.me link. Private groups can also use /addhere from inside the group.",
+      "",
+      count > 0 ? "Destination setup is ready." : "Tap Add Destination, configure it, then send /start to continue the tutorial.",
+    ].join("\n"),
+    keyboard: count > 0
+      ? new InlineKeyboard().text("← Back", "tutorial:2").text("Next →", "tutorial:4").row().text("👥 Manage Destinations", "groups").row().text("Skip tutorial", "tutorial:skip")
+      : new InlineKeyboard().text("👥 Add Destination", "groups").row().text("← Back", "tutorial:2").text("Skip tutorial", "tutorial:skip"),
+  };
 }
 
-async function showTutorial(ctx, page = 1, edit = false) {
-  const screen = tutorialPage(page);
+function setupPage4(uid) {
+  const saved = settingsFor(uid);
+  const ready = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
+  return {
+    text: [
+      "📝 Step 3 of 5 — Create your message",
+      "",
+      ready ? `✅ Your message is ready (${saved.adMessage.length} characters).` : "Create the message TelePilot should post.",
+      "",
+      "You can use text, formatting and media, then reuse the message later with Templates and other Tools.",
+      "",
+      ready ? "Message setup is complete." : "Tap Create Message, save it, then send /start to resume here.",
+    ].join("\n"),
+    keyboard: ready
+      ? new InlineKeyboard().text("← Back", "tutorial:3").text("Next →", "tutorial:5").row().text("📝 Edit Message", "message").row().text("Skip tutorial", "tutorial:skip")
+      : new InlineKeyboard().text("📝 Create Message", "message").row().text("← Back", "tutorial:3").text("Skip tutorial", "tutorial:skip"),
+  };
+}
+
+function setupPage5(uid) {
+  const saved = settingsFor(uid);
+  const interval = formatInterval(saved.intervalMinutes || 30);
+  return {
+    text: [
+      "⏱ Step 4 of 5 — Choose timing",
+      "",
+      `Current repeating interval: ${interval}`,
+      "",
+      "You can keep this interval, change it from 1 minute up to 2 hours, or use TelePilot's scheduling tools for exact times and future posts.",
+      "",
+      "You can always change timing later.",
+    ].join("\n"),
+    keyboard: new InlineKeyboard()
+      .text("⏱ Choose Interval", "interval").row()
+      .text("← Back", "tutorial:4").text("Next →", "tutorial:6").row()
+      .text("Skip tutorial", "tutorial:skip"),
+  };
+}
+
+function setupPage6() {
+  return {
+    text: [
+      "👀 Step 5 of 5 — Preview before posting",
+      "",
+      "Smart Preview lets you check how your post will look before you start sending it to destinations.",
+      "",
+      "This step is optional, but it's a good habit before your first LIVE run.",
+    ].join("\n"),
+    keyboard: new InlineKeyboard()
+      .text("👀 Open Smart Preview", "v1_preview").row()
+      .text("← Back", "tutorial:5").text("Finish →", "tutorial:7").row()
+      .text("Skip tutorial", "tutorial:skip"),
+  };
+}
+
+function setupPage7(uid) {
+  const saved = settingsFor(uid);
+  const groups = Array.isArray(saved.groups) ? saved.groups.length : 0;
+  const messageReady = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
+  const sender = hasPersonalSession(uid)
+    ? (saved.personalUsername ? `@${saved.personalUsername}` : "Personal account")
+    : "TelePilot Bot";
+  return {
+    text: [
+      "🎉 TelePilot is ready",
+      "",
+      `✅ Access active`,
+      `✅ Sender: ${sender}`,
+      `${groups > 0 ? "✅" : "⚠️"} Destinations: ${groups}`,
+      `${messageReady ? "✅" : "⚠️"} Message: ${messageReady ? "Ready" : "Not set yet"}`,
+      `✅ Interval: ${formatInterval(saved.intervalMinutes || 30)}`,
+      "",
+      groups > 0 && messageReady
+        ? "Everything needed for your first posting run is configured."
+        : "You can finish the missing items from the dashboard before starting a posting run.",
+      "",
+      "You can replay this tutorial from Tools whenever you want.",
+    ].join("\n"),
+    keyboard: new InlineKeyboard()
+      .text("← Back", "tutorial:6").row()
+      .text("✅ Open TelePilot", "tutorial:finish"),
+  };
+}
+
+function tutorialPage(uid, page) {
+  if (Number(page) === 2) return setupPage2(uid);
+  if (Number(page) === 3) return setupPage3(uid);
+  if (Number(page) === 4) return setupPage4(uid);
+  if (Number(page) === 5) return setupPage5(uid);
+  if (Number(page) === 6) return setupPage6(uid);
+  if (Number(page) === 7) return setupPage7(uid);
+  return setupPage1(uid);
+}
+
+async function renderScreen(ctx, screen, edit = false) {
   if (edit && ctx.callbackQuery) {
     try { return await ctx.editMessageText(screen.text, { reply_markup: screen.keyboard }); } catch {}
   }
   return ctx.reply(screen.text, { reply_markup: screen.keyboard });
+}
+
+async function showTutorial(ctx, page = 1, edit = false, persistStep = true) {
+  const uid = uidOf(ctx);
+  if (uid && persistStep && !tutorialSeen(uid)) setTutorialStep(uid, page);
+  return renderScreen(ctx, tutorialPage(uid, page), edit);
+}
+
+async function openApp(ctx) {
+  if (typeof appStartHandler === "function") return appStartHandler(ctx, async () => undefined);
+  return ctx.reply("Send /start to open TelePilot.");
 }
 
 async function finishTutorial(ctx) {
@@ -131,19 +287,44 @@ async function finishTutorial(ctx) {
   if (ctx?.chat?.id && ctx?.callbackQuery?.message?.message_id) {
     try { await ctx.api.deleteMessage(ctx.chat.id, ctx.callbackQuery.message.message_id); } catch {}
   }
-  if (typeof appStartHandler === "function") return appStartHandler(ctx, async () => undefined);
-  return ctx.reply("✅ Tutorial complete. Send /start to open TelePilot.");
+  return openApp(ctx);
+}
+
+async function skipTutorial(ctx) {
+  const uid = uidOf(ctx);
+  if (uid) markTutorialSeen(uid);
+  try { await ctx.answerCallbackQuery({ text: "Tutorial skipped" }); } catch {}
+  return openApp(ctx);
 }
 
 function registerHandlers(bot) {
-  bot.callbackQuery(/^tutorial:([1-4])$/, async ctx => {
+  bot.callbackQuery("onboarding:welcome", async ctx => {
+    await ctx.answerCallbackQuery();
+    await renderScreen(ctx, welcomePage(), true);
+  });
+  bot.callbackQuery("onboarding:features", async ctx => {
+    await ctx.answerCallbackQuery();
+    await renderScreen(ctx, featuresPage(), true);
+  });
+  bot.callbackQuery("onboarding:access", async ctx => {
+    const uid = uidOf(ctx);
+    if (uid) markWelcomeSeen(uid);
+    await ctx.answerCallbackQuery();
+    await openApp(ctx);
+  });
+  bot.callbackQuery("tutorial:begin", async ctx => {
+    await ctx.answerCallbackQuery();
+    await showTutorial(ctx, 1, true);
+  });
+  bot.callbackQuery(/^tutorial:([1-7])$/, async ctx => {
     await ctx.answerCallbackQuery();
     await showTutorial(ctx, Number(ctx.match[1]), true);
   });
   bot.callbackQuery("tutorial:finish", finishTutorial);
+  bot.callbackQuery("tutorial:skip", skipTutorial);
   bot.callbackQuery("tutorial_restart", async ctx => {
     await ctx.answerCallbackQuery();
-    await showTutorial(ctx, 1, true);
+    await showTutorial(ctx, 1, true, false);
   });
 }
 
@@ -159,8 +340,15 @@ export function installOnboarding(BotClass) {
     for (const handler of middleware) if (typeof handler === "function") appStartHandler = handler;
     const wrapped = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx, next) {
       const uid = uidOf(ctx);
-      if (uid && !tutorialSeen(uid) && !isExistingProfile(uid)) return showTutorial(ctx, 1, false);
-      return handler.call(this, ctx, next);
+      if (!uid || tutorialSeen(uid)) return handler.call(this, ctx, next);
+
+      const state = onboardingState(uid);
+      if (!accessActive(uid)) {
+        if (!state.welcomeSeen) return renderScreen(ctx, welcomePage(), false);
+        return handler.call(this, ctx, next);
+      }
+
+      return showTutorial(ctx, state.step || 1, false);
     });
     return originalCommand.call(this, command, ...wrapped);
   };
