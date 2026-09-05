@@ -1,0 +1,69 @@
+name: TelePilot Security Pack
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app.js"
+      - "pro-controls.js"
+      - "security-core.js"
+      - "security-tests.mjs"
+      - "scripts/apply-security-pack.mjs"
+      - ".github/workflows/security-pack.yml"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telepilot-security-pack-main
+  cancel-in-progress: false
+
+jobs:
+  harden-and-test:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: /tmp/telepilot-security-ci
+      TELEPILOT_SECURITY_SECRET: ci-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      TELEPILOT_SESSION_KEY_B64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+        continue-on-error: true
+      - name: Check migration script
+        run: node --check scripts/apply-security-pack.mjs
+      - name: Apply security migration
+        run: node scripts/apply-security-pack.mjs
+      - name: Generate deterministic dependency lock
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check pro-controls.js
+          node --check security-core.js
+          node --check security-tests.mjs
+      - name: Security regression tests
+        run: node security-tests.mjs
+      - name: Critical dependency audit
+        run: npm audit --audit-level=critical
+      - name: Commit hardened sources
+        run: |
+          if git diff --quiet -- app.js pro-controls.js package-lock.json; then
+            echo "Security Pack already applied."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js pro-controls.js package-lock.json
+          git commit -m "Apply TelePilot Security Pack"
+          git push origin HEAD:main
