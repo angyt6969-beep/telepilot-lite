@@ -54,7 +54,7 @@ assert.equal(security.consumeConfirmationToken(token, "1", "import", "1"), true)
 assert.equal(security.consumeConfirmationToken(token, "1", "import", "1"), false, "confirmation must be one-time");
 
 assert.equal(security.getExternalSessionKey()?.length, 32);
-const redacted = security.redactSecrets('token=abc123 TP-ABCDE-FGHJK-MNPQR-STUVW +37120000000 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi');
+const redacted = security.redactSecrets('?token=abc123 TP-ABCDE-FGHJK-MNPQR-STUVW +37120000000 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi');
 assert.equal(redacted.includes("abc123"), false);
 assert.equal(redacted.includes("TP-ABCDE"), false);
 assert.equal(redacted.includes("+37120000000"), false);
