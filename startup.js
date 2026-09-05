@@ -31,9 +31,10 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Install branded public pages before app.js creates its HTTP server.
-installConnectUi();
+// Install public trust pages first, then the branded connection-page transformer.
+// This order lets Privacy/Terms/Support links be added after the connect UI is rendered.
 installLegalPages();
+installConnectUi();
 
 // Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
