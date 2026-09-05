@@ -1,4 +1,5 @@
 import { Api, Bot } from "grammy";
+import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installUiEnhancements } from "./ui.js";
 import {
   configurePremiumEmojiStickers,
@@ -7,6 +8,9 @@ import {
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+
+// Install the owner-only emoji inspector before the main bot starts.
+installEmojiIdTool(Bot);
 
 // Regular UI builds the dashboard first; the premium layer then decorates
 // that final payload with custom emoji, formatting, button icons and styles.
