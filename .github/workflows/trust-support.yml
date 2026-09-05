@@ -63,6 +63,10 @@ jobs:
           grep -q 'scrubKeyIdentity' support-center.js
           grep -q 'support_admin' support-ui.js
       - name: Verify support callbacks at runtime
-        run: node support-runtime-test.mjs
+        run: |
+          for mode in support-only all-use all-handlers all; do
+            echo "Testing $mode"
+            SUPPORT_TEST_MODE="$mode" node support-runtime-test.mjs
+          done
       - name: Existing security regression tests
         run: npm test
