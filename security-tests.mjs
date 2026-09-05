@@ -43,6 +43,7 @@ assert.equal(security.isSecurityLockdown(), true);
 security.setSecurityLockdown(false, "1");
 assert.equal(security.isSecurityLockdown(), false);
 assert.equal(security.isUserFrozen("77"), false);
+assert.throws(() => security.setUserFrozen("../77", true, "1"), /Invalid Telegram user ID/);
 security.setUserFrozen("77", true, "1");
 assert.equal(security.isUserFrozen("77"), true);
 security.setUserFrozen("77", false, "1");
@@ -61,5 +62,6 @@ assert.equal(redacted.includes("+37120000000"), false);
 const events = security.readSecurityEvents(20);
 assert.ok(events.some(event => event.type === "user_frozen"));
 assert.ok(events.some(event => event.type === "lockdown_enabled"));
+assert.ok(events.every(event => /^[a-f0-9]{64}$/.test(String(event.hash || ""))));
 
 console.log("TelePilot security regression tests passed");
