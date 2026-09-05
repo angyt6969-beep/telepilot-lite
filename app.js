@@ -651,7 +651,58 @@ function cleanDestinationError(err) {
   if (code.includes("FORBIDDEN")) return "TelePilot cannot access that group/channel. Make sure @TelePilottBot is added and is an admin.";
   return err?.message || "TelePilot cannot access that destination yet.";
 }
+function personalDialogPeerId(dialog) {
+  const entity = dialog?.entity;
+  const raw = String(entity?.id ?? "").replace(/\D/g, "");
+  if (!raw) return "";
+  if (entity?.broadcast === true || entity?.megagroup === true || entity?.className === "Channel") return `-100${raw}`;
+  return `-${raw}`;
+}
 async function resolveDestination(target, ownerUid) {
+  const ownerState = ownerUid ? getState(ownerUid) : null;
+  if (ownerState && hasPersonalSession(ownerState.uid)) {
+    const client = await ensurePersonalClient(ownerState);
+    if (!client) throw new Error("Reconnect your personal Telegram account first.");
+    if (!String(target).startsWith("@")) {
+      throw new Error("Personal-account setup currently needs a public @username or t.me link. Private groups can still be added with /addhere.");
+    }
+
+    const wanted = String(target).slice(1).toLowerCase();
+    let dialogs;
+    try { dialogs = await client.getDialogs({ limit: 500 }); }
+    catch { throw new Error("TelePilot could not read your connected account's chats. Reconnect the account and try again."); }
+
+    const dialog = dialogs.find(item => String(item?.entity?.username || "").toLowerCase() === wanted);
+    if (!dialog) {
+      throw new Error(`${accountLabel(ownerState)} is not joined to that group/channel. Join it with the connected account first, then retry.`);
+    }
+
+    const entity = dialog.entity;
+    if (entity?.broadcast === true && entity?.creator !== true && entity?.adminRights?.postMessages !== true) {
+      throw new Error(`${accountLabel(ownerState)} is joined to that channel but does not have permission to post. Give that account Post Messages permission first.`);
+    }
+
+    let chat = null;
+    try { chat = await bot.api.getChat(`@${wanted}`); } catch {}
+    if (chat && ["group", "supergroup", "channel"].includes(chat.type)) {
+      return {
+        id: String(chat.id),
+        label: String(chat.title || chat.username || chat.id).slice(0, 120),
+        type: chat.type,
+        username: chat.username ? `@${chat.username}` : `@${wanted}`,
+      };
+    }
+
+    const peerId = personalDialogPeerId(dialog);
+    if (!peerId) throw new Error("TelePilot could not identify that destination from your connected account.");
+    return {
+      id: peerId,
+      label: String(entity?.title || entity?.username || target).slice(0, 120),
+      type: entity?.broadcast === true ? "channel" : entity?.megagroup === true ? "supergroup" : "group",
+      username: `@${wanted}`,
+    };
+  }
+
   let chat;
   try { chat = await bot.api.getChat(target); }
   catch (err) { throw new Error(cleanDestinationError(err)); }
@@ -795,8 +846,11 @@ function groupsKeyboard(state) {
   return kb.text("⬅️ Back", "home");
 }
 async function showGroups(ctx, state) {
+  const hint = hasPersonalSession(state.uid)
+    ? "Public destinations use your connected personal account and do not require @TelePilottBot to be an admin. For private groups without a username, /addhere can still be used for setup."
+    : "Add @TelePilottBot as an admin in each destination first. In a group, you can also send /addhere while you are a group admin.";
   await ctx.editMessageText(
-    `👥 GROUPS & CHANNELS\n\n${groupList(state)}\n\nAdd @TelePilottBot as an admin in each destination first. In a group, you can also send /addhere while you are a group admin.`,
+    `👥 GROUPS & CHANNELS\n\n${groupList(state)}\n\n${hint}`,
     { reply_markup: groupsKeyboard(state) },
   );
 }
@@ -945,15 +999,22 @@ bot.command("addhere", async ctx => {
   let ownerMember;
   try { ownerMember = await bot.api.getChatMember(ctx.chat.id, ctx.from.id); }
   catch { return ctx.reply("I couldn't verify your group permissions."); }
-  if (!["creator", "administrator"].includes(ownerMember.status)) {
-    return ctx.reply("Only a group admin can link this group to their TelePilot profile.");
+  if (hasPersonalSession(state.uid)) {
+    if (["left", "kicked"].includes(ownerMember.status)
+      || (ownerMember.status === "restricted" && ownerMember.can_send_messages !== true)) {
+      return ctx.reply("Your connected personal account does not currently have permission to post in this group.");
+    }
+  } else if (!["creator", "administrator"].includes(ownerMember.status)) {
+    return ctx.reply("Only a group admin can link this group when using TelePilot Bot as the sender.");
   }
 
-  let botMember;
-  try { botMember = await bot.api.getChatMember(ctx.chat.id, BOT_USER_ID); }
-  catch { return ctx.reply("I couldn't verify TelePilot's permissions in this group."); }
-  if (botMember.status !== "administrator") {
-    return ctx.reply("Make @TelePilottBot an admin in this group first.");
+  if (!hasPersonalSession(state.uid)) {
+    let botMember;
+    try { botMember = await bot.api.getChatMember(ctx.chat.id, BOT_USER_ID); }
+    catch { return ctx.reply("I couldn't verify TelePilot's permissions in this group."); }
+    if (botMember.status !== "administrator") {
+      return ctx.reply("Make @TelePilottBot an admin in this group first.");
+    }
   }
 
   const destination = {
@@ -1115,8 +1176,11 @@ bot.callbackQuery("add_group", async ctx => {
   state.awaiting = "group";
   state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
   state.awaitingPromptChatId = ctx.chat?.id || null;
+  const instructions = hasPersonalSession(state.uid)
+    ? "➕ ADD DESTINATION\n\n1. Make sure your connected personal account is already in the group/channel.\n2. For channels, that account needs permission to post.\n3. Send the public @username or t.me link here.\n\n@TelePilottBot does not need to be an admin for public destinations in personal-account mode. For private groups without a public username, /addhere can still be used."
+    : "➕ ADD DESTINATION\n\n1. Add @TelePilottBot as an admin in the group/channel.\n2. For channels, give it permission to post.\n3. Send the public @username or t.me link here.\n\nFor groups without a public username, send /addhere inside that group while you are an admin.";
   await ctx.editMessageText(
-    "➕ ADD DESTINATION\n\n1. Add @TelePilottBot as an admin in the group/channel.\n2. For channels, give it permission to post.\n3. Send the public @username or t.me link here.\n\nFor groups without a public username, send /addhere inside that group while you are an admin.",
+    instructions,
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "groups") },
   );
 });
@@ -1315,7 +1379,10 @@ bot.on("message:text", async ctx => {
   if (state.awaiting === "group") {
     const target = normalizeTarget(ctx.message.text);
     if (!target) {
-      const n = await ctx.reply("I couldn't read that. Send a public @username or t.me/username link. For private groups, use /addhere inside the group.");
+      const personalHint = hasPersonalSession(state.uid)
+        ? "Send a public @username or t.me/username link. Private groups without a public username can still use /addhere."
+        : "Send a public @username or t.me/username link. For private groups, use /addhere inside the group.";
+      const n = await ctx.reply(`I couldn't read that. ${personalHint}`);
       setTimeout(() => void safeDelete(ctx.chat.id, n.message_id), 8000);
       return;
     }
