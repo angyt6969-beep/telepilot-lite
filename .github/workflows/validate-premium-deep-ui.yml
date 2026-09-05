@@ -1,0 +1,50 @@
+name: Validate deep premium emoji UI
+
+on:
+  push:
+    branches:
+      - feature/premium-admin-tools
+    paths:
+      - premium-deep-ui.js
+      - startup.js
+      - .github/workflows/validate-premium-deep-ui.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install production dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: |
+          node --check premium-deep-ui.js
+          node --check startup.js
+      - name: Smoke-test deep premium module
+        run: |
+          node --input-type=module - <<'NODE'
+          import { Api } from "grammy";
+          import {
+            configureDeepPremiumEmojiStickers,
+            installDeepPremiumEmojiEnhancements,
+          } from "./premium-deep-ui.js";
+
+          const palette = configureDeepPremiumEmojiStickers([
+            { emoji: "💎", custom_emoji_id: "1001" },
+            { emoji: "⚡️", custom_emoji_id: "1002" },
+            { emoji: "👀", custom_emoji_id: "1003" },
+            { emoji: "📈", custom_emoji_id: "1004" },
+            { emoji: "❗️", custom_emoji_id: "1005" },
+          ]);
+          if (!palette.enabled) throw new Error("deep premium palette did not enable");
+          if (typeof Api.prototype.sendMessage !== "function") throw new Error("grammY Api sendMessage missing");
+          installDeepPremiumEmojiEnhancements(Api);
+          if (!Api.prototype.__telepilotDeepPremiumInstalled) throw new Error("deep premium wrapper not installed");
+          console.log("Deep premium emoji smoke test passed");
+          NODE
