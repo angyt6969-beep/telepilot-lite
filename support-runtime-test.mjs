@@ -86,17 +86,15 @@ function callbackUpdate(id, data, uid = 123, username = "noahxrp") {
 }
 
 function messageUpdate(id, uid, text) {
-  return {
-    update_id: id,
-    message: {
-      message_id: id,
-      date: 0,
-      from: { id: uid, is_bot: false, first_name: "Alt", username: "telepilot_alt" },
-      chat: { id: uid, type: "private", first_name: "Alt", username: "telepilot_alt" },
-      text,
-      entities: [{ offset: 0, length: text.length, type: "bot_command" }],
-    },
+  const message = {
+    message_id: id,
+    date: 0,
+    from: { id: uid, is_bot: false, first_name: "Alt", username: "telepilot_alt" },
+    chat: { id: uid, type: "private", first_name: "Alt", username: "telepilot_alt" },
+    text,
   };
+  if (text.startsWith("/")) message.entities = [{ offset: 0, length: text.length, type: "bot_command" }];
+  return { update_id: id, message };
 }
 
 function deletedHash(uid) {
@@ -116,6 +114,25 @@ await bot.handleUpdate(callbackUpdate(2, "support_admin"));
 if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: support_admin callback was not answered`);
 if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("SUPPORT CASES"))) throw new Error(`${MODE}: support admin cases screen was not rendered`);
 
+// Report submission must consume the next private text message, create the case, confirm it
+// to the reporter, and notify the configured admin. This reproduces the real bot flow.
+const reporterUid = 789;
+calls.length = 0;
+await bot.handleUpdate(callbackUpdate(3, "support_new:login", reporterUid, "reporter_alt"));
+if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("Account / login"))) {
+  throw new Error(`${MODE}: support category did not enter report-writing state`);
+}
+
+calls.length = 0;
+await bot.handleUpdate(messageUpdate(4, reporterUid, "The Telegram login page does not continue."));
+const reportMessages = calls.filter(call => call.method === "sendMessage");
+if (!reportMessages.some(call => Number(call.payload.chat_id) === reporterUid && String(call.payload.text || "").includes("Support case created"))) {
+  throw new Error(`${MODE}: reporter did not receive a support case confirmation`);
+}
+if (!reportMessages.some(call => Number(call.payload.chat_id) === 123 && String(call.payload.text || "").includes("New TelePilot support case"))) {
+  throw new Error(`${MODE}: admin did not receive the support case notification`);
+}
+
 // A completed data deletion must remove the old profile without permanently banning that
 // Telegram ID. A later private /start explicitly begins a brand-new TelePilot profile.
 const altUid = 456;
@@ -126,7 +143,7 @@ fs.writeFileSync(path.join(DATA_DIR, "deleted-users.json"), JSON.stringify({
 }, null, 2));
 
 calls.length = 0;
-await bot.handleUpdate(messageUpdate(3, altUid, "/start"));
+await bot.handleUpdate(messageUpdate(5, altUid, "/start"));
 const startMessages = calls.filter(call => call.method === "sendMessage").map(call => String(call.payload.text || ""));
 if (startMessages.some(text => text.includes("TelePilot account data deleted"))) {
   throw new Error(`${MODE}: deleted user was permanently blocked from /start`);
@@ -141,7 +158,7 @@ if (deletedAfterStart?.users?.[altHash]) throw new Error(`${MODE}: deletion mark
 
 if (MODE !== "support-only") {
   calls.length = 0;
-  await bot.handleUpdate(callbackUpdate(4, "tutorial:2", altUid, "telepilot_alt"));
+  await bot.handleUpdate(callbackUpdate(6, "tutorial:2", altUid, "telepilot_alt"));
   if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("Sender & Message"))) {
     throw new Error(`${MODE}: fresh user tutorial callbacks remained blocked after /start`);
   }
