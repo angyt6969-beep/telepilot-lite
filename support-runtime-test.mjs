@@ -39,6 +39,10 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   },
 });
 
+// A normal callback registered before start must remain reachable. This validates the harness
+// and distinguishes generic grammY routing problems from support registration timing issues.
+bot.callbackQuery("baseline", async ctx => { await ctx.answerCallbackQuery(); });
+
 if (MODE === "all-use" || MODE === "all-handlers" || MODE === "all") {
   bot.use(async (ctx, next) => next());
 }
@@ -72,6 +76,10 @@ function callbackUpdate(id, data) {
   };
 }
 
+await bot.handleUpdate(callbackUpdate(0, "baseline"));
+if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: baseline callback was not answered`);
+
+calls.length = 0;
 await bot.handleUpdate(callbackUpdate(1, "support"));
 if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: support callback was not answered`);
 if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("TelePilot Support"))) throw new Error(`${MODE}: support screen was not rendered`);
