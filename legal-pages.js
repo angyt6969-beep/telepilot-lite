@@ -98,6 +98,14 @@ export function renderLegalPage(kind) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TelePilot — ${escapeHtml(page.title)}</title><style>${STYLE}</style></head><body><div class="ambient" aria-hidden="true"><div class="glow a"></div><div class="glow b"></div></div><main class="wrap"><div class="brand"><div class="mark">✈️</div><span>TelePilot</span></div><article class="card"><div class="badge">${escapeHtml(page.badge)}</div><h1>${escapeHtml(page.title)}</h1><p class="lead">${escapeHtml(page.lead)}</p><p>Last updated: ${LAST_UPDATED}</p>${page.body}</article><nav class="footer" aria-label="Legal and support"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a><a href="${SUPPORT_URL}" rel="noreferrer">@${escapeHtml(SUPPORT_USERNAME)}</a></nav></main></body></html>`;
 }
 
+export function injectConnectTrustLinks(html) {
+  const source = String(html || "");
+  if (!source.includes("<title>TelePilot Connect</title>") || source.includes("telepilot-trust-links")) return source;
+  const block = `<div id="telepilot-trust-links" style="margin:14px auto 0;text-align:center;color:#617489;font-size:11px;line-height:1.55;max-width:420px">By continuing, you agree to the <a href="/terms" style="color:#86cfff;text-decoration:none">Terms</a> and acknowledge the <a href="/privacy" style="color:#86cfff;text-decoration:none">Privacy Policy</a>.<br><a href="/support" style="color:#718ba3;text-decoration:none">Support</a> · <a href="${SUPPORT_URL}" rel="noreferrer" style="color:#718ba3;text-decoration:none">@${escapeHtml(SUPPORT_USERNAME)}</a></div>`;
+  const marker = `<div class="footer">TELEPILOT • SECURE CONNECTION</div>`;
+  return source.includes(marker) ? source.replace(marker, `${block}${marker}`) : source.replace(/<\/main>/i, `${block}</main>`);
+}
+
 function sendPage(res, body) {
   res.statusCode = 200;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -122,6 +130,17 @@ export function installLegalPages() {
       try { pathname = new URL(req.url || "/", "http://telepilot.local").pathname; } catch {}
       if (req.method === "GET" && ["/privacy", "/terms", "/support"].includes(pathname)) {
         return sendPage(res, renderLegalPage(pathname.slice(1)));
+      }
+      if (req.method === "GET" && pathname === "/connect") {
+        const originalEnd = res.end.bind(res);
+        res.end = function telePilotLegalConnectEnd(chunk, encoding, callback) {
+          if (chunk !== undefined && chunk !== null) {
+            const body = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+            const transformed = injectConnectTrustLinks(body);
+            if (transformed !== body) chunk = transformed;
+          }
+          return originalEnd(chunk, encoding, callback);
+        };
       }
       return listener(req, res);
     };
