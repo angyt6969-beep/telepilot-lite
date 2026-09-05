@@ -8,7 +8,8 @@ on:
       - "pro-controls.js"
       - "security-core.js"
       - "security-tests.mjs"
-      - "scripts/apply-security-pack.mjs"
+      - "scripts/security_patch_app.py"
+      - "scripts/security_patch_pro.py"
       - ".github/workflows/security-pack.yml"
       - "package.json"
       - "package-lock.json"
@@ -35,13 +36,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: package-lock.json
-        continue-on-error: true
-      - name: Check migration script
-        run: node --check scripts/apply-security-pack.mjs
+      - name: Check security migration scripts
+        run: python3 -m py_compile scripts/security_patch_app.py scripts/security_patch_pro.py
       - name: Apply security migration
-        run: node scripts/apply-security-pack.mjs
+        run: |
+          python3 scripts/security_patch_app.py
+          python3 scripts/security_patch_pro.py
       - name: Generate deterministic dependency lock
         run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
       - name: Install exact dependencies
@@ -52,6 +52,12 @@ jobs:
           node --check pro-controls.js
           node --check security-core.js
           node --check security-tests.mjs
+      - name: Confirm hardened code is present
+        run: |
+          grep -q "TELEPILOT_SECURITY_PACK_V1" app.js
+          grep -q "TELEPILOT_SECURITY_PACK_V1" pro-controls.js
+          grep -q "__Host-telepilot_connect" app.js
+          grep -q "verifyBackupSignature" pro-controls.js
       - name: Security regression tests
         run: node security-tests.mjs
       - name: Critical dependency audit
@@ -59,7 +65,7 @@ jobs:
       - name: Commit hardened sources
         run: |
           if git diff --quiet -- app.js pro-controls.js package-lock.json; then
-            echo "Security Pack already applied."
+            echo "Security Pack already applied and verified."
             exit 0
           fi
           git config user.name "github-actions[bot]"
