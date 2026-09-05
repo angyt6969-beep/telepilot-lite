@@ -243,7 +243,7 @@ export function redactSecrets(value) {
     .replace(/TP-(?:[A-Z2-9]{4}-){2}[A-Z2-9]{4}/gi, "TP-[REDACTED]")
     .replace(/TP-(?:[A-Z2-9]{5}-){3}[A-Z2-9]{5}/gi, "TP-[REDACTED]")
     .replace(/\b\d{6,12}:[A-Za-z0-9_-]{20,}\b/g, "[BOT_TOKEN_REDACTED]")
-    .replace(/([?&](?:token|code|password)=)[^&#\s]+/gi, "$1[REDACTED]")
+    .replace(/((?:[?&]|\b)(?:token|code|password)=)[^&#\s]+/gi, "$1[REDACTED]")
     .replace(/("(?:token|password|code|phone|session|api_hash)"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2")
     .replace(/\+\d{7,15}\b/g, "[PHONE_REDACTED]");
 }
@@ -268,6 +268,9 @@ export function installConsoleRedaction() {
 }
 
 export function requestAddress(req) {
-  const forwarded = String(req?.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
-  return forwarded || String(req?.socket?.remoteAddress || "unknown");
+  const forwarded = String(req?.headers?.["x-forwarded-for"] || "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(Boolean);
+  return forwarded[forwarded.length - 1] || String(req?.socket?.remoteAddress || "unknown");
 }
