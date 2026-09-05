@@ -1,6 +1,6 @@
 const premiumEmojiByAlt = new Map();
 let deepPremiumEnabled = true;
-let genericFallbackId = "";
+let fallbackPremiumIds = [];
 
 const DEEP_PAGE_PREFIXES = [
   // Main Tools / Smart Preview.
@@ -93,51 +93,77 @@ const ALWAYS_PREMIUM_BUTTON_CALLBACKS = new Set([
   "v1_preview",
 ]);
 
+// Prefer a premium emoji that matches the action. Only Keys intentionally fall back
+// to the diamond; unrelated controls no longer share the same generic diamond icon.
 const FALLBACK_EMOJI = new Map([
-  ["🟣", ["💎", "⚡️"]],
-  ["👥", ["📱", "👀"]],
-  ["👤", ["📱"]],
-  ["🔑", ["💎"]],
-  ["▶️", ["⚡️"]],
-  ["▶", ["⚡️"]],
-  ["⏹", ["❗️"]],
-  ["📊", ["📈"]],
-  ["📢", ["💡"]],
-  ["🧾", ["📝"]],
-  ["🔐", ["💎"]],
-  ["🔒", ["💎"]],
-  ["🛑", ["❗️"]],
+  ["🟣", ["🛡️", "🔐", "⚡️", "🔥"]],
+  ["👥", ["📱", "👀", "✅"]],
+  ["👤", ["📱", "👀"]],
+  ["🔑", ["💎", "✅"]],
+  ["▶️", ["⚡️", "🔥"]],
+  ["▶", ["⚡️", "🔥"]],
+  ["⏹", ["❗️", "⏳"]],
+  ["⏹️", ["❗️", "⏳"]],
+  ["📊", ["📈", "✅"]],
+  ["📢", ["💡", "🔥"]],
+  ["📣", ["💡", "🔥"]],
+  ["🧾", ["📝", "📁"]],
+  ["🔐", ["✅", "📱"]],
+  ["🔒", ["✅", "📱"]],
+  ["🛡", ["✅", "⚡️"]],
+  ["🛡️", ["✅", "⚡️"]],
+  ["🛑", ["❗️", "🔥"]],
+  ["🚫", ["❗️", "⏳"]],
+  ["⚠️", ["❗️", "🔥"]],
   ["🩺", ["✅", "👀"]],
-  ["📦", ["📁"]],
-  ["🔔", ["💡"]],
-  ["🔎", ["👀"]],
-  ["✨", ["💡"]],
-  ["🎯", ["⚡️"]],
-  ["🧭", ["📆"]],
-  ["🕒", ["📆"]],
-  ["🔄", ["📆"]],
-  ["❓", ["💡"]],
-  ["🆕", ["🔥"]],
-  ["👁", ["👀"]],
-  ["👁️", ["👀"]],
-  ["⬅️", ["⚡️"]],
-  ["⬅", ["⚡️"]],
-  ["🗑", ["❗️"]],
-  ["🗑️", ["❗️"]],
-  ["⭐", ["🔥"]],
-  ["⭐️", ["🔥"]],
-  ["↩", ["📆"]],
-  ["🛡", ["💎"]],
-  ["🛡️", ["💎"]],
-  ["🚫", ["❗️"]],
-  ["♻️", ["📆"]],
-  ["🔌", ["📱"]],
-  ["✖️", ["❗️"]],
+  ["📦", ["📁", "📝"]],
+  ["📥", ["📁", "📱"]],
+  ["📤", ["📁", "⚡️"]],
+  ["🔔", ["💡", "🔥"]],
+  ["🔎", ["👀", "💡"]],
+  ["✨", ["💡", "🔥"]],
+  ["🎯", ["⚡️", "✅"]],
+  ["🧭", ["📆", "👀"]],
+  ["🕒", ["📆", "⏳"]],
+  ["⏱", ["📆", "⏳"]],
+  ["⏱️", ["📆", "⏳"]],
+  ["📅", ["📆", "⏳"]],
+  ["🔄", ["📆", "⚡️"]],
+  ["♻️", ["📆", "✅"]],
+  ["❓", ["💡", "👀"]],
+  ["🆕", ["🔥", "⚡️"]],
+  ["👁", ["👀", "💡"]],
+  ["👁️", ["👀", "💡"]],
+  ["👀", ["👀", "💡"]],
+  ["⬅️", ["📆", "⚡️"]],
+  ["⬅", ["📆", "⚡️"]],
+  ["🗑", ["❗️", "🔥"]],
+  ["🗑️", ["❗️", "🔥"]],
+  ["⭐", ["🔥", "✅"]],
+  ["⭐️", ["🔥", "✅"]],
+  ["↩", ["📆", "✅"]],
+  ["🔌", ["📱", "❗️"]],
+  ["✖️", ["❗️", "🔥"]],
   ["✏️", ["✍️", "📝"]],
-  ["➕", ["💡"]],
+  ["➕", ["✅", "💡"]],
+  ["🧪", ["✍️", "💡"]],
+  ["🪄", ["✍️", "🔥"]],
+  ["📜", ["📝", "📁"]],
+  ["⏸", ["⏳", "❗️"]],
+  ["⏸️", ["⏳", "❗️"]],
+  ["⏭", ["⚡️", "📆"]],
+  ["⏭️", ["⚡️", "📆"]],
+  ["🟢", ["✅", "🔥"]],
+  ["⌛", ["⏳", "📆"]],
+  ["📡", ["⚡️", "📱"]],
+  ["📈", ["📈", "✅"]],
+  ["💡", ["💡", "🔥"]],
+  ["📝", ["📝", "✍️"]],
+  ["🔥", ["🔥", "⚡️"]],
+  ["✅", ["✅", "📈"]],
 ]);
 
-const GENERIC_FALLBACKS = ["💎", "⚡️", "✅", "💡", "📱", "📝", "📁", "📆", "📈", "❗️", "👀", "⏳", "🔥"];
+const GENERIC_FALLBACKS = ["⚡️", "✅", "💡", "📱", "📝", "📁", "📆", "📈", "❗️", "👀", "⏳", "🔥", "💎"];
 
 const EMOJI_RE = /(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)/gu;
 const LEADING_EMOJI_RE = /^(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)\s*/u;
@@ -167,11 +193,21 @@ function firstAvailable(candidates = []) {
   return "";
 }
 
+function stableFallbackId(key) {
+  if (!fallbackPremiumIds.length) return "";
+  let hash = 2166136261;
+  for (const char of normalizeEmoji(key)) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return fallbackPremiumIds[hash % fallbackPremiumIds.length] || "";
+}
+
 function premiumIdForEmoji(emoji) {
   const exact = directId(emoji);
   if (exact) return exact;
   const semantic = firstAvailable(FALLBACK_EMOJI.get(String(emoji || "")) || FALLBACK_EMOJI.get(normalizeEmoji(emoji)) || []);
-  return semantic || genericFallbackId;
+  return semantic || stableFallbackId(emoji);
 }
 
 export function configureDeepPremiumEmojiStickers(stickers = []) {
@@ -181,11 +217,19 @@ export function configureDeepPremiumEmojiStickers(stickers = []) {
     const id = typeof sticker?.custom_emoji_id === "string" ? sticker.custom_emoji_id : "";
     mapSticker(emoji, id);
   }
-  genericFallbackId = firstAvailable(GENERIC_FALLBACKS)
-    || [...premiumEmojiByAlt.values()][0]
-    || "";
-  deepPremiumEnabled = premiumEmojiByAlt.size > 0 && !!genericFallbackId;
-  return { available: premiumEmojiByAlt.size, enabled: deepPremiumEnabled };
+
+  const preferred = GENERIC_FALLBACKS
+    .map(emoji => directId(emoji))
+    .filter(Boolean);
+  const all = [...new Set(premiumEmojiByAlt.values())];
+  fallbackPremiumIds = [...new Set([...preferred, ...all])];
+
+  deepPremiumEnabled = premiumEmojiByAlt.size > 0 && fallbackPremiumIds.length > 0;
+  return {
+    available: premiumEmojiByAlt.size,
+    enabled: deepPremiumEnabled,
+    fallbackPool: fallbackPremiumIds.length,
+  };
 }
 
 function isDeepPage(text) {
