@@ -19,6 +19,7 @@ const CALLBACK_LABELS = new Map([
   ["activity", "📊 Activity"],
   ["access", "🔑 Access"],
   ["redeem_key", "Redeem key"],
+  ["admin", "🟣 Admin Panel"],
 ]);
 
 function cb(text, callback_data) { return { text, callback_data }; }
@@ -86,6 +87,7 @@ function transformDashboard(text, other) {
   const messageReady = message.startsWith("✅");
   const ready = messageReady && groups > 0;
   const setupComplete = 1 + (messageReady ? 1 : 0) + (groups > 0 ? 1 : 0);
+  const isAdminDashboard = callbackIds(other).has("admin");
 
   const stateLine = running
     ? "● LIVE · Autoposting active"
@@ -127,6 +129,7 @@ function transformDashboard(text, other) {
   rows.push([cb("👤 Sender", "account"), cb("📝 Message", "message")]);
   rows.push([cb("📍 Destinations", "groups"), cb("⏱ Schedule", "interval")]);
   rows.push([cb("📊 Activity", "activity"), cb("🔑 Access", "access")]);
+  if (isAdminDashboard) rows.push([{ text: "🟣 Admin Panel", callback_data: "admin", style: "primary" }]);
   rows.push([cb("↻ Refresh", "home")]);
 
   return { text: newText, other: withKeyboard(other, rows) };
@@ -266,210 +269,102 @@ function transformMessageEditor(text, other) {
   };
 }
 
+function transformPreview(text, other) {
+  return { text, other: normalizeExistingButtons(other) };
+}
+
 function transformGroups(text, other) {
-  const sections = text.split("\n\n");
-  const list = sections[1] || "No destinations added.";
-  const none = /No destinations added/i.test(list);
-  const count = none ? 0 : list.split("\n").filter(line => /^\d+\./.test(line.trim())).length;
-
+  const lines = String(text).split("\n");
+  const entries = lines.filter(line => /^\d+\.\s/.test(line));
   return {
     text: [
-      `📍 Destinations${count ? ` · ${count}` : ""}`,
+      "📍 Destinations",
+      entries.length ? `● ${entries.length} saved` : "○ None saved",
       "",
-      none ? "No destinations yet." : list,
+      entries.length ? entries.join("\n") : "Add a group or channel to continue.",
       "",
-      none
-        ? "Add the first group or channel you manage."
-        : "TelePilot will send every cycle to all destinations above.",
-      "",
-      "Private group? Run /addhere inside the group while you are an admin.",
+      "TelePilot only posts to destinations you explicitly add.",
     ].join("\n"),
-    other: withKeyboard(other, count
-      ? [
-          [cb("＋ Add destination", "add_group"), cb("Manage", "remove_group_menu")],
-          [cb("Clear all", "clear_groups")],
-          [cb("← Dashboard", "home")],
-        ]
-      : [
-          [cb("＋ Add destination", "add_group")],
-          [cb("← Dashboard", "home")],
-        ]),
-  };
-}
-
-function transformAddDestination(text, other) {
-  return {
-    text: [
-      "📍 Add destination",
-      "Quick setup",
-      "",
-      "1 · Add @TelePilottBot as an admin",
-      "2 · For channels, allow it to post",
-      "3 · Send the public @username or t.me link here",
-      "",
-      "Private group? Run /addhere inside that group instead.",
-    ].join("\n"),
-    other: withKeyboard(other, [[cb("Cancel", "groups")]]),
-  };
-}
-
-function transformSchedule(text, other) {
-  const current = lineValue(text, "Current: ") || "30 min";
-  const selected = current.endsWith(" min") ? `${current.replace(" min", "")}m` : current;
-  const markup = cloneMarkup(other?.reply_markup);
-
-  if (markup?.inline_keyboard) {
-    for (const row of markup.inline_keyboard) {
-      for (const button of row) {
-        if (button.callback_data?.startsWith("i") && button.text === selected) button.text = `✓ ${button.text}`;
-        if (button.callback_data === "home") button.text = "← Dashboard";
-      }
-    }
-  }
-
-  return {
-    text: [
-      "⏱ Schedule",
-      `Current  ${current}`,
-      "",
-      "Choose how often TelePilot should repeat your message.",
-      "Your selection applies immediately.",
-    ].join("\n"),
-    other: { ...(other || {}), reply_markup: markup },
-  };
-}
-
-function transformActivity(text, other) {
-  const status = lineValue(text, "Status: ");
-  const sender = displaySender(lineValue(text, "Posting as: "));
-  const total = lineValue(text, "Total successful posts: ") || "0";
-  const last = lineValue(text, "Last cycle: ") || "Never";
-  const result = lineValue(text, "Last result: ") || "No runs yet";
-  const next = lineValue(text, "Next cycle: ") || "—";
-  const running = status.includes("Running");
-  const sent = Number(result.match(/✅\s*(\d+)\s*sent/)?.[1] || 0);
-  const failed = Number(result.match(/❌\s*(\d+)\s*failed/)?.[1] || 0);
-
-  const resultLine = result === "No runs yet"
-    ? "No posting cycles yet"
-    : failed > 0
-      ? `⚠️ Last result  ${sent} sent · ${failed} failed`
-      : `✅ Last result  ${sent} sent · 0 failed`;
-
-  const rows = [[cb("↻ Refresh", "activity")]];
-  if (failed > 0) rows.push([cb("📍 Check destinations", "groups")]);
-  rows.push([cb("← Dashboard", "home")]);
-
-  return {
-    text: [
-      "📊 Activity",
-      running ? "● LIVE · Autoposting active" : "○ Idle",
-      "",
-      `Last post  ${last}`,
-      resultLine,
-      `Total sent  ${total}`,
-      running ? `Next post  ${next}` : null,
-      "",
-      `Sender  ${sender || "TelePilot Bot"}`,
-      failed > 0 ? "⚠️ One or more destinations may need permission or access fixes." : null,
-    ].filter(Boolean).join("\n"),
-    other: withKeyboard(other, rows),
-  };
-}
-
-function transformStart(text, other) {
-  const sender = displaySender(lineValue(text, "Posting as: "));
-  const destinations = lineValue(text, "Destinations: ");
-  const interval = lineValue(text, "Interval: ");
-
-  return {
-    text: [
-      "🚀 Ready to launch",
-      "● READY · Final check",
-      "",
-      `Sender  ${sender}`,
-      `Destinations  ${destinations}`,
-      `Schedule  ${interval}`,
-      "",
-      "The first post sends immediately. Repeats begin after the selected schedule.",
-    ].join("\n"),
-    other: withKeyboard(other, [
-      [cb("▶ Go live", "start_confirm")],
-      [cb("← Dashboard", "home")],
-    ]),
-  };
-}
-
-function transformRemoveDestination(text, other) {
-  return {
-    text: text
-      .replace("➖ REMOVE DESTINATION", "📍 Manage destinations")
-      .replace("Choose a destination to remove:", "Choose one to remove:"),
     other: normalizeExistingButtons(other),
   };
 }
 
-function transformClearDestinations(text, other) {
+function transformAddGroup(text, other) {
   return {
-    text: text.replace("🗑 CLEAR DESTINATIONS", "Clear destinations"),
-    other: withKeyboard(other, [
-      [cb("Clear all", "clear_groups_confirm")],
-      [cb("Cancel", "groups")],
-    ]),
+    text: [
+      "📍 Add destination",
+      "",
+      "Send a public @username or t.me link for the group or channel you want to add.",
+      "",
+      "For private groups, use /addhere from inside the group.",
+    ].join("\n"),
+    other: normalizeExistingButtons(other),
   };
 }
 
-function transformPreviewButtons(text, other) {
-  const ids = callbackIds(other);
-  if (ids.has("message_change") && ids.has("message")) {
-    return {
-      text,
-      other: withKeyboard(other, [
-        [cb("✏️ Edit message", "message_change")],
-        [cb("← Message", "message")],
-      ]),
-    };
-  }
-  return { text, other: normalizeExistingButtons(other) };
+function transformRemoveGroup(text, other) {
+  return { text: String(text).replace("➖ REMOVE DESTINATION", "📍 Manage destinations"), other: normalizeExistingButtons(other) };
 }
 
-export function transformUi(text, other) {
-  const value = String(text ?? "");
+function transformInterval(text, other) {
+  const current = lineValue(text, "Current: ");
+  return {
+    text: [
+      "⏱ Schedule",
+      "",
+      current ? `Current interval  ${current}` : null,
+      "Choose how often TelePilot should post.",
+    ].filter(Boolean).join("\n"),
+    other: normalizeExistingButtons(other),
+  };
+}
+
+function transformActivity(text, other) {
+  const lines = String(text).split("\n").slice(1).filter(Boolean);
+  return {
+    text: ["📊 Activity", "", ...lines].join("\n"),
+    other: normalizeExistingButtons(other),
+  };
+}
+
+function transformStart(text, other) {
+  return { text: String(text).replace("▶️ START TELEPILOT", "▶ Ready to start"), other: normalizeExistingButtons(other) };
+}
+
+function transform(text, other) {
+  const value = String(text || "");
   if (value.startsWith("✈️ TELEPILOT")) return transformDashboard(value, other);
-  if (value.startsWith("🔑 ACCESS") || value.startsWith("🔐 TELEPILOT ACCESS")) return transformAccess(value, other);
+  if (value.startsWith("🔐 TELEPILOT ACCESS") || value.startsWith("🔑 ACCESS")) return transformAccess(value, other);
   if (value.startsWith("👤 PERSONAL ACCOUNT")) return transformAccount(value, other);
   if (value.startsWith("📱 CONNECT ACCOUNT")) return transformPhonePrompt(value, other);
   if (value.startsWith("📩 LOGIN CODE REQUESTED")) return transformLoginRequested(value, other);
   if (value.startsWith("📝 AD MESSAGE")) return transformMessage(value, other);
   if (value.startsWith("✏️ SET AD MESSAGE")) return transformMessageEditor(value, other);
   if (value.startsWith("👥 GROUPS & CHANNELS")) return transformGroups(value, other);
-  if (value.startsWith("➕ ADD DESTINATION")) return transformAddDestination(value, other);
-  if (value.startsWith("⏱ INTERVAL")) return transformSchedule(value, other);
+  if (value.startsWith("➕ ADD DESTINATION")) return transformAddGroup(value, other);
+  if (value.startsWith("➖ REMOVE DESTINATION")) return transformRemoveGroup(value, other);
+  if (value.startsWith("⏱ INTERVAL")) return transformInterval(value, other);
   if (value.startsWith("📊 ACTIVITY")) return transformActivity(value, other);
   if (value.startsWith("▶️ START TELEPILOT")) return transformStart(value, other);
-  if (value.startsWith("➖ REMOVE DESTINATION")) return transformRemoveDestination(value, other);
-  if (value.startsWith("🗑 CLEAR DESTINATIONS")) return transformClearDestinations(value, other);
-  return transformPreviewButtons(value, other);
+  return { text: value, other: normalizeExistingButtons(other) };
 }
 
 export function installUiEnhancements(ApiClass) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotUiInstalled) return;
-
   const originalSendMessage = ApiClass.prototype.sendMessage;
   const originalEditMessageText = ApiClass.prototype.editMessageText;
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") {
     throw new Error("Unsupported grammY Api shape for TelePilot UI enhancements");
   }
-
   Object.defineProperty(ApiClass.prototype, "__telepilotUiInstalled", { value: true });
 
   ApiClass.prototype.sendMessage = function(chatId, text, other, ...rest) {
-    const transformed = transformUi(text, other);
+    const transformed = transform(text, other);
     return originalSendMessage.call(this, chatId, transformed.text, transformed.other, ...rest);
   };
 
   ApiClass.prototype.editMessageText = function(chatId, messageId, text, other, ...rest) {
-    const transformed = transformUi(text, other);
+    const transformed = transform(text, other);
     return originalEditMessageText.call(this, chatId, messageId, transformed.text, transformed.other, ...rest);
   };
 }
