@@ -3,6 +3,8 @@ let premiumEnabled = true;
 
 const TELEPILOT_DUCK_CUSTOM_EMOJI_ID = "5231361378748472914";
 
+// TELEPILOT_SEMANTIC_EMOJI_V1
+
 const UI_PREFIXES = [
   "✈️ TelePilot",
   "🔒 TelePilot Access",
@@ -29,8 +31,8 @@ const BUTTON_ICONS = new Map([
   ["add_group", "📁"],
   ["interval", "📆"],
   ["activity", "📈"],
-  ["access", "💎"],
-  ["redeem_key", "💎"],
+  ["access", "🔑"],
+  ["redeem_key", "🔑"],
   ["start", "⚡️"],
   ["start_confirm", "🔥"],
   ["stop", "❗️"],
@@ -69,7 +71,7 @@ const FALLBACK_PREFIXES = new Map([
 ]);
 
 const PREMIUM_TEXT_EMOJI = [
-  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "💎", "⚡️", "❗️", "✍️", "👀", "⏳",
+  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "🔑", "⚡️", "❗️", "✍️", "👀", "⏳",
 ];
 
 function customEmojiId(alt) {
@@ -108,8 +110,8 @@ function enhanceUiText(text) {
     .replace(/^📍 Manage destinations/m, "📁 Manage destinations")
     .replace(/^⏱ Schedule/m, "📆 Schedule")
     .replace(/^📊 Activity/m, "📈 Activity")
-    .replace(/^🔑 Access/m, "💎 Access")
-    .replace(/^🔒 TelePilot Access/m, "💎 TelePilot Access")
+    .replace(/^🔑 Access/m, "🔑 Access")
+    .replace(/^🔒 TelePilot Access/m, "🔑 TelePilot Access")
     .replace(/^🚀 Ready to launch/m, "🔥 Ready to launch")
     .replace(/^● LIVE(?:\s*[·—-])?\s*/m, "🔥 LIVE — ")
     .replace(/^● READY(?:\s*[·—-])?\s*/m, "✅ READY — ")
@@ -134,7 +136,7 @@ function enhanceUiText(text) {
     .replace(/^Total sent\s{2,}/gm, "Total sent — ")
     .replace(/^Next post\s{2,}/gm, "Next post — ")
     .replace(/^Next step\s+→\s+/gm, "⚡️ Next step — ")
-    .replace(/^Access\s{2,}/gm, "💎 Access — ")
+    .replace(/^Access\s{2,}/gm, "🔑 Access — ")
     .replace(/^Ready when you are\./m, "✅ Ready when you are.");
 
   return value;
