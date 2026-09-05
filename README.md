@@ -11,10 +11,18 @@ TelePilot uses access keys and supports two posting identities:
 
 Personal-account connection is initiated from the bot. The phone number is deleted from the bot chat after it is used to request a login code. The Telegram login code and 2FA password are entered only on TelePilot's short-lived HTTPS connection page and are not sent as bot chat messages.
 
+## Admin controls
+
+Authorized TelePilot admins have an admin-only control panel in the Telegram dashboard and can also open it with `/admin`.
+
+The panel provides customer/access management, access-key generation and revocation, active-post controls, expiring-access views, statistics, announcements, an audit log, and security/session controls. Existing `/genkey`, `/keys`, and `/revoke` commands remain available as shortcuts.
+
+TelePilot does not impose an application-level maximum on the number of saved destinations. Large destination lists are paginated/truncated only for Telegram UI display, while the full saved list remains available for posting and management.
+
 ## Production entrypoints
 
 - `startup.js` — updates the Telegram bot profile description and starts the app.
-- `app.js` — access keys, multi-user state, account connection, destination management, scheduler, posting and health/web endpoints.
+- `app.js` — access keys, multi-user state, account connection, destination management, scheduler, posting, admin controls and health/web endpoints.
 
 `npm start` runs `node startup.js`.
 
@@ -28,7 +36,7 @@ Each bot user is isolated under:
 
 Settings are stored in `settings.json`. Personal Telegram sessions are stored encrypted in `personal-session.enc`. The encryption key is generated once and stored with restrictive permissions on the same persistent Railway volume.
 
-Access keys are stored under `/data/access-keys.json`; only hashes of redeemable keys are persisted.
+Access keys are stored under `/data/access-keys.json`; only hashes of redeemable keys are persisted. Admin audit events are stored under `/data/admin-events.jsonl`.
 
 ## Required environment variables
 
@@ -42,6 +50,7 @@ Optional:
 
 - `DATA_DIR` (defaults to `/data`)
 - `PUBLIC_URL`
+- `TELEPILOT_ADMIN_ID` / `OWNER_ID` for explicit admin IDs; existing persisted admin IDs are also supported by the application
 
 Do not commit credentials, access-key data, or `/data` session contents to the repository.
 
