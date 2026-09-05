@@ -65,11 +65,11 @@ function transformDestinations(text, sender) {
       none ? "No destinations yet." : list,
       "",
       none
-        ? "Add the first group or channel you want your personal account to post to."
+        ? "Add the first group or channel your connected account can post to."
         : `${sender.label} sends every posting cycle to all destinations above.`,
       "",
-      "TelePilot Bot is used to link and verify destinations during setup; the scheduled posts themselves are sent from your personal account.",
-      "Private group? Run /addhere inside that group while you are an admin.",
+      "Public destinations are validated through your connected account — @TelePilottBot does not need to be an admin.",
+      "Private group without a public username? /addhere still works; the bot only needs to be present so it can receive that command.",
     ].join("\n");
   }
 
@@ -84,7 +84,7 @@ function transformDestinations(text, sender) {
       : "TelePilot Bot sends every posting cycle to all destinations above.",
     "",
     "The bot must stay in each destination with the permissions needed to post.",
-    "Private group? Run /addhere inside that group while you are an admin.",
+    "Private group? Run /addhere inside the group while you are an admin.",
   ].join("\n");
 }
 
@@ -96,12 +96,12 @@ function transformAddDestination(sender) {
       "",
       `Posting as  ${sender.label}`,
       "",
-      `1 · Make sure ${sender.label} is in the group/channel and can post`,
-      "2 · Add @TelePilottBot as an admin so TelePilot can link and verify it",
+      `1 · Make sure ${sender.label} is already joined to the group/channel`,
+      "2 · For channels, that account must have permission to post messages",
       "3 · Send the public @username or t.me link here",
       "",
-      "Your personal account sends the scheduled posts — the bot is only used for destination setup and verification.",
-      "Private group? Run /addhere inside that group instead.",
+      "@TelePilottBot does not need to be added or made admin for public destinations in personal-account mode.",
+      "Private group without a public username? Add the bot to the group and run /addhere; it does not need admin rights when your personal account is the sender.",
     ].join("\n");
   }
 
