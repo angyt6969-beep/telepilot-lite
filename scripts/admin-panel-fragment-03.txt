@@ -1,0 +1,201 @@
+  saveState(target);
+  logAdminEvent("access_revoked", { actorUid: String(ctx.from.id), uid: String(target.uid) });
+  await showAdminUser(ctx, target.uid, Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_user_restore:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  target.accessRevoked = false;
+  saveState(target);
+  logAdminEvent("access_restored", { actorUid: String(ctx.from.id), uid: String(target.uid) });
+  await showAdminUser(ctx, target.uid, Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_user_stop:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  stopPostingLoop(target);
+  logAdminEvent("posting_stopped_admin", { actorUid: String(ctx.from.id), uid: String(target.uid) });
+  await showAdminUser(ctx, target.uid, Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_user_disconnect:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getAdminSnapshot(ctx.match[1]);
+  await adminRender(ctx, `🔌 DISCONNECT ACCOUNT\n\nDisconnect the stored personal Telegram account for ${formatAdminUserName(target)}?`, new InlineKeyboard().text("🔌 Confirm Disconnect", `admin_user_disconnect_confirm:${ctx.match[1]}:${ctx.match[2]}`).danger().row().text("⬅️ Cancel", `admin_user:${ctx.match[1]}:${ctx.match[2]}`));
+});
+bot.callbackQuery(/^admin_user_disconnect_confirm:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  await disconnectPersonalAccount(target, ctx.from.id);
+  await showAdminUser(ctx, target.uid, Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_user_reset:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getAdminSnapshot(ctx.match[1]);
+  await adminRender(ctx, `♻️ RESET CONFIGURATION\n\nClear ${formatAdminUserName(target)}'s saved message, destinations and interval settings? Access and the connected personal account will be kept.`, new InlineKeyboard().text("♻️ Confirm Reset", `admin_user_reset_confirm:${ctx.match[1]}:${ctx.match[2]}`).danger().row().text("⬅️ Cancel", `admin_user:${ctx.match[1]}:${ctx.match[2]}`));
+});
+bot.callbackQuery(/^admin_user_reset_confirm:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  stopPostingLoop(target);
+  target.adMessage = "";
+  target.adEntities = [];
+  target.groups = [];
+  target.intervalMinutes = 30;
+  target.lastRunAt = null;
+  target.lastCycleSuccess = 0;
+  target.lastCycleFailed = 0;
+  saveState(target);
+  logAdminEvent("user_reset", { actorUid: String(ctx.from.id), uid: String(target.uid) });
+  await showAdminUser(ctx, target.uid, Number(ctx.match[2]));
+});
+
+bot.callbackQuery("admin_keys", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminKeys(ctx);
+});
+bot.callbackQuery("admin_key_generate", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const kb = new InlineKeyboard()
+    .text("1 day", "admin_key_gen:1").text("3 days", "admin_key_gen:3").row()
+    .text("7 days", "admin_key_gen:7").text("30 days", "admin_key_gen:30").row()
+    .text("90 days", "admin_key_gen:90").text("365 days", "admin_key_gen:365").row()
+    .text("Lifetime", "admin_key_gen:lifetime").text("✏️ Custom", "admin_key_custom").row()
+    .text("⬅️ Keys", "admin_keys");
+  await adminRender(ctx, "➕ GENERATE KEY\n\nChoose a duration.", kb);
+});
+bot.callbackQuery(/^admin_key_gen:(\d+|lifetime)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const duration = ctx.match[1] === "lifetime" ? "lifetime" : Number(ctx.match[1]);
+  await generateAdminKey(ctx, duration);
+});
+bot.callbackQuery("admin_key_custom", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const state = stateFromCtx(ctx);
+  state.awaiting = "admin_key_custom_days";
+  state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  state.awaitingPromptChatId = ctx.chat?.id || null;
+  await ctx.editMessageText("✏️ CUSTOM KEY\n\nSend the number of access days (1–3650).", { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "admin_key_generate") });
+});
+bot.callbackQuery(/^admin_keylist:(all|unused|redeemed|revoked):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminKeyList(ctx, ctx.match[1], Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_key:([a-f0-9]+):(all|unused|redeemed|revoked):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminKeyDetail(ctx, ctx.match[1], ctx.match[2], Number(ctx.match[3]));
+});
+bot.callbackQuery(/^admin_key_revoke:([a-f0-9]+):(all|unused|redeemed|revoked):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const record = loadKeyDb().keys.find(k => String(k.id) === String(ctx.match[1]));
+  if (!record) return showAdminKeys(ctx);
+  await adminRender(ctx, `🚫 REVOKE KEY\n\nRevoke key ${record.id}?${record.redeemedBy ? " If this is the user's current key, their access will also be revoked." : ""}`, new InlineKeyboard().text("🚫 Confirm Revoke", `admin_key_revoke_confirm:${record.id}:${ctx.match[2]}:${ctx.match[3]}`).danger().row().text("⬅️ Cancel", `admin_key:${record.id}:${ctx.match[2]}:${ctx.match[3]}`));
+});
+bot.callbackQuery(/^admin_key_revoke_confirm:([a-f0-9]+):(all|unused|redeemed|revoked):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const result = revokeKey(ctx.match[1]);
+  if (result.ok) logAdminEvent("key_revoked", { actorUid: String(ctx.from.id), uid: result.record.redeemedBy || undefined, keyId: result.record.id });
+  await showAdminKeyDetail(ctx, ctx.match[1], ctx.match[2], Number(ctx.match[3]));
+});
+
+bot.callbackQuery(/^admin_active:(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminActive(ctx, Number(ctx.match[1]));
+});
+bot.callbackQuery(/^admin_active_stop:(\d+):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  stopPostingLoop(target);
+  logAdminEvent("posting_stopped_admin", { actorUid: String(ctx.from.id), uid: String(target.uid) });
+  await showAdminActive(ctx, Number(ctx.match[2]));
+});
+bot.callbackQuery("admin_active_stop_all", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const count = [...states.values()].filter(s => s.posting).length;
+  await adminRender(ctx, `🛑 STOP ALL POSTING\n\nStop all ${count} currently running TelePilot posting loop(s)?`, new InlineKeyboard().text("🛑 Confirm Stop All", "admin_active_stop_all_confirm").danger().row().text("⬅️ Cancel", "admin_active:0"));
+});
+bot.callbackQuery("admin_active_stop_all_confirm", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  let count = 0;
+  for (const state of states.values()) {
+    if (!state.posting) continue;
+    stopPostingLoop(state);
+    count++;
+  }
+  logAdminEvent("posting_stopped_all", { actorUid: String(ctx.from.id), count });
+  await showAdminActive(ctx, 0);
+});
+
+bot.callbackQuery("admin_expiring", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminExpiringMenu(ctx);
+});
+bot.callbackQuery(/^admin_expiring_list:(1|3|7|expired):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminExpiringList(ctx, ctx.match[1], Number(ctx.match[2]));
+});
+bot.callbackQuery(/^admin_exp_extend:(\d+):(1|3|7|expired):(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const target = getState(ctx.match[1]);
+  extendUserAccess(target, 30);
+  logAdminEvent("access_extended", { actorUid: String(ctx.from.id), uid: String(target.uid), duration: "30d" });
+  await showAdminExpiringList(ctx, ctx.match[2], Number(ctx.match[3]));
+});
+
+bot.callbackQuery("admin_stats", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminStats(ctx);
+});
+bot.callbackQuery(/^admin_logs:(\d+)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminLogs(ctx, Number(ctx.match[1]));
+});
+
+bot.callbackQuery("admin_announce", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const state = stateFromCtx(ctx);
+  clearAwaiting(state);
+  adminDrafts.delete(String(state.uid));
+  await showAdminAnnouncement(ctx);
+});
+bot.callbackQuery(/^admin_announce_target:(all|active|expiring)$/, async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const state = stateFromCtx(ctx);
+  state.awaiting = "admin_announcement_text";
+  state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  state.awaitingPromptChatId = ctx.chat?.id || null;
+  adminDrafts.set(String(state.uid), { mode: ctx.match[1] });
+  await ctx.editMessageText(`📢 NEW ANNOUNCEMENT\n\nAudience: ${ctx.match[1]} (${announcementRecipients(ctx.match[1]).length} users)\n\nSend the announcement message now. Telegram text formatting will be preserved.`, { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "admin_announce") });
+});
+bot.callbackQuery("admin_announce_preview", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const draft = adminDrafts.get(String(ctx.from.id));
+  if (!draft?.text) return showAdminAnnouncement(ctx);
+  try { await ctx.reply(draft.text, draft.entities?.length ? { entities: draft.entities } : {}); } catch { await ctx.reply(draft.text); }
+});
+bot.callbackQuery("admin_announce_confirm", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const draft = adminDrafts.get(String(ctx.from.id));
+  if (!draft?.text) return showAdminAnnouncement(ctx);
+  const messageId = ctx.callbackQuery.message?.message_id;
+  const chatId = ctx.chat.id;
+  await ctx.editMessageText(`📢 SENDING ANNOUNCEMENT…\n\nAudience: ${draft.mode}\nRecipients: ${announcementRecipients(draft.mode).length}\n\nThis page will update when sending finishes.`);
+  void runAdminAnnouncement(ctx.from.id, chatId, messageId, draft);
+});
+
+bot.callbackQuery("admin_security", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  await showAdminSecurity(ctx);
+});
+bot.callbackQuery("admin_cancel_logins", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const count = loginAttempts.size;
+  await adminRender(ctx, `✖️ CANCEL LOGIN LINKS\n\nInvalidate all ${count} active personal-account login link(s)?`, new InlineKeyboard().text("✖️ Confirm", "admin_cancel_logins_confirm").danger().row().text("⬅️ Cancel", "admin_security"));
+});
+bot.callbackQuery("admin_cancel_logins_confirm", async ctx => {
+  if (!(await allowAdminCallback(ctx))) return;
+  const attempts = [...loginAttempts.values()];
+  for (const attempt of attempts) cancelLoginAttempt(attempt.uid, "cancelled");
+  logAdminEvent("login_links_cancelled", { actorUid: String(ctx.from.id), count: attempts.length });
+  await showAdminSecurity(ctx);
+});
+// ===== END TELEPILOT ADMIN PANEL =====
