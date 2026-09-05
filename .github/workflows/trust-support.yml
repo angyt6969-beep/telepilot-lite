@@ -1,0 +1,64 @@
+name: TelePilot Trust and Support
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "startup.js"
+      - "legal-pages.js"
+      - "support-center.js"
+      - "support-ui.js"
+      - "connect-ui.js"
+      - "security-core.js"
+      - ".github/workflows/trust-support.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: /tmp/telepilot-trust-ci
+      TELEPILOT_SECURITY_SECRET: ci-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      TELEPILOT_SESSION_KEY_B64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+      TELEPILOT_SUPPORT_USERNAME: noahxrp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check startup.js
+          node --check legal-pages.js
+          node --check support-center.js
+          node --check support-ui.js
+      - name: Verify public trust pages and connect disclosure
+        run: |
+          node --input-type=module <<'NODE'
+          import { injectConnectTrustLinks, renderLegalPage } from './legal-pages.js';
+          for (const page of ['privacy', 'terms', 'support']) {
+            const html = renderLegalPage(page);
+            if (!html.includes('TelePilot') || !html.includes('@noahxrp')) throw new Error(`bad ${page} page`);
+          }
+          const input = '<!doctype html><title>TelePilot Connect</title><main><div class="footer">TELEPILOT • SECURE CONNECTION</div></main>';
+          const output = injectConnectTrustLinks(input);
+          if (!output.includes('/privacy') || !output.includes('/terms') || !output.includes('/support')) throw new Error('connect trust links missing');
+          if (injectConnectTrustLinks(output) !== output) throw new Error('connect trust links are not idempotent');
+          NODE
+      - name: Verify support safety invariants
+        run: |
+          grep -q 'redactSecrets' support-center.js
+          grep -q 'Never send a Telegram login code' support-center.js
+          grep -q 'issueConfirmationToken' support-center.js
+          grep -q 'consumeConfirmationToken' support-center.js
+          grep -q 'fs.rmSync(userDir(targetUid)' support-center.js
+          grep -q 'scrubKeyIdentity' support-center.js
+          grep -q 'support_admin' support-ui.js
+      - name: Existing security regression tests
+        run: npm test
