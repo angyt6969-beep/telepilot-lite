@@ -1,6 +1,7 @@
 import { Api, Bot } from "grammy";
 import { TelegramClient } from "teleproto";
 import { installConnectUi } from "./connect-ui.js";
+import { installLegalPages } from "./legal-pages.js";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
@@ -11,6 +12,8 @@ import { installProTypography } from "./pro-typography.js";
 import { installProUiEnhancements } from "./pro-ui.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
+import { installSupportCenter } from "./support-center.js";
+import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
 import { installV1Extras } from "./v1-extras.js";
@@ -28,8 +31,9 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Install the branded HTTPS connection page before app.js creates its HTTP server.
+// Install branded public pages before app.js creates its HTTP server.
 installConnectUi();
+installLegalPages();
 
 // Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
@@ -39,6 +43,7 @@ installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
 installOnboarding(Bot);
+installSupportCenter(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
 prepareV1Engine(Api, TelegramClient);
@@ -47,9 +52,11 @@ installV1Engine(Api, TelegramClient);
 
 // Wrapper order is intentional. From app.js outward the screen travels through:
 // regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> v1 typography
-// -> deep premium UI -> v1 engine -> Telegram.
-// Deep premium is installed before v1 UI so it receives the final v1-added buttons and text.
+// -> support UI -> deep premium UI -> v1 engine -> Telegram.
+// Support UI runs before deep premium on the outbound path, so injected Support buttons
+// can receive premium emoji treatment when Telegram provides a matching icon.
 installDeepPremiumEmojiEnhancements(Api);
+installSupportUi(Api);
 installV1Ui(Api);
 installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
