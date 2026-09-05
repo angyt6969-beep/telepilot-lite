@@ -1,0 +1,74 @@
+name: Final TelePilot admin panel fixes
+
+on:
+  push:
+    branches:
+      - feature/admin-panel-final
+    paths:
+      - .github/workflows/fix-admin-panel.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/admin-panel-final
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Keep customer stats and active-post controls consistent
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from "node:fs";
+          const file = "app.js";
+          let s = fs.readFileSync(file, "utf8");
+          const replacements = [
+            [
+              'const running = [...states.values()].filter(s => s.posting).length;',
+              'const running = [...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length;'
+            ],
+            [
+              'const active = [...states.values()].filter(s => s.posting);',
+              'const active = [...states.values()].filter(s => s.posting && !isAdmin(s.uid));'
+            ],
+            [
+              '`Currently posting: ${[...states.values()].filter(s => s.posting).length}`',
+              '`Currently posting: ${[...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length}`'
+            ],
+            [
+              'const recent = readAdminEvents(5000).filter(e => e.type === "post_cycle" && now - Number(e.ts || 0) <= 86_400_000);',
+              'const recent = readAdminEvents(5000).filter(e => e.type === "post_cycle" && !isAdmin(e.uid) && now - Number(e.ts || 0) <= 86_400_000);'
+            ],
+            [
+              'return !s.accessLifetime && !!s.accessUntil && s.accessUntil <= now;',
+              'return !s.accessRevoked && !s.accessLifetime && !!s.accessUntil && s.accessUntil <= now;'
+            ],
+            [
+              'const count = [...states.values()].filter(s => s.posting).length;',
+              'const count = [...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length;'
+            ],
+            [
+              'if (!state.posting) continue;\n    stopPostingLoop(state);',
+              'if (!state.posting || isAdmin(state.uid)) continue;\n    stopPostingLoop(state);'
+            ],
+          ];
+          for (const [from, to] of replacements) {
+            const count = s.split(from).length - 1;
+            if (count !== 1) throw new Error(`Expected one match, found ${count}: ${from}`);
+            s = s.replace(from, to);
+          }
+          fs.writeFileSync(file, s);
+          NODE
+      - name: Check syntax
+        run: node --check app.js
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "Polish TelePilot admin customer statistics"
+          git push origin HEAD:feature/admin-panel-final
