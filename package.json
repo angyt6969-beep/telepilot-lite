@@ -7,7 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node startup.js"
+    "start": "node startup.js",
+    "test:security": "node security-tests.mjs"
   },
   "dependencies": {
     "big-integer": "^1.6.52",
