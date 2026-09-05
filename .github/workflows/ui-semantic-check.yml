@@ -1,0 +1,31 @@
+name: TelePilot UI Semantic Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "premium-deep-ui.js"
+      - "premium-emoji.js"
+      - ".github/workflows/ui-semantic-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check semantic UI modules
+        run: |
+          node --check premium-deep-ui.js
+          node --check premium-emoji.js
+          grep -q "TELEPILOT_SEMANTIC_EMOJI_V1" premium-deep-ui.js
+          grep -q "TELEPILOT_SEMANTIC_EMOJI_V1" premium-emoji.js
+          ! grep -q 'return semantic || stableFallbackId' premium-deep-ui.js
+          grep -q '\["access", "🔑"\]' premium-emoji.js
+          grep -q '\["redeem_key", "🔑"\]' premium-emoji.js
