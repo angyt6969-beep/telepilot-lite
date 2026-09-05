@@ -17,6 +17,7 @@ const UI_PREFIXES = [
   "🚀 Ready to launch",
   "📍 Manage destinations",
   "Clear destinations",
+  "⏳ Connecting account",
 ];
 
 const BUTTON_ICONS = new Map([
@@ -68,7 +69,7 @@ const FALLBACK_PREFIXES = new Map([
 ]);
 
 const PREMIUM_TEXT_EMOJI = [
-  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "💎", "⚡️", "❗️", "✍️", "👀",
+  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "💎", "⚡️", "❗️", "✍️", "👀", "⏳",
 ];
 
 function customEmojiId(alt) {
@@ -110,19 +111,30 @@ function enhanceUiText(text) {
     .replace(/^🔑 Access/m, "💎 Access")
     .replace(/^🔒 TelePilot Access/m, "💎 TelePilot Access")
     .replace(/^🚀 Ready to launch/m, "🔥 Ready to launch")
-    .replace(/^● LIVE(?: ·)?/m, "🔥 LIVE ·")
-    .replace(/^● READY(?: ·)?/m, "✅ READY ·")
-    .replace(/^○ SETUP(?: ·)?/m, "💡 SETUP ·")
+    .replace(/^● LIVE(?:\s*[·—-])?\s*/m, "🔥 LIVE — ")
+    .replace(/^● READY(?:\s*[·—-])?\s*/m, "✅ READY — ")
+    .replace(/^○ SETUP(?:\s*[·—-])?\s*/m, "💡 SETUP — ")
     .replace(/^● Personal account connected$/m, "✅ Personal account connected")
     .replace(/^● TelePilot Bot active$/m, "✅ TelePilot Bot active")
     .replace(/^● Active$/m, "✅ Active")
     .replace(/^○ Idle$/m, "👀 Idle")
-    .replace(/^Sender\s{2,}/m, "Sender - ")
-    .replace(/^Message\s{2,}/m, "Message - ")
-    .replace(/^Destinations\s{2,}/m, "Destinations - ")
-    .replace(/^Schedule\s{2,}/m, "Schedule - ")
-    .replace(/^Next step\s+→\s+/m, "⚡️ Next step → ")
-    .replace(/^Access\s{2,}/m, "💎 Access - ")
+    .replace(/^Step (\d+) of (\d+)\s*[·-]\s*/gm, "Step $1 of $2 — ")
+    .replace(/^([1-9]\d*)\s*·\s*/gm, "$1 — ")
+    .replace(/^Sender\s{2,}/gm, "Sender — ")
+    .replace(/^Message\s{2,}/gm, "Message — ")
+    .replace(/^Destinations\s{2,}/gm, "Destinations — ")
+    .replace(/^Schedule\s{2,}/gm, "Schedule — ")
+    .replace(/^Setup\s{2,}/gm, "Setup — ")
+    .replace(/^Posting as\s{2,}/gm, "Posting as — ")
+    .replace(/^Current\s{2,}/gm, "Current — ")
+    .replace(/^Plan\s{2,}/gm, "Plan — ")
+    .replace(/^Expires\s{2,}/gm, "Expires — ")
+    .replace(/^Last post\s{2,}/gm, "Last post — ")
+    .replace(/^Last result\s{2,}/gm, "Last result — ")
+    .replace(/^Total sent\s{2,}/gm, "Total sent — ")
+    .replace(/^Next post\s{2,}/gm, "Next post — ")
+    .replace(/^Next step\s+→\s+/gm, "⚡️ Next step — ")
+    .replace(/^Access\s{2,}/gm, "💎 Access — ")
     .replace(/^Ready when you are\./m, "✅ Ready when you are.");
 
   return value;
@@ -139,10 +151,19 @@ function pushEntityOnce(entities, entity) {
 }
 
 function addStyle(entities, text, label, italic = false) {
-  const offset = text.indexOf(label);
-  if (offset < 0) return;
-  pushEntityOnce(entities, { type: "bold", offset, length: label.length });
-  if (italic) pushEntityOnce(entities, { type: "italic", offset, length: label.length });
+  let from = 0;
+  while (from < text.length) {
+    const offset = text.indexOf(label, from);
+    if (offset < 0) break;
+    pushEntityOnce(entities, { type: "bold", offset, length: label.length });
+    if (italic) pushEntityOnce(entities, { type: "italic", offset, length: label.length });
+    from = offset + label.length;
+  }
+}
+
+function firstLineTitle(text) {
+  const firstLine = String(text || "").split("\n")[0];
+  return firstLine.replace(/^[^\p{L}\p{N}]+/u, "").trim();
 }
 
 function addUiFormatting(text, other) {
@@ -152,8 +173,10 @@ function addUiFormatting(text, other) {
     ? other.entities.map(entity => ({ ...entity }))
     : [];
 
+  const title = firstLineTitle(text);
+  if (title) addStyle(entities, text, title);
+
   if (text.startsWith("✈️ TelePilot")) {
-    addStyle(entities, text, "TelePilot");
     addStyle(entities, text, "SETUP");
     addStyle(entities, text, "READY");
     addStyle(entities, text, "LIVE");
@@ -166,14 +189,18 @@ function addUiFormatting(text, other) {
     addStyle(entities, text, "Next post", true);
     addStyle(entities, text, "Access", true);
   } else {
-    const firstLine = text.split("\n")[0];
-    const title = firstLine.replace(/^[^\p{L}\p{N}]+/u, "").trim();
-    if (title) addStyle(entities, text, title);
+    for (const subtitle of [
+      "Personal account setup", "TelePilot Bot setup", "Quick setup",
+      "Personal account connected", "TelePilot Bot active", "Active", "Idle",
+      "Create your post", "Final check",
+    ]) {
+      addStyle(entities, text, subtitle, true);
+    }
 
     for (const label of [
       "Posting as", "Current", "Plan", "Expires", "Last post",
       "Last result", "Total sent", "Next post", "Sender",
-      "Destinations", "Schedule", "Quick setup",
+      "Destinations", "Schedule", "Setup", "Step 1 of 2", "Step 2 of 2",
     ]) {
       addStyle(entities, text, label);
     }
