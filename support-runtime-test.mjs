@@ -9,20 +9,22 @@ import { installV1Controls } from "./v1-controls.js";
 import { installV1Extras } from "./v1-extras.js";
 import { installSupportCenter } from "./support-center.js";
 
+const MODE = process.env.SUPPORT_TEST_MODE || "all";
 const DATA_DIR = process.env.DATA_DIR || "/tmp/telepilot-support-runtime";
 fs.rmSync(DATA_DIR, { recursive: true, force: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.writeFileSync(path.join(DATA_DIR, "telepilot-admin.json"), JSON.stringify({ version: 1, adminIds: ["123"] }));
 
-// Replace grammY polling startup so the wrapper chain can register handlers without network access.
 Bot.prototype.start = async function startForTest() { return undefined; };
 
-installInteractionEnhancements(Bot);
-installProControls(Bot);
-installMediaClearControl(Bot);
-installV1Controls(Bot);
-installV1Extras(Bot);
-installOnboarding(Bot);
+if (MODE !== "support-only") {
+  installInteractionEnhancements(Bot);
+  installProControls(Bot);
+  installMediaClearControl(Bot);
+  installV1Controls(Bot);
+  installV1Extras(Bot);
+  installOnboarding(Bot);
+}
 installSupportCenter(Bot);
 
 const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
@@ -37,12 +39,16 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   },
 });
 
-// Mirror the important shape of app middleware/handlers that exist before bot.start().
-bot.use(async (ctx, next) => next());
-bot.callbackQuery("tools", async ctx => { await ctx.answerCallbackQuery(); });
-bot.callbackQuery("admin", async ctx => { await ctx.answerCallbackQuery(); });
+if (MODE === "all-use" || MODE === "all-handlers" || MODE === "all") {
+  bot.use(async (ctx, next) => next());
+}
+if (MODE === "all-handlers" || MODE === "all") {
+  bot.callbackQuery("tools", async ctx => { await ctx.answerCallbackQuery(); });
+  bot.callbackQuery("admin", async ctx => { await ctx.answerCallbackQuery(); });
+}
 
 await bot.start();
+if (!bot.__telepilotSupportHandlersRegistered) throw new Error(`${MODE}: support handlers did not register`);
 
 const calls = [];
 bot.api.config.use(async (_prev, method, payload) => {
@@ -67,12 +73,12 @@ function callbackUpdate(id, data) {
 }
 
 await bot.handleUpdate(callbackUpdate(1, "support"));
-if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error("support callback was not answered");
-if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("TelePilot Support"))) throw new Error("support screen was not rendered");
+if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: support callback was not answered`);
+if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("TelePilot Support"))) throw new Error(`${MODE}: support screen was not rendered`);
 
 calls.length = 0;
 await bot.handleUpdate(callbackUpdate(2, "support_admin"));
-if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error("support_admin callback was not answered");
-if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("SUPPORT CASES"))) throw new Error("support admin cases screen was not rendered");
+if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: support_admin callback was not answered`);
+if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("SUPPORT CASES"))) throw new Error(`${MODE}: support admin cases screen was not rendered`);
 
-console.log("support runtime callbacks ok");
+console.log(`${MODE}: support runtime callbacks ok`);
