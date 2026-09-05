@@ -1,5 +1,6 @@
 import { Api, Bot } from "grammy";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
+import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installUiEnhancements } from "./ui.js";
 import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
 import {
@@ -10,8 +11,9 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Install the owner-only emoji inspector before the main bot starts.
+// Owner helper + interaction polish must be installed before app.js registers handlers.
 installEmojiIdTool(Bot);
+installInteractionEnhancements(Bot);
 
 // Wrapper order is intentional: regular UI builds the screen, the sender-aware
 // layer adapts destination instructions, then premium UI adds styling/emojis.
