@@ -93,8 +93,8 @@ const ALWAYS_PREMIUM_BUTTON_CALLBACKS = new Set([
   "v1_preview",
 ]);
 
-// Prefer a premium emoji that matches the action. Only Keys intentionally fall back
-// to the diamond; unrelated controls no longer share the same generic diamond icon.
+// Legacy semantic candidates are kept for compatibility/reference, but TelePilot
+// now only renders a premium icon when Telegram provides an exact emoji match.
 const FALLBACK_EMOJI = new Map([
   ["🟣", ["🛡️", "🔐", "⚡️", "🔥"]],
   ["👥", ["📱", "👀", "✅"]],
@@ -203,11 +203,11 @@ function stableFallbackId(key) {
   return fallbackPremiumIds[hash % fallbackPremiumIds.length] || "";
 }
 
+// TELEPILOT_SEMANTIC_EMOJI_V1
+// Never substitute an unrelated premium emoji. If Telegram does not have an
+// exact premium match for the visible emoji, keep the normal Unicode emoji.
 function premiumIdForEmoji(emoji) {
-  const exact = directId(emoji);
-  if (exact) return exact;
-  const semantic = firstAvailable(FALLBACK_EMOJI.get(String(emoji || "")) || FALLBACK_EMOJI.get(normalizeEmoji(emoji)) || []);
-  return semantic || stableFallbackId(emoji);
+  return directId(emoji);
 }
 
 export function configureDeepPremiumEmojiStickers(stickers = []) {
