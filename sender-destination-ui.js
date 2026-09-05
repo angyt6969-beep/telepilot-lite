@@ -68,6 +68,7 @@ function transformDestinations(text, sender) {
         ? "Add the first group or channel your connected account can post to."
         : `${sender.label} sends every posting cycle to all destinations above.`,
       "",
+      "Tip: you can paste several public destinations at once — one @username or t.me link per line.",
       "Public destinations are validated through your connected account — @TelePilottBot does not need to be an admin.",
       "Private group without a public username? /addhere still works; the bot only needs to be present so it can receive that command.",
     ].join("\n");
@@ -83,6 +84,7 @@ function transformDestinations(text, sender) {
       ? "Add the first group or channel for TelePilot Bot to post to."
       : "TelePilot Bot sends every posting cycle to all destinations above.",
     "",
+    "Tip: you can paste several public destinations at once — one @username or t.me link per line.",
     "The bot must stay in each destination with the permissions needed to post.",
     "Private group? Run /addhere inside the group while you are an admin.",
   ].join("\n");
@@ -98,8 +100,9 @@ function transformAddDestination(sender) {
       "",
       `1 · Make sure ${sender.label} is already joined to the group/channel`,
       "2 · For channels, that account must have permission to post messages",
-      "3 · Send the public @username or t.me link here",
+      "3 · Send one or more public @usernames / t.me links here",
       "",
+      "Multiple destinations? Paste them in one message, one per line.",
       "@TelePilottBot does not need to be added or made admin for public destinations in personal-account mode.",
       "Private group without a public username? Add the bot to the group and run /addhere; it does not need admin rights when your personal account is the sender.",
     ].join("\n");
@@ -113,9 +116,10 @@ function transformAddDestination(sender) {
     "",
     "1 · Add @TelePilottBot as an admin",
     "2 · For channels, allow it to post messages",
-    "3 · Send the public @username or t.me link here",
+    "3 · Send one or more public @usernames / t.me links here",
     "",
-    "TelePilot Bot will send the scheduled posts to this destination.",
+    "Multiple destinations? Paste them in one message, one per line.",
+    "TelePilot Bot will send the scheduled posts to every saved destination.",
     "Private group? Run /addhere inside that group instead.",
   ].join("\n");
 }
