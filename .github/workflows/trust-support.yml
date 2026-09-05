@@ -8,6 +8,7 @@ on:
       - "legal-pages.js"
       - "support-center.js"
       - "support-ui.js"
+      - "support-runtime-test.mjs"
       - "connect-ui.js"
       - "security-core.js"
       - ".github/workflows/trust-support.yml"
@@ -38,6 +39,7 @@ jobs:
           node --check legal-pages.js
           node --check support-center.js
           node --check support-ui.js
+          node --check support-runtime-test.mjs
       - name: Verify public trust pages and connect disclosure
         run: |
           node --input-type=module <<'NODE'
@@ -60,5 +62,7 @@ jobs:
           grep -q 'fs.rmSync(userDir(targetUid)' support-center.js
           grep -q 'scrubKeyIdentity' support-center.js
           grep -q 'support_admin' support-ui.js
+      - name: Verify support callbacks at runtime
+        run: node support-runtime-test.mjs
       - name: Existing security regression tests
         run: npm test
