@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Bot } from "grammy";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
@@ -24,9 +25,9 @@ if (MODE !== "support-only") {
   installMediaClearControl(Bot);
   installV1Controls(Bot);
   installV1Extras(Bot);
-  installOnboarding(Bot);
 }
 installSupportCenterEarly(Bot, installSupportCenter);
+if (MODE !== "support-only") installOnboarding(Bot);
 
 const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   botInfo: {
@@ -38,6 +39,10 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
     can_read_all_group_messages: false,
     supports_inline_queries: false,
   },
+});
+
+bot.command("start", async ctx => {
+  await ctx.reply("APP START");
 });
 
 bot.callbackQuery("baseline", async ctx => {
@@ -62,22 +67,40 @@ const calls = [];
 bot.api.config.use(async (_prev, method, payload) => {
   calls.push({ method, payload });
   if (method === "answerCallbackQuery") return { ok: true, result: true };
-  if (method === "editMessageText") return { ok: true, result: { message_id: 1, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") } };
-  if (method === "sendMessage") return { ok: true, result: { message_id: 2, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") } };
+  if (method === "editMessageText") return { ok: true, result: { message_id: 1, date: 0, chat: { id: Number(payload.chat_id || 123), type: "private" }, text: String(payload.text || "") } };
+  if (method === "sendMessage") return { ok: true, result: { message_id: 2, date: 0, chat: { id: Number(payload.chat_id || 123), type: "private" }, text: String(payload.text || "") } };
   return { ok: true, result: true };
 });
 
-function callbackUpdate(id, data) {
+function callbackUpdate(id, data, uid = 123, username = "noahxrp") {
   return {
     update_id: id,
     callback_query: {
       id: `cb-${id}`,
-      from: { id: 123, is_bot: false, first_name: "Admin", username: "noahxrp" },
+      from: { id: uid, is_bot: false, first_name: uid === 123 ? "Admin" : "Alt", username },
       chat_instance: "ci",
       data,
-      message: { message_id: 1, date: 0, chat: { id: 123, type: "private" }, text: "screen" },
+      message: { message_id: 1, date: 0, chat: { id: uid, type: "private" }, text: "screen" },
     },
   };
+}
+
+function messageUpdate(id, uid, text) {
+  return {
+    update_id: id,
+    message: {
+      message_id: id,
+      date: 0,
+      from: { id: uid, is_bot: false, first_name: "Alt", username: "telepilot_alt" },
+      chat: { id: uid, type: "private", first_name: "Alt", username: "telepilot_alt" },
+      text,
+      entities: [{ offset: 0, length: text.length, type: "bot_command" }],
+    },
+  };
+}
+
+function deletedHash(uid) {
+  return crypto.createHash("sha256").update(`telepilot-deleted-user:${String(uid)}`).digest("hex");
 }
 
 await bot.handleUpdate(callbackUpdate(0, "baseline"));
@@ -92,5 +115,36 @@ calls.length = 0;
 await bot.handleUpdate(callbackUpdate(2, "support_admin"));
 if (!calls.some(call => call.method === "answerCallbackQuery")) throw new Error(`${MODE}: support_admin callback was not answered`);
 if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("SUPPORT CASES"))) throw new Error(`${MODE}: support admin cases screen was not rendered`);
+
+// A completed data deletion must remove the old profile without permanently banning that
+// Telegram ID. A later private /start explicitly begins a brand-new TelePilot profile.
+const altUid = 456;
+const altHash = deletedHash(altUid);
+fs.writeFileSync(path.join(DATA_DIR, "deleted-users.json"), JSON.stringify({
+  version: 1,
+  users: { [altHash]: { deletedAt: Date.now(), caseId: "TP-SUP-TEST123" } },
+}, null, 2));
+
+calls.length = 0;
+await bot.handleUpdate(messageUpdate(3, altUid, "/start"));
+const startMessages = calls.filter(call => call.method === "sendMessage").map(call => String(call.payload.text || ""));
+if (startMessages.some(text => text.includes("TelePilot account data deleted"))) {
+  throw new Error(`${MODE}: deleted user was permanently blocked from /start`);
+}
+if (MODE === "support-only") {
+  if (!startMessages.some(text => text.includes("APP START"))) throw new Error(`${MODE}: fresh /start did not reach the app handler`);
+} else if (!startMessages.some(text => text.includes("Welcome to TelePilot"))) {
+  throw new Error(`${MODE}: fresh /start did not reach onboarding`);
+}
+const deletedAfterStart = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "deleted-users.json"), "utf8"));
+if (deletedAfterStart?.users?.[altHash]) throw new Error(`${MODE}: deletion marker was not cleared by fresh /start`);
+
+if (MODE !== "support-only") {
+  calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(4, "tutorial:2", altUid, "telepilot_alt"));
+  if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("Sender & Message"))) {
+    throw new Error(`${MODE}: fresh user tutorial callbacks remained blocked after /start`);
+  }
+}
 
 console.log(`${MODE}: support runtime callbacks ok`);
