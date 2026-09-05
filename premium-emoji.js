@@ -1,5 +1,6 @@
 const premiumEmojiByAlt = new Map();
 let premiumEnabled = true;
+const TELEPILOT_DUCK_CUSTOM_EMOJI_ID = "5231361378748472914";
 
 const UI_PREFIXES = [
   "✈️ TelePilot",
@@ -98,7 +99,7 @@ function enhanceUiText(text) {
   if (!isUiText(value)) return value;
 
   value = value
-    .replace(/^✈️ TelePilot$/m, "✈️ TelePilot  ⭐️")
+    .replace(/^✈️ TelePilot(?:\s+⭐️)?$/m, "✈️ TelePilot")
     .replace(/^👤 Sender/m, "📱 Sender")
     .replace(/^👤 Connect account/m, "📱 Connect account")
     .replace(/^📍 Destinations/m, "📁 Destinations")
@@ -171,6 +172,15 @@ function addPremiumEntities(text, other) {
   const entities = Array.isArray(other?.entities)
     ? other.entities.map(entity => ({ ...entity }))
     : [];
+
+  if (text.startsWith("✈️ TelePilot")) {
+    pushEntityOnce(entities, {
+      type: "custom_emoji",
+      offset: 0,
+      length: "✈️".length,
+      custom_emoji_id: TELEPILOT_DUCK_CUSTOM_EMOJI_ID,
+    });
+  }
 
   for (const emoji of PREMIUM_TEXT_EMOJI) {
     const id = customEmojiId(emoji);
