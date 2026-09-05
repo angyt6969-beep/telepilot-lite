@@ -60,6 +60,7 @@ export function readProSettings(uid) {
 
 export function writeProSettings(uid, value) {
   const normalized = { ...defaultProSettings(), ...value, version: 1 };
+  normalized.schedule = { ...defaultProSettings().schedule, ...(value?.schedule || {}) };
   normalized.history = Array.isArray(normalized.history) ? normalized.history.slice(-HISTORY_LIMIT) : [];
   writeJsonAtomic(proPath(uid), normalized);
   return normalized;
@@ -183,6 +184,13 @@ function localDateParts(pro, now = new Date()) {
   return { date: `${yyyy}-${mm}-${dd}`, time: `${hh}:${min}`, datetime: `${yyyy}-${mm}-${dd} ${hh}:${min}` };
 }
 
+function cloneFormattingEntity(entity) {
+  if (!entity || typeof entity !== "object") return entity;
+  const proto = Object.getPrototypeOf(entity);
+  if (!proto || proto === Object.prototype) return { ...entity };
+  return Object.assign(Object.create(proto), entity);
+}
+
 function adjustEntitiesForReplacement(entities, start, oldLength, newLength) {
   const delta = newLength - oldLength;
   const oldEnd = start + oldLength;
@@ -196,7 +204,7 @@ function adjustEntitiesForReplacement(entities, start, oldLength, newLength) {
 
 export function renderDynamicMessage(text, entities, context) {
   let value = String(text || "");
-  const outEntities = Array.isArray(entities) ? entities.map(entity => ({ ...entity })) : [];
+  const outEntities = Array.isArray(entities) ? entities.map(cloneFormattingEntity) : [];
   if (!context?.pro?.placeholders) return { text: value, entities: outEntities };
 
   const parts = localDateParts(context.pro);
@@ -303,11 +311,10 @@ async function sendBotMedia(api, chatId, media, rendered, originalSendMessage, o
   if (!file) return originalSendMessage.call(api, chatId, caption || "\u2063", { ...(other || {}), entities: rendered.entities });
 
   if (caption.length > 1024) {
-    const noCaption = {};
-    if (media.kind === "photo") await api.sendPhoto(chatId, file, noCaption);
-    else if (media.kind === "video") await api.sendVideo(chatId, file, noCaption);
-    else if (media.kind === "animation") await api.sendAnimation(chatId, file, noCaption);
-    else await api.sendDocument(chatId, file, noCaption);
+    if (media.kind === "photo") await api.sendPhoto(chatId, file, {});
+    else if (media.kind === "video") await api.sendVideo(chatId, file, {});
+    else if (media.kind === "animation") await api.sendAnimation(chatId, file, {});
+    else await api.sendDocument(chatId, file, {});
     return originalSendMessage.call(api, chatId, caption, rendered.entities.length ? { entities: rendered.entities } : {});
   }
 
