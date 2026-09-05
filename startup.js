@@ -1,6 +1,7 @@
 import { Api, Bot } from "grammy";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installUiEnhancements } from "./ui.js";
+import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
 import {
   configurePremiumEmojiStickers,
   installPremiumEmojiEnhancements,
@@ -12,9 +13,10 @@ if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 // Install the owner-only emoji inspector before the main bot starts.
 installEmojiIdTool(Bot);
 
-// Regular UI builds the dashboard first; the premium layer then decorates
-// that final payload with custom emoji, formatting, button icons and styles.
+// Wrapper order is intentional: regular UI builds the screen, the sender-aware
+// layer adapts destination instructions, then premium UI adds styling/emojis.
 installPremiumEmojiEnhancements(Api);
+installSenderAwareDestinationUi(Api);
 installUiEnhancements(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
