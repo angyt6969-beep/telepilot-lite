@@ -13,8 +13,8 @@ import { installSenderAwareDestinationUi } from "./sender-destination-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
 import { installV1Extras } from "./v1-extras.js";
-import { startV1Scheduler } from "./v1-scheduler.js";
 import { installV1Ui } from "./v1-ui.js";
+import { startV1Worker } from "./v1-worker.js";
 import {
   configurePremiumEmojiStickers,
   installPremiumEmojiEnhancements,
@@ -75,5 +75,5 @@ try {
   console.error("Could not update TelePilot bot description:", err?.message || err);
 }
 
-startV1Scheduler();
+startV1Worker();
 await import("./app.js");
