@@ -39,15 +39,15 @@ function enhanceDashboard(uid, text, other) {
   const active = (settings.groups || []).filter(group => !disabled.has(String(group.id || group.username || ""))).length;
 
   if (total && active !== total) {
-    value = value.replace(/^Destinations\s{2,}\d+/m, `Destinations  ${total} · ${active} active`);
+    value = value.replace(/^Destinations\s{2,}\d+/m, `Destinations  ${total} — ${active} active`);
   }
   if (pro.media) {
-    value = value.replace(/^(Message\s{2,}[^\n]+)$/m, `$1 · ${mediaLabel(pro.media)}`);
+    value = value.replace(/^(Message\s{2,}[^\n]+)$/m, `$1 — ${mediaLabel(pro.media)}`);
   }
 
   if (value.includes("● LIVE")) {
-    if (pro.paused) value = value.replace(/^● LIVE[^\n]*/m, "⏸ PAUSED · Autoposting is temporarily paused");
-    else if (pro.schedule?.enabled && !scheduleAllowsNow(pro)) value = value.replace(/^● LIVE[^\n]*/m, "🌙 QUIET · Waiting for posting window");
+    if (pro.paused) value = value.replace(/^● LIVE[^\n]*/m, "⏸ PAUSED — Autoposting is temporarily paused");
+    else if (pro.schedule?.enabled && !scheduleAllowsNow(pro)) value = value.replace(/^● LIVE[^\n]*/m, "🌙 QUIET — Waiting for posting window");
     if (pro.skipNext) value += "\nSkip next  Queued";
   }
 
@@ -126,7 +126,43 @@ function enhanceSchedule(text, other) {
   return { text, other: enhanced };
 }
 
-function enhanceActivity(text, other) {
+function summarizeHistory(pro) {
+  const history = Array.isArray(pro.history) ? pro.history : [];
+  const sent = history.filter(item => item.status === "sent").length;
+  const failed = history.filter(item => item.status === "failed").length;
+  const skipped = history.filter(item => item.status === "skipped").length;
+  const latest = [...history].reverse().find(item => item.status === "sent" || item.status === "failed");
+  return { sent, failed, skipped, latest };
+}
+
+function formatAgo(ts) {
+  if (!ts) return "Never";
+  const seconds = Math.max(0, Math.floor((Date.now() - Number(ts)) / 1000));
+  if (seconds < 10) return "Just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function enhanceActivity(uid, text, other) {
+  const pro = readProSettings(uid);
+  const summary = summarizeHistory(pro);
+  let value = String(text);
+
+  if (pro.history.length) {
+    value = value
+      .replace(/^Last post\s{2,}[^\n]+/m, `Last post  ${formatAgo(summary.latest?.ts)}`)
+      .replace(/^.*Last result\s{2,}[^\n]+/m, summary.latest
+        ? `${summary.latest.status === "sent" ? "✅" : "❌"} Last result  ${summary.latest.status === "sent" ? "Sent" : "Failed"} — ${summary.latest.destination}`
+        : "Last result  No completed sends yet")
+      .replace(/^Total sent\s{2,}[^\n]+/m, `Total sent  ${summary.sent}`);
+    const stats = `Enhanced log  ${summary.sent} sent — ${summary.failed} failed — ${summary.skipped} skipped`;
+    if (!value.includes("Enhanced log")) value += `\n${stats}`;
+  }
+
   const enhanced = cloneOther(other) || {};
   const rows = enhanced.reply_markup?.inline_keyboard || [];
   const backIndex = rows.findIndex(row => row.some(button => button.callback_data === "home"));
@@ -135,7 +171,7 @@ function enhanceActivity(text, other) {
     if (backIndex >= 0) rows.splice(backIndex, 0, row);
     else rows.push(row);
   }
-  return { text, other: enhanced };
+  return { text: value, other: enhanced };
 }
 
 function transform(chatId, text, other) {
@@ -146,7 +182,7 @@ function transform(chatId, text, other) {
   if (value.startsWith("📝 Message")) return enhanceMessage(uid, value, other);
   if (value.startsWith("📍 Destinations")) return enhanceDestinations(value, other);
   if (value.startsWith("⏱ Schedule")) return enhanceSchedule(value, other);
-  if (value.startsWith("📊 Activity")) return enhanceActivity(value, other);
+  if (value.startsWith("📊 Activity")) return enhanceActivity(uid, value, other);
   return { text: value, other };
 }
 
