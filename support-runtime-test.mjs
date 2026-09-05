@@ -8,6 +8,7 @@ import { installProControls } from "./pro-controls.js";
 import { installV1Controls } from "./v1-controls.js";
 import { installV1Extras } from "./v1-extras.js";
 import { installSupportCenter } from "./support-center.js";
+import { installSupportCenterEarly } from "./support-bootstrap.js";
 
 const MODE = process.env.SUPPORT_TEST_MODE || "all";
 const DATA_DIR = process.env.DATA_DIR || "/tmp/telepilot-support-runtime";
@@ -25,7 +26,7 @@ if (MODE !== "support-only") {
   installV1Extras(Bot);
   installOnboarding(Bot);
 }
-installSupportCenter(Bot);
+installSupportCenterEarly(Bot, installSupportCenter);
 
 const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   botInfo: {
