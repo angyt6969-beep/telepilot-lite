@@ -7,6 +7,7 @@ import bigInt from "big-integer";
 import { Bot, InlineKeyboard } from "grammy";
 import { Api, TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
+import { advanceTutorialAfterAction } from "./onboarding.js";
 import {
   appendSecurityEvent,
   getExternalSessionKey,
@@ -574,12 +575,21 @@ async function completeLogin(attempt, user) {
   attempt.client = null;
   attempt.stage = "done";
   attempt.doneAt = Date.now();
+  const tutorialScreen = advanceTutorialAfterAction(attempt.uid, 2, 3);
   try {
-    await bot.api.sendMessage(
-      attempt.uid,
-      `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\n\nTelePilot will now post using this personal account.`,
-      { reply_markup: new InlineKeyboard().text("✈️ Open TelePilot", "home") },
-    );
+    if (tutorialScreen) {
+      await bot.api.sendMessage(
+        attempt.uid,
+        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\n\n${tutorialScreen.text}`,
+        { reply_markup: tutorialScreen.keyboard },
+      );
+    } else {
+      await bot.api.sendMessage(
+        attempt.uid,
+        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\n\nTelePilot will now post using this personal account.`,
+        { reply_markup: new InlineKeyboard().text("✈️ Open TelePilot", "home") },
+      );
+    }
   } catch {}
   setTimeout(() => {
     const current = loginAttempts.get(String(attempt.uid));
@@ -2189,6 +2199,10 @@ bot.command("addhere", async ctx => {
     saveState(state);
   }
   await ctx.reply(`✅ ${destinationLabel(destination)} added to your TelePilot profile.`);
+  const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
+  if (tutorialScreen) {
+    try { await bot.api.sendMessage(state.uid, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); } catch {}
+  }
 });
 
 bot.use(async (ctx, next) => {
@@ -2398,6 +2412,11 @@ for (const minutes of INTERVAL_VALUES) {
     saveState(state);
     if (state.posting) scheduleNextCycle(state);
     await ctx.answerCallbackQuery({ text: `Set to ${formatInterval(minutes)}` });
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 5, 6);
+    if (tutorialScreen) {
+      await ctx.editMessageText(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard });
+      return;
+    }
     await showHome(ctx, state);
   });
 }
@@ -2540,6 +2559,12 @@ bot.on("message:text", async ctx => {
     clearAwaiting(state);
     saveState(state);
     await safeDelete(ctx.chat.id, ctx.message.message_id);
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 4, 5);
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
     if (!(await editDashboard(pc, pm, state))) {
       await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
     }
@@ -2569,6 +2594,12 @@ bot.on("message:text", async ctx => {
     clearAwaiting(state);
     saveState(state);
     await safeDelete(ctx.chat.id, ctx.message.message_id);
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
     if (!(await editDashboard(pc, pm, state))) {
       await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
     }

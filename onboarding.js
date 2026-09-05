@@ -116,7 +116,7 @@ function setupPage1(uid) {
       "",
       "Now we'll set up TelePilot together.",
       "",
-      "The tutorial is interactive: each step opens the real TelePilot control you need. If you leave the tutorial to configure something, send /start afterward and TelePilot will resume from the same step.",
+      "The tutorial is interactive: each step opens the real TelePilot control you need. TelePilot will continue the tutorial automatically after setup actions; if anything is interrupted, /start resumes your saved step.",
       "",
       "Setup takes just a few minutes.",
     ].join("\n"),
@@ -260,6 +260,15 @@ function tutorialPage(uid, page) {
   if (Number(page) === 6) return setupPage6(uid);
   if (Number(page) === 7) return setupPage7(uid);
   return setupPage1(uid);
+}
+
+export function advanceTutorialAfterAction(uid, expectedStep, nextStep) {
+  const id = String(uid || "");
+  if (!id) return null;
+  const current = onboardingState(id);
+  if (current.completed || current.step !== Number(expectedStep)) return null;
+  setTutorialStep(id, Number(nextStep));
+  return tutorialPage(id, Number(nextStep));
 }
 
 async function renderScreen(ctx, screen, edit = false) {

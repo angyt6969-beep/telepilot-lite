@@ -1,0 +1,17 @@
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-onboarding-"));
+process.env.DATA_DIR = root;
+const uid = "123456";
+const dir = path.join(root, "users", uid);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ accessLifetime: true, groups: [] }));
+fs.writeFileSync(path.join(dir, "onboarding.json"), JSON.stringify({ version: 2, welcomeSeen: true, completed: false, step: 2 }));
+const { advanceTutorialAfterAction } = await import("./onboarding.js");
+const screen = advanceTutorialAfterAction(uid, 2, 3);
+if (!screen || !screen.text.includes("Step 2 of 5")) throw new Error("sender continuation did not advance to destination step");
+const saved = JSON.parse(fs.readFileSync(path.join(dir, "onboarding.json"), "utf8"));
+if (saved.step !== 3 || saved.completed) throw new Error("onboarding progress was not persisted");
+if (advanceTutorialAfterAction(uid, 2, 3) !== null) throw new Error("stale action advanced tutorial twice");
+console.log("onboarding continuation test ok");
