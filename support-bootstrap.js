@@ -1,16 +1,22 @@
-// support-center.js historically registers its routes from Bot.start(). grammY composes
-// middleware in registration order, so routes added only when polling starts are too late
-// for an already-built bot. This adapter lets the existing support center register its
-// routes on the first Bot registration call, while preserving the real start chain.
+// support-center.js historically registers its routes from Bot.start(). Two details matter:
+// 1) those routes must exist before polling starts, and
+// 2) grammY callbackQuery/command registration internally calls `this.use()`.
+// support-center also wraps `use()` to skip app middleware for support traffic, so registering
+// its own routes through that wrapped `use()` accidentally made the support routes skip
+// themselves. This adapter registers them early while temporarily using the pre-support
+// `use()` implementation for the registration operation only.
 export function installSupportCenterEarly(BotClass, installSupportCenter) {
   if (!BotClass?.prototype || BotClass.prototype.__telepilotSupportEarlyInstalled) return;
   if (typeof installSupportCenter !== "function") throw new Error("TelePilot support installer is unavailable");
 
   const realStart = BotClass.prototype.start;
-  if (typeof realStart !== "function") throw new Error("Unsupported grammY Bot start method");
+  const preSupportUse = BotClass.prototype.use;
+  if (typeof realStart !== "function" || typeof preSupportUse !== "function") {
+    throw new Error("Unsupported grammY Bot shape for early support registration");
+  }
 
-  // Give support-center a non-starting baseStart. Calling its generated start wrapper
-  // will therefore register handlers without starting Telegram polling.
+  // Give support-center a non-starting baseStart. Its generated start wrapper can then be
+  // invoked purely as a route registrar without opening Telegram polling.
   BotClass.prototype.start = function telepilotSupportRegistrationOnly() { return undefined; };
   installSupportCenter(BotClass);
 
@@ -29,10 +35,25 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
   function ensureSupport(instance) {
     if (!instance || instance.__telepilotSupportHandlersRegistered || ensuring) return;
     ensuring = true;
+
+    const hadOwnUse = Object.prototype.hasOwnProperty.call(instance, "use");
+    const ownUse = hadOwnUse ? instance.use : undefined;
     try {
-      // registerSupport sets __telepilotSupportHandlersRegistered before adding routes.
+      // grammY's callbackQuery()/command() use this.use() internally. During support route
+      // registration that must be the pre-support implementation, otherwise supportIntent()
+      // skips the very route being registered.
+      Object.defineProperty(instance, "use", {
+        configurable: true,
+        writable: true,
+        value: (...args) => preSupportUse.call(instance, ...args),
+      });
       registerSupport.call(instance);
     } finally {
+      if (hadOwnUse) {
+        Object.defineProperty(instance, "use", { configurable: true, writable: true, value: ownUse });
+      } else {
+        delete instance.use;
+      }
       ensuring = false;
     }
   }
