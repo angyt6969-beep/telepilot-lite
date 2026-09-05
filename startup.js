@@ -1,5 +1,4 @@
 import { Api, Bot } from "grammy";
-import { installDashboardPolish } from "./dashboard-polish.js";
 import { installUiEnhancements } from "./ui.js";
 import {
   configurePremiumEmojiStickers,
@@ -9,9 +8,8 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Wrapper order matters: dashboard polish is installed first so it receives
-// the fully transformed UI payload after the premium and regular UI layers.
-installDashboardPolish(Api);
+// Regular UI builds the dashboard first; the premium layer then decorates
+// that final payload with custom emoji, formatting, button icons and styles.
 installPremiumEmojiEnhancements(Api);
 installUiEnhancements(Api);
 
