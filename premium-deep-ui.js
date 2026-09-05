@@ -3,12 +3,9 @@ let deepPremiumEnabled = true;
 let fallbackPremiumIds = [];
 
 const DEEP_PAGE_PREFIXES = [
-  // Main Tools / Smart Preview.
   "⚙️ TelePilot Tools",
   "⚡ TelePilot Power Tools",
   "👁 Smart preview",
-
-  // Pro tools.
   "📝 Templates",
   "📝 Manage templates",
   "📆 Advanced schedule",
@@ -18,8 +15,6 @@ const DEEP_PAGE_PREFIXES = [
   "🩺 Destination health",
   "📜 Posting history",
   "🧪 Test send",
-
-  // v1 tools.
   "🔄 Message rotation",
   "🕒 Exact-time scheduling",
   "🕒 Add exact time",
@@ -50,8 +45,6 @@ const DEEP_PAGE_PREFIXES = [
   "🛡 TelePilot user management",
   "🛡 User details",
   "👁 Smart preview",
-
-  // Admin panel and its child screens.
   "🟣 TELEPILOT ADMIN",
   "👥 USERS",
   "👤 ",
@@ -93,77 +86,58 @@ const ALWAYS_PREMIUM_BUTTON_CALLBACKS = new Set([
   "v1_preview",
 ]);
 
-// Legacy semantic candidates are kept for compatibility/reference, but TelePilot
-// now only renders a premium icon when Telegram provides an exact emoji match.
-const FALLBACK_EMOJI = new Map([
-  ["🟣", ["🛡️", "🔐", "⚡️", "🔥"]],
-  ["👥", ["📱", "👀", "✅"]],
-  ["👤", ["📱", "👀"]],
-  ["🔑", ["💎", "✅"]],
-  ["▶️", ["⚡️", "🔥"]],
-  ["▶", ["⚡️", "🔥"]],
-  ["⏹", ["❗️", "⏳"]],
-  ["⏹️", ["❗️", "⏳"]],
-  ["📊", ["📈", "✅"]],
-  ["📢", ["💡", "🔥"]],
-  ["📣", ["💡", "🔥"]],
-  ["🧾", ["📝", "📁"]],
-  ["🔐", ["✅", "📱"]],
-  ["🔒", ["✅", "📱"]],
-  ["🛡", ["✅", "⚡️"]],
-  ["🛡️", ["✅", "⚡️"]],
-  ["🛑", ["❗️", "🔥"]],
-  ["🚫", ["❗️", "⏳"]],
-  ["⚠️", ["❗️", "🔥"]],
-  ["🩺", ["✅", "👀"]],
-  ["📦", ["📁", "📝"]],
-  ["📥", ["📁", "📱"]],
-  ["📤", ["📁", "⚡️"]],
-  ["🔔", ["💡", "🔥"]],
-  ["🔎", ["👀", "💡"]],
-  ["✨", ["💡", "🔥"]],
-  ["🎯", ["⚡️", "✅"]],
-  ["🧭", ["📆", "👀"]],
-  ["🕒", ["📆", "⏳"]],
-  ["⏱", ["📆", "⏳"]],
-  ["⏱️", ["📆", "⏳"]],
-  ["📅", ["📆", "⏳"]],
-  ["🔄", ["📆", "⚡️"]],
-  ["♻️", ["📆", "✅"]],
-  ["❓", ["💡", "👀"]],
-  ["🆕", ["🔥", "⚡️"]],
-  ["👁", ["👀", "💡"]],
-  ["👁️", ["👀", "💡"]],
-  ["👀", ["👀", "💡"]],
-  ["⬅️", ["📆", "⚡️"]],
-  ["⬅", ["📆", "⚡️"]],
-  ["🗑", ["❗️", "🔥"]],
-  ["🗑️", ["❗️", "🔥"]],
-  ["⭐", ["🔥", "✅"]],
-  ["⭐️", ["🔥", "✅"]],
-  ["↩", ["📆", "✅"]],
-  ["🔌", ["📱", "❗️"]],
-  ["✖️", ["❗️", "🔥"]],
-  ["✏️", ["✍️", "📝"]],
-  ["➕", ["✅", "💡"]],
-  ["🧪", ["✍️", "💡"]],
-  ["🪄", ["✍️", "🔥"]],
-  ["📜", ["📝", "📁"]],
-  ["⏸", ["⏳", "❗️"]],
-  ["⏸️", ["⏳", "❗️"]],
-  ["⏭", ["⚡️", "📆"]],
-  ["⏭️", ["⚡️", "📆"]],
-  ["🟢", ["✅", "🔥"]],
-  ["⌛", ["⏳", "📆"]],
-  ["📡", ["⚡️", "📱"]],
-  ["📈", ["📈", "✅"]],
-  ["💡", ["💡", "🔥"]],
-  ["📝", ["📝", "✍️"]],
-  ["🔥", ["🔥", "⚡️"]],
-  ["✅", ["✅", "📈"]],
+// TELEPILOT_SEMANTIC_EMOJI_V1
+// Only use explicit, meaning-preserving premium aliases. There is deliberately
+// no random fallback pool: unsupported status icons stay as normal Unicode.
+const SEMANTIC_PREMIUM_ALIASES = new Map([
+  ["⚙️", ["⚡️"]],
+  ["⚙", ["⚡️"]],
+  ["👁", ["👀"]],
+  ["👁️", ["👀"]],
+  ["🔑", ["🪪", "🎟"]],
+  ["👥", ["👨‍👩‍👧‍👦"]],
+  ["👤", ["🪪", "📱"]],
+  ["▶️", ["⚡️"]],
+  ["▶", ["⚡️"]],
+  ["⏹", ["❗"]],
+  ["⏹️", ["❗"]],
+  ["📊", ["📈"]],
+  ["📢", ["📣"]],
+  ["🧾", ["📝"]],
+  ["🔐", ["🪪", "👮‍♂"]],
+  ["🔒", ["🪪", "👮‍♂"]],
+  ["🛡", ["👮‍♂", "🪪"]],
+  ["🛡️", ["👮‍♂", "🪪"]],
+  ["🛑", ["❗"]],
+  ["🚫", ["❗"]],
+  ["⚠️", ["❗"]],
+  ["📦", ["📁"]],
+  ["📥", ["📁"]],
+  ["📤", ["📁"]],
+  ["🔔", ["📣"]],
+  ["✨", ["💡"]],
+  ["🎯", ["🔝", "✅"]],
+  ["🧭", ["🔎"]],
+  ["🕒", ["📆"]],
+  ["⏱", ["📆"]],
+  ["⏱️", ["📆"]],
+  ["📅", ["📆"]],
+  ["🔄", ["⚡️"]],
+  ["♻️", ["⚡️", "✅"]],
+  ["🆕", ["🔥"]],
+  ["🗑", ["❗"]],
+  ["🗑️", ["❗"]],
+  ["🔌", ["📱"]],
+  ["✖️", ["❗"]],
+  ["✏️", ["✍"]],
+  ["➕", ["✅"]],
+  ["🪄", ["✍", "🔥"]],
+  ["📜", ["📝"]],
+  ["⌛", ["📆"]],
+  ["📡", ["📱", "⚡️"]],
 ]);
 
-const GENERIC_FALLBACKS = ["⚡️", "✅", "💡", "📱", "📝", "📁", "📆", "📈", "❗️", "👀", "⏳", "🔥", "💎"];
+const GENERIC_FALLBACKS = ["⚡️", "✅", "💡", "📱", "📝", "📁", "📆", "📈", "❗", "👀", "🔥", "🪪", "🎟"];
 
 const EMOJI_RE = /(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)/gu;
 const LEADING_EMOJI_RE = /^(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)\s*/u;
@@ -193,21 +167,21 @@ function firstAvailable(candidates = []) {
   return "";
 }
 
-function stableFallbackId(key) {
-  if (!fallbackPremiumIds.length) return "";
-  let hash = 2166136261;
-  for (const char of normalizeEmoji(key)) {
-    hash ^= char.codePointAt(0);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return fallbackPremiumIds[hash % fallbackPremiumIds.length] || "";
+function premiumIdForEmoji(emoji) {
+  const exact = directId(emoji);
+  if (exact) return exact;
+  const aliases = SEMANTIC_PREMIUM_ALIASES.get(String(emoji || ""))
+    || SEMANTIC_PREMIUM_ALIASES.get(normalizeEmoji(emoji))
+    || [];
+  return firstAvailable(aliases);
 }
 
-// TELEPILOT_SEMANTIC_EMOJI_V1
-// Never substitute an unrelated premium emoji. If Telegram does not have an
-// exact premium match for the visible emoji, keep the normal Unicode emoji.
-function premiumIdForEmoji(emoji) {
-  return directId(emoji);
+function premiumIdForCallback(data) {
+  const value = String(data || "");
+  if (value === "tools") return firstAvailable(["⚡️"]);
+  if (value === "v1_preview") return firstAvailable(["👀"]);
+  if (value === "admin_keys" || value.startsWith("admin_key")) return firstAvailable(["🪪", "🎟"]);
+  return "";
 }
 
 export function configureDeepPremiumEmojiStickers(stickers = []) {
@@ -217,13 +191,9 @@ export function configureDeepPremiumEmojiStickers(stickers = []) {
     const id = typeof sticker?.custom_emoji_id === "string" ? sticker.custom_emoji_id : "";
     mapSticker(emoji, id);
   }
-
-  const preferred = GENERIC_FALLBACKS
-    .map(emoji => directId(emoji))
-    .filter(Boolean);
+  const preferred = GENERIC_FALLBACKS.map(emoji => directId(emoji)).filter(Boolean);
   const all = [...new Set(premiumEmojiByAlt.values())];
   fallbackPremiumIds = [...new Set([...preferred, ...all])];
-
   deepPremiumEnabled = premiumEmojiByAlt.size > 0 && fallbackPremiumIds.length > 0;
   return {
     available: premiumEmojiByAlt.size,
@@ -312,7 +282,7 @@ function premiumizeButton(button, force = false) {
   const raw = match[0];
   const emojiMatch = raw.match(EMOJI_RE);
   const emoji = emojiMatch?.[0] || "";
-  const id = premiumIdForEmoji(emoji);
+  const id = premiumIdForCallback(data) || premiumIdForEmoji(emoji);
   if (!id) return next;
   next.icon_custom_emoji_id = id;
   const stripped = label.slice(raw.length).trimStart();
@@ -334,9 +304,7 @@ function premiumizeMarkup(text, other) {
 function stripDeepPremium(other) {
   if (!other) return other;
   const clean = { ...other };
-  if (Array.isArray(clean.entities)) {
-    clean.entities = clean.entities.filter(entity => entity?.type !== "custom_emoji");
-  }
+  if (Array.isArray(clean.entities)) clean.entities = clean.entities.filter(entity => entity?.type !== "custom_emoji");
   if (clean.reply_markup?.inline_keyboard) {
     clean.reply_markup = {
       ...clean.reply_markup,
