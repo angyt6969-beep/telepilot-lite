@@ -39,8 +39,6 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
   },
 });
 
-// A normal callback registered before start must remain reachable. This validates the harness
-// and distinguishes generic grammY routing problems from support registration timing issues.
 bot.callbackQuery("baseline", async ctx => { await ctx.answerCallbackQuery(); });
 
 if (MODE === "all-use" || MODE === "all-handlers" || MODE === "all") {
@@ -57,10 +55,10 @@ if (!bot.__telepilotSupportHandlersRegistered) throw new Error(`${MODE}: support
 const calls = [];
 bot.api.config.use(async (_prev, method, payload) => {
   calls.push({ method, payload });
-  if (method === "answerCallbackQuery") return true;
-  if (method === "editMessageText") return { message_id: 1, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") };
-  if (method === "sendMessage") return { message_id: 2, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") };
-  return true;
+  if (method === "answerCallbackQuery") return { ok: true, result: true };
+  if (method === "editMessageText") return { ok: true, result: { message_id: 1, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") } };
+  if (method === "sendMessage") return { ok: true, result: { message_id: 2, date: 0, chat: { id: 123, type: "private" }, text: String(payload.text || "") } };
+  return { ok: true, result: true };
 });
 
 function callbackUpdate(id, data) {
