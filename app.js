@@ -1112,7 +1112,7 @@ function adminDashboardText() {
   const active = snapshots.filter(s => hasAccess(s)).length;
   const revoked = snapshots.filter(s => s.accessRevoked).length;
   const expired = snapshots.filter(s => !s.accessRevoked && !s.accessLifetime && s.accessUntil && s.accessUntil <= now).length;
-  const running = [...states.values()].filter(s => s.posting).length;
+  const running = [...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length;
   const connected = ids.filter(hasPersonalSession).length;
   const unusedKeys = keys.filter(k => !k.revokedAt && !k.redeemedAt).length;
   const redeemedKeys = keys.filter(k => k.redeemedAt && !k.revokedAt).length;
@@ -1319,7 +1319,7 @@ async function generateAdminKey(ctx, duration) {
 }
 
 async function showAdminActive(ctx, requestedPage = 0) {
-  const active = [...states.values()].filter(s => s.posting);
+  const active = [...states.values()].filter(s => s.posting && !isAdmin(s.uid));
   const pages = Math.max(1, Math.ceil(active.length / ADMIN_PAGE_SIZE));
   const page = Math.max(0, Math.min(Number(requestedPage) || 0, pages - 1));
   const start = page * ADMIN_PAGE_SIZE;
@@ -1346,7 +1346,7 @@ function expiringUserIds(mode) {
   if (mode === "expired") {
     return ids.filter(id => {
       const s = getAdminSnapshot(id);
-      return !s.accessLifetime && !!s.accessUntil && s.accessUntil <= now;
+      return !s.accessRevoked && !s.accessLifetime && !!s.accessUntil && s.accessUntil <= now;
     }).sort((a, b) => Number(getAdminSnapshot(b).accessUntil || 0) - Number(getAdminSnapshot(a).accessUntil || 0));
   }
   const days = Number(mode);
@@ -1390,7 +1390,7 @@ async function showAdminStats(ctx) {
   const totalGroups = snapshots.reduce((sum, s) => sum + s.groups.length, 0);
   const totalSent = snapshots.reduce((sum, s) => sum + Number(s.totalSent || 0), 0);
   const now = Date.now();
-  const recent = readAdminEvents(5000).filter(e => e.type === "post_cycle" && now - Number(e.ts || 0) <= 86_400_000);
+  const recent = readAdminEvents(5000).filter(e => e.type === "post_cycle" && !isAdmin(e.uid) && now - Number(e.ts || 0) <= 86_400_000);
   const sent24 = recent.reduce((sum, e) => sum + Number(e.success || 0), 0);
   const failed24 = recent.reduce((sum, e) => sum + Number(e.failed || 0), 0);
   const keys = loadKeyDb().keys;
@@ -1401,7 +1401,7 @@ async function showAdminStats(ctx) {
     `Users: ${ids.length}`,
     `Active access: ${snapshots.filter(hasAccess).length}`,
     `Connected personal accounts: ${ids.filter(hasPersonalSession).length}`,
-    `Currently posting: ${[...states.values()].filter(s => s.posting).length}`,
+    `Currently posting: ${[...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length}`,
     "",
     `Saved destinations: ${totalGroups}`,
     `Average destinations/user: ${ids.length ? (totalGroups / ids.length).toFixed(1) : "0.0"}`,
@@ -1738,14 +1738,14 @@ bot.callbackQuery(/^admin_active_stop:(\d+):(\d+)$/, async ctx => {
 });
 bot.callbackQuery("admin_active_stop_all", async ctx => {
   if (!(await allowAdminCallback(ctx))) return;
-  const count = [...states.values()].filter(s => s.posting).length;
+  const count = [...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length;
   await adminRender(ctx, `🛑 STOP ALL POSTING\n\nStop all ${count} currently running TelePilot posting loop(s)?`, new InlineKeyboard().text("🛑 Confirm Stop All", "admin_active_stop_all_confirm").danger().row().text("⬅️ Cancel", "admin_active:0"));
 });
 bot.callbackQuery("admin_active_stop_all_confirm", async ctx => {
   if (!(await allowAdminCallback(ctx))) return;
   let count = 0;
   for (const state of states.values()) {
-    if (!state.posting) continue;
+    if (!state.posting || isAdmin(state.uid)) continue;
     stopPostingLoop(state);
     count++;
   }
