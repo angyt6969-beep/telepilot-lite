@@ -25,7 +25,17 @@ installV1Extras(Bot);
 installOnboarding(Bot);
 installSupportCenter(Bot);
 
-const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi");
+const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
+  botInfo: {
+    id: 123456,
+    is_bot: true,
+    first_name: "TelePilot",
+    username: "TelePilottBot",
+    can_join_groups: true,
+    can_read_all_group_messages: false,
+    supports_inline_queries: false,
+  },
+});
 
 // Mirror the important shape of app middleware/handlers that exist before bot.start().
 bot.use(async (ctx, next) => next());
