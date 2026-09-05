@@ -51,8 +51,6 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
     throw new Error("Unsupported grammY Bot shape for early support registration");
   }
 
-  // Give support-center a non-starting baseStart. Its generated start wrapper can then be
-  // invoked purely as a route registrar without opening Telegram polling.
   BotClass.prototype.start = function telepilotSupportRegistrationOnly() { return undefined; };
   installSupportCenter(BotClass);
 
@@ -91,19 +89,19 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
     if (!instance || instance.__telepilotSupportHandlersRegistered || ensuring) return;
     ensuring = true;
     try {
-      // grammY's callbackQuery()/command() use this.use() internally. During support route
-      // registration that must be the pre-support implementation, otherwise supportIntent()
-      // skips the very route being registered.
       withPreSupportUse(instance, () => registerSupport.call(instance));
-
-      // Support report descriptions must not depend on some later app message:text handler
-      // existing. Register one dedicated intake route through support-center's own `on()`
-      // wrapper. The wrapper consumes pending report text (or deleted-user text) and this
-      // no-op handler only passes through normal messages.
-      withPreSupportUse(instance, () => supportOn.call(instance, "message:text", async (_ctx, next) => next()));
     } finally {
       ensuring = false;
     }
+  }
+
+  function ensureSupportTextIntake(instance) {
+    if (!instance || instance.__telepilotSupportTextIntakeRegistered) return;
+    Object.defineProperty(instance, "__telepilotSupportTextIntakeRegistered", { value: true });
+    // supportOn wraps this no-op handler with support-center's pending-report logic. It is
+    // intentionally registered only after the app's /start route so a deleted user can use
+    // /start to create a fresh profile before the deleted-user text guard sees that command.
+    withPreSupportUse(instance, () => supportOn.call(instance, "message:text", async (_ctx, next) => next()));
   }
 
   BotClass.prototype.use = function(...args) {
@@ -117,17 +115,15 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
   BotClass.prototype.command = function(command, ...middleware) {
     ensureSupport(this);
 
-    // Account deletion removes the user's TelePilot directory, but it must not become a
-    // permanent ban. A later private /start is an explicit request to create a fresh profile.
-    // Register /start outside the deleted-user guard, clear only the hashed deletion marker
-    // when that command is actually received, then let onboarding/app startup run normally.
     if (command === "start") {
       const wrapped = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx, next) {
         const uid = ctx?.from?.id ? String(ctx.from.id) : "";
         if (uid && ctx?.chat?.type === "private") reactivateDeletedUser(uid);
         return handler.call(this, ctx, next);
       });
-      return withPreSupportUse(this, () => preSupportCommand.call(this, command, ...wrapped));
+      const result = withPreSupportUse(this, () => preSupportCommand.call(this, command, ...wrapped));
+      ensureSupportTextIntake(this);
+      return result;
     }
 
     return supportCommand.call(this, command, ...middleware);
@@ -138,6 +134,8 @@ export function installSupportCenterEarly(BotClass, installSupportCenter) {
   };
   BotClass.prototype.start = function(...args) {
     ensureSupport(this);
+    // Defensive fallback for nonstandard bot setups that forgot to register /start.
+    ensureSupportTextIntake(this);
     return realStart.apply(this, args);
   };
 
