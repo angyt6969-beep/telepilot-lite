@@ -1,0 +1,99 @@
+name: Apply TelePilot onboarding flow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/onboarding-flow-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Patch first access activation into tutorial
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app.js')
+          s = p.read_text()
+          old = '''  if (state.awaiting === "license_key") {
+    const pm = state.awaitingPromptMessageId;
+    const pc = state.awaitingPromptChatId || ctx.chat.id;
+    const result = redeemLicenseKey(state, ctx.message.text);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!result.ok) {
+      const n = await ctx.reply(`❌ ${result.error}\\n\\nSend a valid key or tap Cancel.`);
+      setTimeout(() => void safeDelete(ctx.chat.id, n.message_id), 8000);
+      return;
+    }
+    clearAwaiting(state);
+    const plan = result.record.lifetime ? "Lifetime" : `${result.record.durationDays} days`;
+    await autoDeleteNotice(ctx.chat.id, `✅ Key redeemed. ${plan} of TelePilot access activated.`, 8000);
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+    return;
+  }
+'''
+          new = '''  if (state.awaiting === "license_key") {
+    const pm = state.awaitingPromptMessageId;
+    const pc = state.awaitingPromptChatId || ctx.chat.id;
+    const onboardingComplete = readJson(path.join(userDir(state.uid), "onboarding.json"), {}).completed === true;
+    const result = redeemLicenseKey(state, ctx.message.text);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!result.ok) {
+      const n = await ctx.reply(`❌ ${result.error}\\n\\nSend a valid key or tap Cancel.`);
+      setTimeout(() => void safeDelete(ctx.chat.id, n.message_id), 8000);
+      return;
+    }
+    clearAwaiting(state);
+    const plan = result.record.lifetime ? "Lifetime" : `${result.record.durationDays} days`;
+    if (!onboardingComplete) {
+      const expires = result.record.lifetime ? "Lifetime" : formatAccessExpiry(state);
+      const text = `✅ ACCESS ACTIVATED\\n\\nPlan: ${plan}\\nExpires: ${expires}\\n\\nYour TelePilot account is ready to set up.`;
+      const keyboard = new InlineKeyboard()
+        .text("🚀 Start Tutorial", "tutorial:begin").row()
+        .text("Skip tutorial", "tutorial:skip");
+      try { await bot.api.editMessageText(pc, pm, text, { reply_markup: keyboard }); }
+      catch { await ctx.reply(text, { reply_markup: keyboard }); }
+      return;
+    }
+    await autoDeleteNotice(ctx.chat.id, `✅ Key redeemed. ${plan} of TelePilot access activated.`, 8000);
+    if (!(await editDashboard(pc, pm, state))) {
+      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
+    }
+    return;
+  }
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'Expected exactly one access redemption block, found {s.count(old)}; refusing to patch.')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          node --check app.js
+          node --check onboarding.js
+          grep -q 'Start Tutorial' app.js
+          grep -q 'onboarding:access' onboarding.js
+          grep -q 'Step 1 of 5' onboarding.js
+          grep -q 'Open Smart Preview' onboarding.js
+      - name: Run security regression tests
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+      - name: Commit onboarding flow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "Start tutorial after first access activation"
+          git push origin HEAD:main
