@@ -1,5 +1,6 @@
 import { Api, Bot } from "grammy";
 import { TelegramClient } from "teleproto";
+import { installConnectUi } from "./connect-ui.js";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
@@ -26,6 +27,9 @@ import {
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+
+// Install the branded HTTPS connection page before app.js creates its HTTP server.
+installConnectUi();
 
 // Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
