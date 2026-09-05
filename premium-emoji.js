@@ -1,9 +1,6 @@
 const premiumEmojiByAlt = new Map();
 let premiumEnabled = true;
 
-// Flying duck custom emoji supplied for the TelePilot title.
-const TELEPILOT_DUCK_CUSTOM_EMOJI_ID = "5231361378748472914";
-
 const UI_PREFIXES = [
   "✈️ TelePilot",
   "🔒 TelePilot Access",
@@ -70,7 +67,7 @@ const FALLBACK_PREFIXES = new Map([
 ]);
 
 const PREMIUM_TEXT_EMOJI = [
-  "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "💎", "⚡️", "❗️", "✍️", "👀",
+  "⭐️", "✅", "🔥", "💡", "📱", "📝", "📁", "📆", "📈", "💎", "⚡️", "❗️", "✍️", "👀",
 ];
 
 function customEmojiId(alt) {
@@ -96,21 +93,12 @@ function isUiText(text) {
   return UI_PREFIXES.some(prefix => value.startsWith(prefix));
 }
 
-function formatDashboardSpacing(value) {
-  if (!value.startsWith("✈️ TelePilot")) return value;
-  return value
-    .split("\n")
-    .map(line => line.trimEnd())
-    .filter(line => line.length > 0)
-    .join("\n\n");
-}
-
 function enhanceUiText(text) {
   let value = String(text || "");
   if (!isUiText(value)) return value;
 
   value = value
-    .replace(/^✈️ TelePilot\s*(?:⭐️)?$/m, "✈️ TelePilot")
+    .replace(/^✈️ TelePilot$/m, "✈️ TelePilot  ⭐️")
     .replace(/^👤 Sender/m, "📱 Sender")
     .replace(/^👤 Connect account/m, "📱 Connect account")
     .replace(/^📍 Destinations/m, "📁 Destinations")
@@ -131,11 +119,11 @@ function enhanceUiText(text) {
     .replace(/^Message\s{2,}/m, "Message - ")
     .replace(/^Destinations\s{2,}/m, "Destinations - ")
     .replace(/^Schedule\s{2,}/m, "Schedule - ")
-    .replace(/^Next step\s+→\s+/m, "⚡️ Next step → ")
+    .replace(/^Next step\s+/m, "⚡️ Next step ")
     .replace(/^Access\s{2,}/m, "💎 Access - ")
     .replace(/^Ready when you are\./m, "✅ Ready when you are.");
 
-  return formatDashboardSpacing(value);
+  return value;
 }
 
 function pushEntityOnce(entities, entity) {
@@ -148,39 +136,30 @@ function pushEntityOnce(entities, entity) {
   if (!duplicate) entities.push(entity);
 }
 
-function addStyleEntity(entities, text, label, { bold = true, italic = false } = {}) {
+function addStyle(entities, text, label, italic = false) {
   const offset = text.indexOf(label);
   if (offset < 0) return;
-  if (bold) pushEntityOnce(entities, { type: "bold", offset, length: label.length });
+  pushEntityOnce(entities, { type: "bold", offset, length: label.length });
   if (italic) pushEntityOnce(entities, { type: "italic", offset, length: label.length });
 }
 
-function addDashboardFormatting(text, other) {
+function addTextFormatting(text, other) {
   if (!text.startsWith("✈️ TelePilot") || other?.parse_mode) return other;
 
   const entities = Array.isArray(other?.entities)
     ? other.entities.map(entity => ({ ...entity }))
     : [];
 
-  if (premiumEnabled) {
-    pushEntityOnce(entities, {
-      type: "custom_emoji",
-      offset: 0,
-      length: "✈️".length,
-      custom_emoji_id: TELEPILOT_DUCK_CUSTOM_EMOJI_ID,
-    });
-  }
-
-  addStyleEntity(entities, text, "TelePilot", { bold: true });
-  addStyleEntity(entities, text, "SETUP", { bold: true });
-  addStyleEntity(entities, text, "READY", { bold: true });
-  addStyleEntity(entities, text, "LIVE", { bold: true });
-  addStyleEntity(entities, text, "Sender", { bold: true });
-  addStyleEntity(entities, text, "Message", { bold: true });
-  addStyleEntity(entities, text, "Destinations", { bold: true, italic: true });
-  addStyleEntity(entities, text, "Schedule", { bold: true, italic: true });
-  addStyleEntity(entities, text, "Next step", { bold: true, italic: true });
-  addStyleEntity(entities, text, "Access", { bold: true, italic: true });
+  addStyle(entities, text, "TelePilot");
+  addStyle(entities, text, "SETUP");
+  addStyle(entities, text, "READY");
+  addStyle(entities, text, "LIVE");
+  addStyle(entities, text, "Sender");
+  addStyle(entities, text, "Message");
+  addStyle(entities, text, "Destinations", true);
+  addStyle(entities, text, "Schedule", true);
+  addStyle(entities, text, "Next step", true);
+  addStyle(entities, text, "Access", true);
 
   entities.sort((a, b) => a.offset - b.offset || a.length - b.length);
   return entities.length ? { ...(other || {}), entities } : other;
@@ -281,7 +260,7 @@ function looksLikePremiumPermissionError(err) {
 function enhancePayload(text, other) {
   const enhancedText = enhanceUiText(text);
   let enhancedOther = enhanceMarkup(other);
-  enhancedOther = addDashboardFormatting(enhancedText, enhancedOther);
+  enhancedOther = addTextFormatting(enhancedText, enhancedOther);
   enhancedOther = addPremiumEntities(enhancedText, enhancedOther);
   return { text: enhancedText, other: enhancedOther };
 }
@@ -305,8 +284,8 @@ export function installPremiumEmojiEnhancements(ApiClass) {
       premiumEnabled = false;
       console.warn("Telegram premium emoji UI disabled for this process; falling back to standard UI.");
       const fallbackText = enhanceUiText(text);
-      let fallbackOther = stripPremiumFeatures(enhanceMarkup(other));
-      fallbackOther = addDashboardFormatting(fallbackText, fallbackOther);
+      let fallbackOther = stripPremiumFeatures(other);
+      fallbackOther = addTextFormatting(fallbackText, fallbackOther);
       return originalSendMessage.call(this, chatId, fallbackText, fallbackOther, ...rest);
     }
   };
@@ -320,8 +299,8 @@ export function installPremiumEmojiEnhancements(ApiClass) {
       premiumEnabled = false;
       console.warn("Telegram premium emoji UI disabled for this process; falling back to standard UI.");
       const fallbackText = enhanceUiText(text);
-      let fallbackOther = stripPremiumFeatures(enhanceMarkup(other));
-      fallbackOther = addDashboardFormatting(fallbackText, fallbackOther);
+      let fallbackOther = stripPremiumFeatures(other);
+      fallbackOther = addTextFormatting(fallbackText, fallbackOther);
       return originalEditMessageText.call(this, chatId, messageId, fallbackText, fallbackOther, ...rest);
     }
   };
