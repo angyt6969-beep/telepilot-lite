@@ -171,7 +171,7 @@ export function installDestinationDeleteControls(BotClass) {
         await ctx.editMessageText([
           "⚠️ Delete all groups?",
           "",
-          `This will remove all ${count} saved destinations, stop posting if necessary, and cancel queued auto-joins/archive tasks.",
+          `This will remove all ${count} saved destinations, stop posting if necessary, and cancel queued auto-joins/archive tasks.`,
           "",
           "This cannot be undone.",
         ].join("\n"), {
