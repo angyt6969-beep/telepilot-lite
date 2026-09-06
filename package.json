@@ -13,7 +13,7 @@
     "test:teleproto": "node teleproto-reliability-test.mjs",
     "test:v11": "node telepilot-v11-regression-test.mjs",
     "test:v12": "node telepilot-v12-regression-test.mjs",
-    "test:v13": "node telepilot-v13-regression-test.mjs && node telepilot-v13-runtime-test.mjs && node telepilot-v13-visual-polish-test.mjs"
+    "test:v13": "node telepilot-v13-regression-test.mjs && node telepilot-v13-runtime-test.mjs && node telepilot-v13-visual-polish-test.mjs && node owner-controls-test.mjs"
   },
   "dependencies": {
     "big-integer": "^1.6.52",
