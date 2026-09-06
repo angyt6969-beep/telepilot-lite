@@ -20,6 +20,9 @@ function safeAccountId(value) {
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid account ID");
   return id;
 }
+function cleanAlias(value) {
+  return String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+}
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
   catch { return fallback; }
@@ -67,9 +70,9 @@ function decryptPayload(raw) {
   ]).toString("utf8");
 }
 function dbFor(uid) {
-  const raw = readJson(accountsFile(uid), { version: 2, accounts: [] });
+  const raw = readJson(accountsFile(uid), { version: 3, accounts: [] });
   return {
-    version: 2,
+    version: 3,
     accounts: Array.isArray(raw?.accounts) ? raw.accounts.filter(item => item && /^[A-Za-z0-9_-]{1,80}$/.test(String(item.id || ""))) : [],
   };
 }
@@ -86,13 +89,14 @@ function saveDb(uid, db) {
       username: String(raw.username || "").replace(/^@/, "").slice(0, 64),
       firstName: String(raw.firstName || "").slice(0, 80),
       lastName: String(raw.lastName || "").slice(0, 80),
+      alias: cleanAlias(raw.alias),
       connectedAt: Number(raw.connectedAt || 0) || Date.now(),
       lastVerifiedAt: Number(raw.lastVerifiedAt || 0) || 0,
       status: ["connected", "needs-reconnect", "unknown"].includes(raw.status) ? raw.status : "unknown",
       lastError: String(raw.lastError || "").slice(0, 180),
     });
   }
-  writeJsonAtomic(accountsFile(uid), { version: 2, accounts });
+  writeJsonAtomic(accountsFile(uid), { version: 3, accounts });
 }
 function migrateLegacy(uid) {
   const legacy = legacySessionFile(uid);
@@ -105,7 +109,7 @@ function migrateLegacy(uid) {
     fs.mkdirSync(accountsDir(uid), { recursive: true, mode: 0o700 });
     const target = accountSessionFile(uid, "legacy");
     if (!fs.existsSync(target)) fs.copyFileSync(legacy, target);
-    db.accounts.push({ id: "legacy", telegramId: "", username, firstName: "", lastName: "", connectedAt: Date.now(), lastVerifiedAt: 0, status: "unknown", lastError: "" });
+    db.accounts.push({ id: "legacy", telegramId: "", username, firstName: "", lastName: "", alias: "", connectedAt: Date.now(), lastVerifiedAt: 0, status: "unknown", lastError: "" });
     saveDb(uid, db);
   }
   try { fs.rmSync(legacy, { force: true }); } catch {}
@@ -117,6 +121,7 @@ function normalizeMeta(item) {
     username: String(item.username || ""),
     firstName: String(item.firstName || ""),
     lastName: String(item.lastName || ""),
+    alias: cleanAlias(item.alias),
     connectedAt: Number(item.connectedAt || 0) || 0,
     lastVerifiedAt: Number(item.lastVerifiedAt || 0) || 0,
     status: String(item.status || "unknown"),
@@ -137,6 +142,7 @@ export function countAccounts(uid) { return listAccounts(uid).length; }
 export function getAccount(uid, accountId) { return listAccounts(uid).find(item => item.id === String(accountId)) || null; }
 export function accountDisplayLabel(account) {
   if (!account) return "Personal account";
+  if (cleanAlias(account.alias)) return cleanAlias(account.alias);
   if (account.username) return `@${String(account.username).replace(/^@/, "")}`;
   const name = [account.firstName, account.lastName].filter(Boolean).join(" ").trim();
   return name || (account.telegramId ? `Account ${account.telegramId}` : "Personal account");
@@ -158,13 +164,14 @@ export function saveAccountSession(uid, user, sessionString) {
     let id = base;
     let n = 2;
     while (db.accounts.some(item => item.id === id)) id = `${base}_${n++}`;
-    record = { id, connectedAt: Date.now() };
+    record = { id, connectedAt: Date.now(), alias: "" };
     db.accounts.push(record);
   }
   record.telegramId = telegramId || String(record.telegramId || "");
   record.username = username;
   record.firstName = String(user?.firstName || user?.first_name || "");
   record.lastName = String(user?.lastName || user?.last_name || "");
+  record.alias = cleanAlias(record.alias);
   record.connectedAt = Number(record.connectedAt || 0) || Date.now();
   record.lastVerifiedAt = Date.now();
   record.status = "connected";
@@ -185,12 +192,16 @@ export function updateAccountStatus(uid, accountId, patch = {}) {
   if (patch.username !== undefined) item.username = String(patch.username || "").replace(/^@/, "");
   if (patch.firstName !== undefined) item.firstName = String(patch.firstName || "");
   if (patch.lastName !== undefined) item.lastName = String(patch.lastName || "");
+  if (patch.alias !== undefined) item.alias = cleanAlias(patch.alias);
   if (patch.telegramId !== undefined && /^\d+$/.test(String(patch.telegramId || ""))) item.telegramId = String(patch.telegramId);
   if (patch.status !== undefined) item.status = String(patch.status || "unknown");
   if (patch.lastError !== undefined) item.lastError = String(patch.lastError || "").slice(0, 180);
   if (patch.lastVerifiedAt !== undefined) item.lastVerifiedAt = Number(patch.lastVerifiedAt || 0) || 0;
   saveDb(uid, db);
   return normalizeMeta(item);
+}
+export function setAccountAlias(uid, accountId, alias) {
+  return updateAccountStatus(uid, accountId, { alias: cleanAlias(alias) });
 }
 export function removeAccount(uid, accountId) {
   migrateLegacy(uid);
@@ -209,7 +220,7 @@ export function removeAllAccounts(uid) {
     try { fs.rmSync(accountSessionFile(uid, item.id), { force: true }); } catch {}
   }
   try { fs.rmSync(accountsDir(uid), { recursive: true, force: true }); } catch {}
-  saveDb(uid, { version: 2, accounts: [] });
+  saveDb(uid, { version: 3, accounts: [] });
   try { fs.rmSync(legacySessionFile(uid), { force: true }); } catch {}
 }
 export function normalizeAccountSelection(settings, accounts = []) {
