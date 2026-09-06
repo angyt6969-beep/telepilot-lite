@@ -11,6 +11,7 @@ import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
 import { installUxV13VisualPolish } from "./ux-v13-visual-polish.js";
+import { installOwnerControlsBot, installOwnerControlsUi } from "./owner-controls.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
@@ -42,6 +43,10 @@ if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 installLegalPages();
 installConnectUi();
 
+// Owner controls are installed before app.js registers its handlers. This lets the
+// permission gate wrap every admin callback and synchronize persisted admin membership first.
+installOwnerControlsBot(Bot);
+
 // Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
@@ -64,10 +69,10 @@ prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 
-// Wrapper order is intentional. The visual-polish layer is installed first, making it
-// the final processor immediately before the raw Bot API call. That lets it enforce final
-// entity offsets, explicit custom-emoji IDs, owner navigation and back-button ordering after
-// every older UI wrapper has finished its own transformations.
+// Owner controls are the innermost UI layer so role restrictions, the single Start/Stop
+// control and explicitly selected premium button icons are enforced immediately before
+// the raw Bot API request. The existing visual-polish layer still formats the v1.3 UI.
+installOwnerControlsUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
