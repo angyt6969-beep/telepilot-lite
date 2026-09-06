@@ -9,8 +9,16 @@ import {
   queueRoutingSync,
   recheckDestinations,
 } from "./destinations-v2.js";
+import { recordDestinationFailure } from "./destination-failure-v2.js";
 
-export { handleDestinationText, parseDestinationInput, processRoutingQueue, queueRoutingSync, recheckDestinations };
+export {
+  handleDestinationText,
+  parseDestinationInput,
+  processRoutingQueue,
+  queueRoutingSync,
+  recheckDestinations,
+  recordDestinationFailure,
+};
 
 export function destinationAccountReady(destination, accountId = "") {
   const map = destination?.accountJoin && typeof destination.accountJoin === "object" && !Array.isArray(destination.accountJoin)
