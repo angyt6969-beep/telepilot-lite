@@ -1,0 +1,42 @@
+name: TelePilot v1.2 Regression
+
+on:
+  push:
+    branches:
+      - main
+      - telepilot-ux-v12
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: /tmp/telepilot-v12-ci
+      TELEPILOT_SECURITY_SECRET: v12-regression-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      TELEPILOT_SESSION_KEY_B64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      TELEPILOT_SUPPORT_USERNAME: noahxrp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check startup.js
+          node --check app.js
+          node --check destination-automation.js
+          node --check onboarding.js
+          node --check ux-v12.js
+          node --check runtime-hooks.js
+          node --check v1-worker.js
+          node --check telepilot-v12-regression-test.mjs
+      - name: Full regression suite
+        run: npm test
