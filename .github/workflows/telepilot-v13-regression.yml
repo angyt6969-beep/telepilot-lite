@@ -42,5 +42,6 @@ jobs:
           node --check v1-engine.js
           node --check v1-worker.js
           node --check telepilot-v13-regression-test.mjs
+          node --check telepilot-v13-runtime-test.mjs
       - name: Full regression suite
         run: npm test
