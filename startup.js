@@ -14,6 +14,7 @@ import { installAddlistJoinCompatibility } from "./addlist-join-compat.js";
 import { installAddlistPeerResolution } from "./addlist-peer-resolution.js";
 import { installAddlistSafety } from "./addlist-safety.js";
 import { installAddlistImportUi } from "./addlist-import-ui.js";
+import { installAddlistLiveStatus, installAddlistLiveProgressUi } from "./addlist-live-progress.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
@@ -78,6 +79,9 @@ installAddlistReconciliation(TelegramClient);
 installAddlistPeerResolution(TelegramClient);
 installAddlistSafety(TelegramClient);
 installAddlistJoinCompatibility(TelegramClient);
+// Keep live status outermost so it observes the final result after compatibility,
+// safety and peer-resolution layers have finished processing Telegram's response.
+installAddlistLiveStatus(TelegramClient);
 
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
@@ -94,6 +98,9 @@ installUxV13Polish(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
+// Installed last so the status message can observe the final bot response and then
+// edit that exact Telegram message as reconciliation progresses.
+installAddlistLiveProgressUi(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
 
