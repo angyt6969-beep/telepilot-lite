@@ -61,7 +61,9 @@ jobs:
           grep -q 'Never send a Telegram login code' support-center.js
           grep -q 'issueConfirmationToken' support-center.js
           grep -q 'consumeConfirmationToken' support-center.js
-          grep -q 'fs.rmSync(userDir(targetUid)' support-center.js
+          grep -q 'const dir=userDir(targetUid)' support-center.js
+          grep -q 'fs.rmSync(dir,{recursive:true,force:true})' support-center.js
+          grep -q 'if(fs.existsSync(dir))throw new Error("User directory still exists after deletion")' support-center.js
           grep -q 'scrubKeyIdentity' support-center.js
           grep -q 'support_admin' support-ui.js
           grep -q 'preSupportUse' support-bootstrap.js
