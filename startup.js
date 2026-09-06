@@ -51,10 +51,13 @@ installV1Controls(Bot);
 installV1Extras(Bot);
 installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
-installDestinationsV2(Bot);
 installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
+// Install this last so its start-wrapper registers the new destination callbacks
+// before legacy navigation handlers. The legacy callbacks remain unreachable and
+// are retained only as compatibility code for other v1.3 screens.
+installDestinationsV2(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
