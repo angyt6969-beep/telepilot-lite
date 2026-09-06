@@ -159,7 +159,7 @@ if (deletedAfterStart?.users?.[altHash]) throw new Error(`${MODE}: deletion mark
 if (MODE !== "support-only") {
   calls.length = 0;
   await bot.handleUpdate(callbackUpdate(6, "tutorial:2", altUid, "telepilot_alt"));
-  if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("Sender & Message"))) {
+  if (!calls.some(call => call.method === "editMessageText" && String(call.payload.text || "").includes("Step 1 of 5 — Choose your sender"))) {
     throw new Error(`${MODE}: fresh user tutorial callbacks remained blocked after /start`);
   }
 }
