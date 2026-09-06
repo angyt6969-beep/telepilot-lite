@@ -30,12 +30,12 @@ function safeRecord(record) {
 export function persistLoginAttempt(attempt) {
   if(!attempt?.uid || !attempt?.client) return;
   const record=safeRecord({ ...attempt, sessionString:attempt.client.session?.save?.() || "" });
-  if(!/^\d+$/.test(record.uid)||!record.token||!record.sessionString)return;
+  if(!/^\d+$/.test(record.uid)||(!record.token&&!record.browserToken)||!record.sessionString)return;
   const file=fileFor(record.uid);fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});const tmp=`${file}.${process.pid}.${Date.now()}.tmp`;fs.writeFileSync(tmp,seal(record),{mode:0o600});fs.renameSync(tmp,file);
 }
 export function removePersistedLogin(uid) { try { fs.rmSync(fileFor(uid),{force:true}); } catch {} }
 export function loadPersistedLogins(ttlMs) {
   const out=[],now=Date.now();let dirs=[];try{dirs=fs.readdirSync(USERS_DIR,{withFileTypes:true});}catch{return out;}
-  for(const dir of dirs){if(!dir.isDirectory()||!/^\d+$/.test(dir.name))continue;const file=fileFor(dir.name);if(!fs.existsSync(file))continue;try{const r=safeRecord(open(fs.readFileSync(file,"utf8")));if(!r.createdAt||now-r.createdAt>Number(ttlMs||0)||!r.sessionString){fs.rmSync(file,{force:true});continue;}out.push(r);}catch{try{fs.rmSync(file,{force:true});}catch{}}}
+  for(const dir of dirs){if(!dir.isDirectory()||!/^\d+$/.test(dir.name))continue;const file=fileFor(dir.name);if(!fs.existsSync(file))continue;try{const r=safeRecord(open(fs.readFileSync(file,"utf8")));if(!r.createdAt||now-r.createdAt>Number(ttlMs||0)||!r.sessionString||(!r.token&&!r.browserToken)){fs.rmSync(file,{force:true});continue;}out.push(r);}catch{try{fs.rmSync(file,{force:true});}catch{}}}
   return out;
 }
