@@ -1,18 +1,27 @@
 import { recentAddlistImport } from "./addlist-reconciliation.js";
+import { recentAddlistCapacity } from "./addlist-safety.js";
+
+function capacityNote(chatId) {
+  const row = recentAddlistCapacity(String(chatId || ""));
+  if (!row || !row.limit || row.total <= row.limit) return "";
+  const tier = row.premium ? "Premium" : "standard";
+  return `⚠️ Telegram folder capacity — ${row.limit} chats for this ${tier} account. This Addlist contains ${row.total}. TelePilot will keep the confirmed chats and will not mislabel the remaining folder-capacity items as an invalid link.`;
+}
 
 function adjustImportText(chatId, text) {
   const value = String(text || "");
   if (!value.startsWith("✅ Destination import complete")) return text;
   if (!recentAddlistImport(String(chatId || ""))) return text;
-  const zeroAdded = /(?:^|\n)Added\s*[—-]\s*0(?:\n|$)/.test(value);
-  const queued = /Auto-join queued\s*[—-]\s*[1-9]\d*/.test(value);
+  const zeroAdded = /(?:^|\n)Added\s*(?:[—-]\s*)?0(?:\n|$)/.test(value);
+  const queued = /Auto-join queued\s*(?:[—-]\s*)?[1-9]\d*/.test(value);
+  const capacity = capacityNote(chatId);
   if (!zeroAdded && !queued) {
-    return `${value}\n\n🔄 Addlist reconciliation is running in the background. TelePilot will verify the folder against Telegram and recover any newly joined chats automatically.`;
+    return `${value}${capacity ? `\n\n${capacity}` : ""}\n\n🔄 Addlist reconciliation is running in the background. TelePilot will verify confirmed membership without repeatedly hammering Telegram.`;
   }
   const body = value
     .replace(/^✅ Destination import complete/, "⏳ Addlist import processing")
-    .replace(/(?:^|\n)Added\s*[—-]\s*0(?=\n|$)/, "\nAdded so far — 0");
-  return `${body}\n\n🔄 This shared folder is still being reconciled with Telegram. You do not need to paste it repeatedly; TelePilot will add confirmed joined chats in the background and duplicate detection remains active.`;
+    .replace(/(?:^|\n)Added\s*(?:[—-]\s*)?0(?=\n|$)/, "\nAdded so far — 0");
+  return `${body}${capacity ? `\n\n${capacity}` : ""}\n\n🔄 This shared folder is still being reconciled with Telegram. You do not need to paste it repeatedly; confirmed joined chats will be recovered automatically and duplicate detection remains active.`;
 }
 
 export function installAddlistImportUi(ApiClass) {
