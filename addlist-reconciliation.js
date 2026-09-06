@@ -56,11 +56,21 @@ function queueLink(uid, accountId, slug, delayMs = 12_000) {
   if (!id || !account || !clean) return false;
   const store = readStore(id);
   const key = linkKey(account, clean);
-  const nextCheckAt = Date.now() + Math.max(1_000, Number(delayMs) || 0);
+  const requestedAt = Date.now() + Math.max(1_000, Number(delayMs) || 0);
   const index = store.links.findIndex(row => linkKey(row.accountId, row.slug) === key);
-  if (index >= 0) store.links[index].nextCheckAt = Math.min(Number(store.links[index].nextCheckAt || nextCheckAt), nextCheckAt);
-  else store.links.push({ accountId: account, slug: clean, nextCheckAt, attempts: 0, lastCheckedAt: 0, confirmed: 0, lastError: "" });
-  writeStore(id, store);
+  let changed = false;
+  if (index >= 0) {
+    const current = Number(store.links[index].nextCheckAt || 0);
+    const next = current > 0 ? Math.min(current, requestedAt) : requestedAt;
+    if (next !== current) {
+      store.links[index].nextCheckAt = next;
+      changed = true;
+    }
+  } else {
+    store.links.push({ accountId: account, slug: clean, nextCheckAt: requestedAt, attempts: 0, lastCheckedAt: 0, confirmed: 0, lastError: "" });
+    changed = true;
+  }
+  if (changed) writeStore(id, store);
   recentImports.set(id, Date.now());
   return true;
 }
@@ -68,11 +78,27 @@ function seedLinksFromDestinations(uid) {
   const settings = readAppSettings(uid);
   const accounts = listAccounts(uid);
   const validAccounts = new Set(accounts.map(account => String(account.id)));
+  const wanted = new Map();
   for (const group of settings.groups || []) {
-    if (group?.source !== "addlist" || !cleanSlug(group?.sourceSlug)) continue;
-    const accountIds = Object.keys(group?.accountJoin || {}).filter(id => validAccounts.has(String(id)));
-    if (accountIds.length) for (const accountId of accountIds) queueLink(uid, accountId, group.sourceSlug, NORMAL_RECHECK_MS);
+    const slug = cleanSlug(group?.sourceSlug);
+    if (group?.source !== "addlist" || !slug) continue;
+    for (const accountId of Object.keys(group?.accountJoin || {})) {
+      if (!validAccounts.has(String(accountId))) continue;
+      wanted.set(linkKey(accountId, slug), { accountId: String(accountId), slug });
+    }
   }
+  if (!wanted.size) return false;
+  const store = readStore(uid);
+  const existing = new Set(store.links.map(row => linkKey(row.accountId, row.slug)));
+  let changed = false;
+  for (const [key, value] of wanted) {
+    if (existing.has(key) || store.links.length >= MAX_LINKS) continue;
+    store.links.push({ ...value, nextCheckAt: Date.now() + NORMAL_RECHECK_MS, attempts: 0, lastCheckedAt: 0, confirmed: 0, lastError: "" });
+    existing.add(key);
+    changed = true;
+  }
+  if (changed) writeStore(uid, store);
+  return changed;
 }
 function requestClassName(request) { return String(request?.className || request?.constructor?.className || ""); }
 function requestSlug(request) { return cleanSlug(request?.slug || ""); }
@@ -104,8 +130,16 @@ export function installAddlistReconciliation(TelegramClientClass = TelegramClien
       if (slug) queueLink(uid, accountId, slug, name === "chatlists.JoinChatlistInvite" ? 3_000 : 12_000);
     } else if (name === "chatlists.JoinChatlistUpdates") {
       const store = readStore(uid);
-      for (const row of store.links) if (String(row.accountId) === accountId) row.nextCheckAt = Math.min(Number(row.nextCheckAt || Date.now()), Date.now() + 3_000);
-      writeStore(uid, store);
+      let changed = false;
+      for (const row of store.links) {
+        if (String(row.accountId) !== accountId) continue;
+        const next = Date.now() + 3_000;
+        if (!row.nextCheckAt || row.nextCheckAt > next) {
+          row.nextCheckAt = next;
+          changed = true;
+        }
+      }
+      if (changed) writeStore(uid, store);
       recentImports.set(uid, Date.now());
     }
     return result;
@@ -218,7 +252,7 @@ async function reconcileLink(uid, account, row) {
     let invite = await client.api.chatlists.checkChatlistInvite({ slug: row.slug });
     let chats = Array.isArray(invite?.chats) ? invite.chats : [];
     let isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
-    let peers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
+    const peers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
     const inputs = await inputPeers(client, peers, chats);
     if (inputs.length) {
       if (isAlready) {
@@ -235,9 +269,7 @@ async function reconcileLink(uid, account, row) {
       isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
     }
 
-    const confirmedPeers = isAlready
-      ? (Array.isArray(invite?.alreadyPeers) ? invite.alreadyPeers : [])
-      : [];
+    const confirmedPeers = isAlready ? (Array.isArray(invite?.alreadyPeers) ? invite.alreadyPeers : []) : [];
     const confirmedChats = [];
     const seen = new Set();
     for (const peer of confirmedPeers) {
