@@ -3,6 +3,7 @@
 // lives in destinations-v2.js and performs manual access checks only.
 import {
   destinationAccountReady as destinationAccountReadyV2,
+  destinationsHomeScreen,
   handleDestinationText,
   parseDestinationInput,
   processRoutingQueue,
@@ -19,6 +20,18 @@ export {
   recheckDestinations,
   recordDestinationFailure,
 };
+
+// app.js still calls this historical rendering contract. It now renders the new
+// Destination Hub only; none of the removed legacy automation behavior is used.
+export function destinationMenu(uid) {
+  const screen = destinationsHomeScreen(String(uid || ""));
+  return {
+    text: screen.text,
+    keyboard: {
+      inline_keyboard: (screen.rows || []).filter(row => Array.isArray(row) && row.length),
+    },
+  };
+}
 
 export function destinationAccountReady(destination, accountId = "") {
   const map = destination?.accountJoin && typeof destination.accountJoin === "object" && !Array.isArray(destination.accountJoin)
