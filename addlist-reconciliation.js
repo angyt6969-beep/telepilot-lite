@@ -10,7 +10,8 @@ const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const WORKER_INTERVAL_MS = 5_000;
-const NORMAL_RECHECK_MS = 30 * 60_000;
+const NORMAL_RECHECK_MS = 60 * 60_000;
+const ZERO_CONFIRM_RECHECK_MS = 45_000;
 const MAX_LINKS = 100;
 const recentImports = new Map();
 
@@ -33,7 +34,7 @@ function cleanSlug(value) {
 function readStore(uid) {
   const raw = readJson(storePath(uid), {});
   return {
-    version: 1,
+    version: 2,
     links: (Array.isArray(raw.links) ? raw.links : []).map(row => ({
       accountId: String(row?.accountId || ""),
       slug: cleanSlug(row?.slug),
@@ -46,7 +47,7 @@ function readStore(uid) {
   };
 }
 function writeStore(uid, store) {
-  const normalized = { version: 1, links: (store.links || []).slice(-MAX_LINKS) };
+  const normalized = { version: 2, links: (store.links || []).slice(-MAX_LINKS) };
   writeJsonAtomic(storePath(uid), normalized);
   return normalized;
 }
@@ -146,13 +147,30 @@ export function installAddlistReconciliation(TelegramClientClass = TelegramClien
   };
 }
 
-function peerKey(peer) {
-  return String(peer?.channelId || peer?.chatId || peer?.userId || peer?.id || "").replace(/\D/g, "");
+function valueString(value) {
+  try { return String(value?.toString?.() ?? value ?? ""); }
+  catch { return String(value || ""); }
 }
-function chatKey(chat) { return String(chat?.id || "").replace(/\D/g, ""); }
+function peerKey(peer) {
+  return valueString(peer?.channelId ?? peer?.chatId ?? peer?.userId ?? peer?.id ?? "").replace(/\D/g, "");
+}
+function chatKey(chat) { return valueString(chat?.id || "").replace(/\D/g, ""); }
 function findChat(chats, peer) {
   const wanted = peerKey(peer);
   return wanted ? (chats || []).find(chat => chatKey(chat) === wanted) || null : null;
+}
+function mergeChats(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const chat of Array.isArray(list) ? list : []) {
+      const key = chatKey(chat);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(chat);
+    }
+  }
+  return out;
 }
 function peerIdForChat(chat) {
   const raw = chatKey(chat);
@@ -241,6 +259,8 @@ async function openClient(uid, account) {
     floodSleepThreshold: 0,
   });
   client.__telepilotAddlistReconcileWorker = true;
+  client.__telepilotOwnerUid = String(uid);
+  client.__telepilotAccountId = String(account.id);
   await client.connect();
   if (!(await client.checkAuthorization())) throw new Error("Saved Telegram session is no longer authorized");
   return client;
@@ -252,8 +272,10 @@ async function reconcileLink(uid, account, row) {
     let invite = await client.api.chatlists.checkChatlistInvite({ slug: row.slug });
     let chats = Array.isArray(invite?.chats) ? invite.chats : [];
     let isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
-    const peers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
-    const inputs = await inputPeers(client, peers, chats);
+    const initialPeers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
+    const inputs = await inputPeers(client, initialPeers, chats);
+    let acceptedChats = [];
+
     if (inputs.length) {
       if (isAlready) {
         await client.api.chatlists.joinChatlistUpdates({
@@ -263,36 +285,44 @@ async function reconcileLink(uid, account, row) {
       } else {
         await client.api.chatlists.joinChatlistInvite({ slug: row.slug, peers: inputs });
       }
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // The safety wrapper updates the original invite object with the peers that
+      // Telegram accepted. Preserve that list before a later refresh can lag.
+      acceptedChats = Array.isArray(invite?.chats) ? invite.chats.slice() : [];
+      await new Promise(resolve => setTimeout(resolve, 750));
       invite = await client.api.chatlists.checkChatlistInvite({ slug: row.slug });
       chats = Array.isArray(invite?.chats) ? invite.chats : [];
       isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
     }
 
     const confirmedPeers = isAlready ? (Array.isArray(invite?.alreadyPeers) ? invite.alreadyPeers : []) : [];
-    const confirmedChats = [];
-    const seen = new Set();
+    const refreshedConfirmed = [];
     for (const peer of confirmedPeers) {
       const chat = findChat(chats, peer);
-      const key = chatKey(chat);
-      if (!chat || !key || seen.has(key) || chat?.className === "ChannelForbidden") continue;
-      seen.add(key);
-      confirmedChats.push(chat);
+      if (chat) refreshedConfirmed.push(chat);
     }
+    const confirmedChats = mergeChats(acceptedChats, refreshedConfirmed).filter(chat => chat?.className !== "ChannelForbidden");
     const merged = mergeConfirmedDestinations(uid, account.id, row.slug, confirmedChats);
+
     row.confirmed = confirmedChats.length;
-    row.attempts = 0;
-    row.lastError = "";
     row.lastCheckedAt = Date.now();
-    row.nextCheckAt = Date.now() + NORMAL_RECHECK_MS;
-    if (merged.added) console.log(`Addlist reconciliation added ${merged.added} destination(s) for ${uid}/${account.id}`);
+    if (!confirmedChats.length && initialPeers.length) {
+      row.attempts = Number(row.attempts || 0) + 1;
+      row.lastError = `Telegram confirmed 0 of ${initialPeers.length} Addlist peer(s) after processing.`;
+      row.nextCheckAt = Date.now() + ZERO_CONFIRM_RECHECK_MS;
+      console.warn(`Addlist reconciliation confirmed 0/${initialPeers.length} for ${uid}/${account.id}; retrying`);
+    } else {
+      row.attempts = 0;
+      row.lastError = "";
+      row.nextCheckAt = Date.now() + NORMAL_RECHECK_MS;
+      console.log(`Addlist reconciliation confirmed ${confirmedChats.length} peer(s) for ${uid}/${account.id}; ${merged.added} new destination(s)`);
+    }
   } catch (err) {
     row.attempts = Number(row.attempts || 0) + 1;
     row.lastCheckedAt = Date.now();
     row.lastError = String(err?.errorMessage || err?.message || err).slice(0, 180);
     const seconds = floodWaitSeconds(err);
     if (seconds) row.nextCheckAt = Date.now() + (seconds + 2) * 1000;
-    else row.nextCheckAt = Date.now() + Math.min(30 * 60_000, 10_000 * (2 ** Math.min(7, row.attempts)));
+    else row.nextCheckAt = Date.now() + Math.min(NORMAL_RECHECK_MS, 10_000 * (2 ** Math.min(7, row.attempts)));
     console.warn(`Addlist reconciliation failed for ${uid}/${account.id}: ${row.lastError}`);
   } finally {
     try { await client?.disconnect(); } catch {}
