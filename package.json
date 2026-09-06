@@ -8,11 +8,12 @@
   },
   "scripts": {
     "start": "node startup.js",
-    "test": "npm run test:security && npm run test:teleproto && npm run test:v11 && npm run test:v12",
+    "test": "npm run test:security && npm run test:teleproto && npm run test:v11 && npm run test:v12 && npm run test:v13",
     "test:security": "node security-tests.mjs",
     "test:teleproto": "node teleproto-reliability-test.mjs",
     "test:v11": "node telepilot-v11-regression-test.mjs",
-    "test:v12": "node telepilot-v12-regression-test.mjs"
+    "test:v12": "node telepilot-v12-regression-test.mjs",
+    "test:v13": "node telepilot-v13-regression-test.mjs"
   },
   "dependencies": {
     "big-integer": "^1.6.52",
