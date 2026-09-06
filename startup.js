@@ -12,6 +12,7 @@ import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-
 import { startArchiveMuteCoverageWorker } from "./archive-mute-coverage.js";
 import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
 import { installAddlistJoinCompatibility } from "./addlist-join-compat.js";
+import { installAddlistPeerResolution } from "./addlist-peer-resolution.js";
 import { installAddlistImportUi } from "./addlist-import-ui.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
@@ -73,6 +74,7 @@ installPrivatePeerResolution(TelegramClient);
 installArchiveMuteQueue(TelegramClient);
 installAddlistReconciliation(TelegramClient);
 installAddlistJoinCompatibility(TelegramClient);
+installAddlistPeerResolution(TelegramClient);
 
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
