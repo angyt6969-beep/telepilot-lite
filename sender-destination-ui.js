@@ -22,14 +22,13 @@ function destinationsListFromUi(text) {
   const lines = String(text || "").split("\n");
   const firstContent = lines.findIndex((line, index) => index > 0 && /^\d+\.\s/.test(line.trim()));
   if (firstContent < 0) return { list: "", count: 0 };
-
   const items = [];
   for (let i = firstContent; i < lines.length; i++) {
     const line = lines[i].trimEnd();
-    if (!/^\d+\.\s/.test(line.trim())) break;
+    if (!/^\d+\.\s/.test(line.trim()) && !/^…and\s/.test(line.trim())) break;
     items.push(line);
   }
-  return { list: items.join("\n"), count: items.length };
+  return { list: items.join("\n"), count: items.filter(line => /^\d+\.\s/.test(line.trim())).length };
 }
 
 function destinationCount(text) {
@@ -38,74 +37,45 @@ function destinationCount(text) {
 }
 
 function transformDestinations(text, sender) {
-  const { list, count: parsedCount } = destinationsListFromUi(text);
-  const count = parsedCount || destinationCount(text);
-  const none = count === 0;
+  const value = String(text || "");
+  const { list, count: parsedCount } = destinationsListFromUi(value);
+  const count = destinationCount(value) || parsedCount;
+  if (sender.mode !== "personal") return value;
 
-  if (sender.mode === "personal") {
-    return [
-      `📍 Destinations${count ? ` · ${count}` : ""}`,
-      `Sender  ${sender.label}`,
-      "",
-      none ? "No destinations yet." : list,
-      "",
-      none
-        ? "Add the first group or channel your connected account can post to."
-        : `${sender.label} sends every posting cycle to all destinations above.`,
-      "",
-      "Tip: you can paste several public destinations at once — one @username or t.me link per line.",
-      "Public destinations are validated through your connected account — @TelePilottBot does not need to be an admin.",
-      "Private group without a public username? /addhere still works; the bot only needs to be present so it can receive that command.",
-    ].join("\n");
-  }
-
+  const statusLines = value.split("\n").filter(line => /^(Ready |Cleanup |Topics |Pending )/.test(line.trim()));
   return [
     `📍 Destinations${count ? ` · ${count}` : ""}`,
-    "Sender  TelePilot Bot",
+    `Sender  ${sender.label}`,
     "",
-    none ? "No destinations yet." : list,
+    count ? list : "No destinations yet.",
     "",
-    none
-      ? "Add the first group or channel for TelePilot Bot to post to."
-      : "TelePilot Bot sends every posting cycle to all destinations above.",
-    "",
-    "Tip: you can paste several public destinations at once — one @username or t.me link per line.",
-    "The bot must stay in each destination with the permissions needed to post.",
-    "Private group? Run /addhere inside the group while you are an admin.",
-  ].join("\n");
+    ...statusLines,
+    statusLines.length ? "" : null,
+    "Paste @username, t.me/..., https://t.me/..., private t.me/+ links or t.me/addlist/... folders.",
+    "TelePilot joins confirmed chats with the selected personal account, queues mute + archive once, and asks you to choose a forum topic when needed.",
+  ].filter(Boolean).join("\n");
 }
 
 function transformAddDestination(sender) {
   if (sender.mode === "personal") {
     return [
-      "📍 Add destination",
-      "Personal account setup",
-      "",
+      "📍 Add destinations",
       `Posting as  ${sender.label}`,
       "",
-      `1 · Make sure ${sender.label} is already joined to the group/channel`,
-      "2 · For channels, that account must have permission to post messages",
-      "3 · Send one or more public @usernames / t.me links here",
+      "Accepted formats:",
+      "• @username",
+      "• t.me/group or https://t.me/group",
+      "• private t.me/+ invite links",
+      "• t.me/addlist/... shared folders",
       "",
-      "Multiple destinations? Paste them in one message, one per line.",
-      "@TelePilottBot does not need to be added or made admin for public destinations in personal-account mode.",
-      "Private group without a public username? Add the bot to the group and run /addhere; it does not need admin rights when your personal account is the sender.",
+      "You can paste multiple destinations, one per line. TelePilot joins them with the selected personal account, then queues mute + archive. Forum groups require a topic choice before posting.",
     ].join("\n");
   }
-
   return [
     "📍 Add destination",
     "TelePilot Bot setup",
     "",
-    "Posting as  TelePilot Bot",
-    "",
-    "1 · Add @TelePilottBot as an admin",
-    "2 · For channels, allow it to post messages",
-    "3 · Send one or more public @usernames / t.me links here",
-    "",
-    "Multiple destinations? Paste them in one message, one per line.",
-    "TelePilot Bot will send the scheduled posts to every saved destination.",
-    "Private group? Run /addhere inside that group instead.",
+    "The automatic join importer requires a connected personal Telegram account. If you use TelePilot Bot as sender, add the bot to the destination manually and use /addhere where supported.",
   ].join("\n");
 }
 
@@ -119,19 +89,15 @@ function transformSenderAwareText(chatId, text) {
 
 export function installSenderAwareDestinationUi(ApiClass) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotSenderAwareDestinationUiInstalled) return;
-
   const originalSendMessage = ApiClass.prototype.sendMessage;
   const originalEditMessageText = ApiClass.prototype.editMessageText;
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") {
     throw new Error("Unsupported grammY Api shape for sender-aware destination UI");
   }
-
   Object.defineProperty(ApiClass.prototype, "__telepilotSenderAwareDestinationUiInstalled", { value: true });
-
   ApiClass.prototype.sendMessage = function(chatId, text, other, ...rest) {
     return originalSendMessage.call(this, chatId, transformSenderAwareText(chatId, text), other, ...rest);
   };
-
   ApiClass.prototype.editMessageText = function(chatId, messageId, text, other, ...rest) {
     return originalEditMessageText.call(this, chatId, messageId, transformSenderAwareText(chatId, text), other, ...rest);
   };
