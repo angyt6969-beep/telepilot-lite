@@ -8,6 +8,7 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
+import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
@@ -53,17 +54,17 @@ installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
 installDestinationAutomation(Bot);
 installUxNavigation(Bot);
+installUxV13Navigation(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 
-// Wrapper order is intentional. From app.js outward the screen travels through:
-// regular UI -> sender-aware UI -> pro UI -> pro typography -> premium UI -> v1 typography
-// -> support UI -> deep premium UI -> v1 engine -> Telegram.
-// Support UI runs before deep premium on the outbound path, so injected Support buttons
-// can receive premium emoji treatment when Telegram provides a matching icon.
+// Wrapper order is intentional. v1.3 is placed immediately inside v1.2 so it sees the
+// normalized v1.2 screens, then replaces them with the current Dashboard/Activity layout.
+// Deep premium emoji processing remains downstream so v1_* controls receive Telegram
+// custom-emoji button icons whenever a semantic icon is available.
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
 installV1Ui(Api);
@@ -71,8 +72,7 @@ installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
-// v1.2 UX is installed immediately inside the legacy UI transformer so it receives
-// normalized screens and can collapse them into the new, simpler navigation.
+installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
 
@@ -90,7 +90,7 @@ try {
 const description = [
   "✈️ TelePilot",
   "",
-  "Schedule Telegram posts from one clean control panel. Connect your personal account, save a message, choose destinations and go live.",
+  "Schedule Telegram posts from one clean control panel. Connect personal accounts, import destinations and Addlists, choose forum topics and go live.",
   "",
   "Open the bot to get started.",
 ].join("\n");
@@ -106,8 +106,8 @@ try {
 }
 
 startV1Worker();
-// app.js ends in an awaited long-polling bot.start(), so code after importing it is unreachable
-// while the bot is healthy. The destination worker's first tick is delayed by 60 seconds,
-// giving app.js time to register the state-sync hook before the worker can touch user state.
+// app.js ends in an awaited long-polling bot.start(), so workers must start before import.
+// Their first ticks are delayed, giving app.js time to register the runtime state hooks.
 startDestinationAutomationWorker();
+startQolV13Worker();
 await import("./app.js");
