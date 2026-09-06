@@ -106,6 +106,8 @@ try {
 }
 
 startV1Worker();
-await import("./app.js");
-// Start approval/verification rechecks only after app.js has registered its safe state-sync hook.
+// app.js ends in an awaited long-polling bot.start(), so code after importing it is unreachable
+// while the bot is healthy. The destination worker's first tick is delayed by 60 seconds,
+// giving app.js time to register the state-sync hook before the worker can touch user state.
 startDestinationAutomationWorker();
+await import("./app.js");
