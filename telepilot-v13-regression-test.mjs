@@ -51,7 +51,9 @@ const ux = fs.readFileSync("ux-v13.js", "utf8");
 const polish = fs.readFileSync("ux-v13-polish.js", "utf8");
 const startup = fs.readFileSync("startup.js", "utf8");
 const accountStore = fs.readFileSync("account-store.js", "utf8");
-const destinationAutomation = fs.readFileSync("destination-automation.js", "utf8");
+const destinationBridge = fs.readFileSync("destination-automation.js", "utf8");
+const destinationsV2 = fs.readFileSync("destinations-v2.js", "utf8");
+const destinationCopy = fs.readFileSync("destinations-v2-copy.js", "utf8");
 const v1Engine = fs.readFileSync("v1-engine.js", "utf8");
 
 for (const marker of [
@@ -60,9 +62,6 @@ for (const marker of [
   "👤 Accounts",
   "📁 Destinations",
   "⚙️ Settings",
-  "v1_make_ready_v13",
-  "v1_dest_add_v13",
-  "v1_topic_preferences_v13",
   "v1_account_presets_v13",
   "v1_destination_presets_v13",
   "v1_setups_v13",
@@ -76,12 +75,8 @@ for (const marker of [
 assert.ok(!ux.includes('inline("⌂ Home"'), "Dashboard still contains a redundant Home control");
 assert.ok(ux.includes('inline("📝 Posting Setup", "v1_posting_setup_v13")'), "Posting Setup main button is not on a premium-aware v1 callback");
 assert.ok(ux.includes('inline("📊 Activity", "v1_activity_v13")'), "Activity main button is not on a premium-aware v1 callback");
-assert.ok(ux.includes("t.me/addlist/..."), "Destination copy does not advertise Addlist importing");
-assert.ok(ux.includes("automatically join supported destinations"), "Destination copy does not explain personal-account auto joining");
-assert.ok(ux.includes("verification/captcha"), "Destination copy does not explain manual verification");
 assert.ok(ux.includes("ready / ${summary.total}"), "Destination readiness summary missing");
-assert.ok(ux.includes("Automatic retry  On") && ux.includes("Broken-destination auto-skip  On"), "Activity does not surface automatic handling");
-assert.ok(ux.includes("Auto-pick exact matches"), "Safe topic preference mode missing");
+assert.ok(ux.includes("Automatic retry  On") && ux.includes("Broken-destination auto-skip  On"), "Activity does not surface automatic posting-failure handling");
 assert.ok(ux.includes("Applying a saved setup is blocked while interval posting is running"), "Saved setup safety guard copy missing");
 assert.ok(ux.includes("__telepilotUxV13TextPatched"), "v1.3 restart-safe text-input interception is not installed");
 
@@ -90,7 +85,6 @@ for (const marker of [
   "v1_import_undo_v13",
   "v1_dest_browse_v13",
   "Dashboard, Posting Setup, Activity",
-  "Destinations/Addlists",
 ]) assert.ok(polish.includes(marker), `v1.3 polish missing ${marker}`);
 assert.ok(polish.includes("normally within about 30 seconds"), "Send Once does not disclose scheduler timing");
 assert.ok(polish.includes("This is destructive, so it requires this one confirmation"), "Import undo is missing destructive-action confirmation");
@@ -102,11 +96,28 @@ assert.ok(accountStore.includes("if (cleanAlias(account.alias))"), "Account alia
 
 assert.ok(startup.includes("installUxV13Navigation(Bot)"), "v1.3 bot navigation not installed");
 assert.ok(startup.includes("installUxV13PolishNavigation(Bot)"), "v1.3 polish callbacks not installed");
-assert.ok(startup.includes("installUxV13Polish(Api);\ninstallUxV13(Api);\ninstallUxV12(Api);"), "v1.3 wrapper order is incorrect");
+assert.ok(startup.includes("installDestinationsV2(Bot)"), "Destinations v2 bot navigation not installed");
+assert.ok(startup.indexOf("installDestinationsV2(Bot)") > startup.indexOf("installUxV13Navigation(Bot)"), "Destinations v2 must be installed last so it owns destination callbacks");
+assert.ok(startup.includes("installDestinationsV2Copy(Api);\ninstallUxV13(Api);"), "Destinations v2 copy guard must sit under the v1.3 API transformer");
 assert.ok(startup.includes("startQolV13Worker()"), "v1.3 QOL worker not started before app import");
+assert.ok(!startup.includes("startDestinationAutomationWorker();"), "legacy destination background worker must stay removed");
 
-assert.ok(destinationAutomation.includes("chatlists.checkChatlistInvite"), "Addlist inspection support regressed");
-assert.ok(destinationAutomation.includes("chatlists.joinChatlistInvite"), "Addlist joining support regressed");
+for (const marker of [
+  "🗂 Destination Hub",
+  "＋ Add destinations",
+  "🔎 Review scan",
+  "Join in Telegram first",
+  "No chats were joined, muted or archived.",
+  "chatlists.checkChatlistInvite",
+  "getForumTopics",
+]) assert.ok(destinationsV2.includes(marker), `Destinations v2 missing ${marker}`);
+assert.ok(destinationBridge.includes("Intentionally no background worker"), "legacy destination bridge is not inert");
+assert.ok(destinationCopy.includes("TelePilot never joins chats from this screen"), "legacy copy guard does not remove auto-join claims");
+assert.ok(!destinationsV2.includes("suggestTopic"), "Destinations v2 must not suggest or auto-pick topics");
+for (const forbidden of [".joinChannel(", ".importChatInvite(", "joinChatlistInvite(", "joinChatlistUpdates(", "UpdateNotifySettings", "EditPeerFolders"]) {
+  assert.equal(destinationsV2.includes(forbidden), false, `Destinations v2 must not perform automatic Telegram mutation: ${forbidden}`);
+}
+
 assert.ok(v1Engine.includes("withRetry"), "Smart retry support regressed");
 assert.ok(v1Engine.includes("disabledDestinationIds"), "Inactive/auto-disabled destination support regressed");
 
