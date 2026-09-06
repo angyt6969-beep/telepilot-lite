@@ -8,6 +8,7 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
+import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
@@ -70,6 +71,7 @@ installUxV13Navigation(Bot);
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
+installArchiveMuteQueue(TelegramClient);
 
 // Owner controls are the innermost UI layer so role restrictions, the single Start/Stop
 // control and explicitly selected premium button icons are enforced immediately before
@@ -122,5 +124,6 @@ startV1Worker();
 // app.js ends in an awaited long-polling bot.start(), so workers must start before import.
 // Their first ticks are delayed, giving app.js time to register the runtime state hooks.
 startDestinationAutomationWorker();
+startArchiveMuteWorker();
 startQolV13Worker();
 await import("./app.js");
