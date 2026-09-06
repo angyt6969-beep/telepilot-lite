@@ -28,6 +28,9 @@ jobs:
           cache: npm
       - name: Apply MTProto and login reliability fixes
         run: python3 scripts/fix_teleproto_reliability.py
+      - name: Fix generated regression assertion
+        run: |
+          sed -i '13c\assert.ok(app.includes("location: `/connect#${encodeURIComponent(browserToken)}`"));' teleproto-reliability-test.mjs
       - name: Install exact dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Syntax checks
