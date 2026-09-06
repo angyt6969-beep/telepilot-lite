@@ -11,6 +11,7 @@ import { installDestinationDeleteControls, installDestinationDeleteUi } from "./
 import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
 import { startArchiveMuteCoverageWorker } from "./archive-mute-coverage.js";
 import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
+import { installAddlistJoinCompatibility } from "./addlist-join-compat.js";
 import { installAddlistImportUi } from "./addlist-import-ui.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
@@ -71,6 +72,7 @@ installV1Engine(Api, TelegramClient);
 installPrivatePeerResolution(TelegramClient);
 installArchiveMuteQueue(TelegramClient);
 installAddlistReconciliation(TelegramClient);
+installAddlistJoinCompatibility(TelegramClient);
 
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
