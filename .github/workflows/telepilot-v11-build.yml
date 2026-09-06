@@ -5,6 +5,7 @@ on:
     branches: [telepilot-v2-routing]
     paths:
       - ".github/workflows/telepilot-v11-build.yml"
+      - "scripts/telepilot_v11_release_gate_fix.py"
 
 permissions:
   contents: write
@@ -20,29 +21,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Apply pending onboarding migration
-        run: python3 scripts/telepilot_v11_patch_onboarding.py
+      - name: Apply release-gate fixes
+        run: python3 scripts/telepilot_v11_release_gate_fix.py
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Syntax checks
         run: |
-          node --check onboarding.js
-          node --check v1-extras.js
-          node --check v1-ui.js
-      - name: TelePilot 1.1 onboarding invariants
+          for f in app.js account-store.js sender-destination-ui.js v1-extras.js v1-worker.js telepilot-v11-regression-test.mjs; do node --check "$f"; done
+      - name: Full regression suite
+        env:
+          TELEPILOT_SECURITY_SECRET: test-only-regression-secret-012345678901234567890
+        run: npm test
+      - name: Release-gate invariants
         run: |
-          grep -q "hasAnyAccount" onboarding.js
-          grep -q "senderSummary" onboarding.js
-          grep -q "advanceTutorialAfterAction(uid, 6, 7)" v1-extras.js
-          grep -q "What's new in TelePilot 1.1" v1-ui.js
-      - name: Commit migrated sources
+          grep -q "usesBotSender" account-store.js
+          grep -q "account_mode_bot" app.js
+          grep -q "usesBotSender" v1-worker.js
+          grep -q "senderSummary" v1-extras.js
+          ! grep -q "personal-session.enc" sender-destination-ui.js
+      - name: Commit validated fixes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add onboarding.js v1-extras.js v1-ui.js
+          git add app.js account-store.js sender-destination-ui.js v1-extras.js v1-worker.js telepilot-v11-regression-test.mjs
           if git diff --cached --quiet; then
             echo "No generated source changes."
             exit 0
           fi
-          git commit -m "Finish TelePilot 1.1 tutorial integration"
+          git commit -m "Fix TelePilot 1.1 sender routing release blockers"
           git push origin HEAD:telepilot-v2-routing
