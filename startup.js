@@ -9,7 +9,9 @@ import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
 import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
+import { startArchiveMuteCoverageWorker } from "./archive-mute-coverage.js";
 import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
+import { installAddlistImportUi } from "./addlist-import-ui.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
@@ -43,19 +45,12 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
-// Install public trust pages first, then the branded connection-page transformer.
-// This order lets Privacy/Terms/Support links be added after the connect UI is rendered.
 installLegalPages();
 installConnectUi();
 
-// Owner controls are installed before app.js registers its handlers. This lets the
-// permission gate wrap every admin callback and synchronize persisted admin membership first.
 installOwnerControlsBot(Bot);
-// Forum fallback wraps topic-index callbacks before destination/v1.3 handlers register.
-// General stays the safe default, while opening Topics temporarily exposes custom choices.
 installForumGeneralFallback(Bot);
 
-// Bot-level helpers are installed before app.js registers its handlers.
 installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
 installProControls(Bot);
@@ -63,9 +58,6 @@ installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
 installDestinationDeleteControls(Bot);
-// Support wraps app routes before onboarding so a previously deleted account cannot
-// fall through to the new-user tutorial with stale in-memory access. The early adapter
-// registers Support callbacks before grammY starts polling, so inline buttons are always answered.
 installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
 installDestinationAutomation(Bot);
@@ -73,22 +65,16 @@ installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
 
-// Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
-// Private Addlist destinations often have no username. Resolve their -100 IDs from the
-// connected account's dialog list so Telegram supplies the access hash before cleanup/posting.
 installPrivatePeerResolution(TelegramClient);
 installArchiveMuteQueue(TelegramClient);
 installAddlistReconciliation(TelegramClient);
 
-// Owner controls are the innermost UI layer so role restrictions, the single Start/Stop
-// control and explicitly selected premium button icons are enforced immediately before
-// the raw Bot API request. Delete Groups sits immediately outside that layer so it sees
-// the fully transformed v1.3 Destinations screen instead of the pre-v1.3 payload.
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
+installAddlistImportUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
@@ -132,11 +118,10 @@ try {
 }
 
 startV1Worker();
-// app.js ends in an awaited long-polling bot.start(), so workers must start before import.
-// Their first ticks are delayed, giving app.js time to register the runtime state hooks.
 startDestinationAutomationWorker();
 startAddlistReconciliationWorker();
 startArchiveMuteWorker();
+startArchiveMuteCoverageWorker();
 startForumGeneralFallbackWorker();
 startQolV13Worker();
 await import("./app.js");
