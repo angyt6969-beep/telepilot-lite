@@ -68,6 +68,7 @@ function pruneBucket(key, now) {
 
 export function takeRateLimit(scope, subject, limit, windowMs) {
   const now = Date.now();
+  if (rateBuckets.size > 10000) for (const [key,bucket] of rateBuckets) if (now >= Number(bucket?.resetAt||0)) rateBuckets.delete(key);
   const key = `${scope}:${String(subject || "unknown")}`;
   let bucket = pruneBucket(key, now);
   if (!bucket) {
@@ -215,6 +216,13 @@ export function readSecurityEvents(limit = 100) {
 }
 
 const confirmationTokens = new Map();
+
+function sweepEphemeralSecurityState(now = Date.now()) {
+  for (const [key,bucket] of rateBuckets) if (!bucket || now >= Number(bucket.resetAt||0)) rateBuckets.delete(key);
+  for (const [token,item] of confirmationTokens) if (!item || now >= Number(item.expiresAt||0)) confirmationTokens.delete(token);
+}
+const ephemeralSweep = setInterval(() => sweepEphemeralSecurityState(), 10 * 60_000);
+ephemeralSweep.unref?.();
 export function issueConfirmationToken(actorUid, action, target = "", ttlMs = 120000) {
   const token = crypto.randomBytes(10).toString("base64url");
   confirmationTokens.set(token, {

@@ -5,6 +5,9 @@ import bigInt from "big-integer";
 import { InlineKeyboard, InputFile } from "grammy";
 import { Api as MtApi, TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
+import { accountDisplayLabel, effectiveAccountIds, listAccounts, loadAccountSession, senderSummary, updateAccountStatus } from "./account-store.js";
+import { withDispatchContext } from "./dispatch-context.js";
+import { reloadUserState } from "./runtime-hooks.js";
 import {
   defaultProSettings,
   hasPersonalSessionFile,
@@ -292,31 +295,9 @@ async function showDestinationToggles(ctx) {
   );
 }
 
-async function openPersonalClient(uid) {
-  const payload = fs.readFileSync(sessionPath(uid), "utf8");
-  const parsed = JSON.parse(payload);
-  let key = null;
-  if (parsed?.v === 2 && parsed?.keyVersion === "env") key = getExternalSessionKey();
-  else {
-    try {
-      const legacy = fs.readFileSync(SESSION_KEY_FILE);
-      if (legacy.length === 32) key = legacy;
-    } catch {}
-  }
-  if (!key) throw new Error("Personal-session encryption key is unavailable.");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.iv, "base64"));
-  decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
-  const session = Buffer.concat([
-    decipher.update(Buffer.from(parsed.data, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
-  const client = new TelegramClient(new StringSession(session), API_ID, API_HASH, {
-    connectionRetries: 5,
-    floodSleepThreshold: 60,
-  });
-  await client.connect();
-  if (!(await client.checkAuthorization())) throw new Error("Personal account session is no longer authorized.");
-  return client;
+async function openPersonalClient(uid, accountId) {
+  const account=listAccounts(uid).find(a=>a.id===String(accountId));if(!account)throw new Error("Sender account not found.");
+  const client=new TelegramClient(new StringSession(loadAccountSession(uid,account.id)),API_ID,API_HASH,{connectionRetries:5,floodSleepThreshold:60});client.__telepilotOwnerUid=String(uid);client.__telepilotAccountId=String(account.id);await client.connect();if(!(await client.checkAuthorization()))throw new Error("Personal account session is no longer authorized.");const me=await client.getMe();updateAccountStatus(uid,account.id,{telegramId:me?.id,username:me?.username,firstName:me?.firstName,lastName:me?.lastName,status:"connected",lastError:"",lastVerifiedAt:Date.now()});return client;
 }
 
 function toMtprotoEntities(entities = []) {
@@ -341,47 +322,10 @@ function toMtprotoEntities(entities = []) {
 }
 
 async function sendTest(ctx) {
-  const uid = uidOf(ctx);
-  const settings = readAppSettings(uid);
-  const pro = readProSettings(uid);
-  if (!settings.adMessage) return ctx.answerCallbackQuery({ text: "Create a message first.", show_alert: true });
-  const destination = { id: String(ctx.chat.id), label: "Test preview", username: "" };
-  const sender = settings.personalUsername ? `@${settings.personalUsername}` : "TelePilot Bot";
-  const rendered = renderDynamicMessage(settings.adMessage, settings.adEntities || [], { pro, destination, sender });
-  await ctx.answerCallbackQuery({ text: "Sending test…" });
-
-  if (hasPersonalSessionFile(uid)) {
-    let client;
-    try {
-      client = await openPersonalClient(uid);
-      const mtEntities = toMtprotoEntities(rendered.entities);
-      if (pro.media?.localPath && fs.existsSync(pro.media.localPath)) {
-        await client.sendFile("me", {
-          file: pro.media.localPath,
-          caption: rendered.text,
-          ...(mtEntities.length ? { formattingEntities: mtEntities } : {}),
-          forceDocument: pro.media.kind === "document",
-          supportsStreaming: pro.media.kind === "video",
-        });
-      } else {
-        await client.sendMessage("me", { message: rendered.text || "\u2063", ...(mtEntities.length ? { formattingEntities: mtEntities } : {}) });
-      }
-      await ctx.reply("✅ Test sent to your connected account's Saved Messages.");
-    } finally {
-      try { await client?.disconnect(); } catch {}
-    }
-    return;
-  }
-
-  if (pro.media?.fileId) {
-    const options = { ...(rendered.text ? { caption: rendered.text } : {}), ...(rendered.entities.length ? { caption_entities: rendered.entities } : {}) };
-    if (pro.media.kind === "photo") await ctx.api.sendPhoto(ctx.chat.id, pro.media.fileId, options);
-    else if (pro.media.kind === "video") await ctx.api.sendVideo(ctx.chat.id, pro.media.fileId, { ...options, supports_streaming: true });
-    else if (pro.media.kind === "animation") await ctx.api.sendAnimation(ctx.chat.id, pro.media.fileId, options);
-    else await ctx.api.sendDocument(ctx.chat.id, pro.media.fileId, options);
-  } else {
-    await ctx.api.sendMessage(ctx.chat.id, rendered.text || "\u2063", rendered.entities.length ? { entities: rendered.entities } : {});
-  }
+  const uid=uidOf(ctx),settings=readAppSettings(uid),pro=readProSettings(uid);if(!settings.adMessage)return ctx.answerCallbackQuery({text:"Create a message first.",show_alert:true});
+  const destination={id:String(ctx.chat.id),label:"Test preview",username:""},accounts=listAccounts(uid),ids=effectiveAccountIds(settings,null,accounts);await ctx.answerCallbackQuery({text:"Sending test…"});
+  if(accounts.length){let sent=0,failed=0;for(const id of ids){const account=accounts.find(a=>a.id===id);let client;try{client=await openPersonalClient(uid,id);const rendered=renderDynamicMessage(settings.adMessage,settings.adEntities||[],{pro,destination,sender:accountDisplayLabel(account)}),mt=toMtprotoEntities(rendered.entities);if(pro.media?.localPath&&fs.existsSync(pro.media.localPath))await client.sendFile("me",{file:pro.media.localPath,caption:rendered.text,...(mt.length?{formattingEntities:mt}:{}),forceDocument:pro.media.kind==="document",supportsStreaming:pro.media.kind==="video"});else await client.sendMessage("me",{message:rendered.text||"\u2063",...(mt.length?{formattingEntities:mt}:{})});sent++;}catch{failed++;}finally{try{await client?.disconnect();}catch{}}}await ctx.reply(`✅ Test complete — ${sent} sender${sent===1?"":"s"} received it in Saved Messages${failed?` • ${failed} failed`:""}.`);return;}
+  const rendered=renderDynamicMessage(settings.adMessage,settings.adEntities||[],{pro,destination,sender:"TelePilot Bot"});if(pro.media?.fileId){const options={...(rendered.text?{caption:rendered.text}:{}),...(rendered.entities.length?{caption_entities:rendered.entities}:{})};if(pro.media.kind==="photo")await ctx.api.sendPhoto(ctx.chat.id,pro.media.fileId,options);else if(pro.media.kind==="video")await ctx.api.sendVideo(ctx.chat.id,pro.media.fileId,{...options,supports_streaming:true});else if(pro.media.kind==="animation")await ctx.api.sendAnimation(ctx.chat.id,pro.media.fileId,options);else await ctx.api.sendDocument(ctx.chat.id,pro.media.fileId,options);}else await ctx.api.sendMessage(ctx.chat.id,rendered.text||"\u2063",rendered.entities.length?{entities:rendered.entities}:{});
 }
 
 async function checkDestinationHealth(ctx) {
@@ -392,28 +336,14 @@ async function checkDestinationHealth(ctx) {
   await ctx.answerCallbackQuery({ text: "Checking…" });
   const lines = ["🩺 Destination health", ""];
 
-  if (hasPersonalSessionFile(uid)) {
-    let client;
-    try {
-      client = await openPersonalClient(uid);
-      const dialogs = await client.getDialogs({ limit: 500 });
-      for (const group of groups.slice(0, 30)) {
-        let dialog = null;
-        if (group.username) dialog = dialogs.find(item => String(item?.entity?.username || "").toLowerCase() === String(group.username).replace(/^@/, "").toLowerCase());
-        if (!dialog) {
-          const raw = String(group.id || "").replace(/^-100/, "").replace(/^-/, "");
-          dialog = dialogs.find(item => String(item?.entity?.id || "").replace(/\D/g, "") === raw);
-        }
-        if (!dialog) lines.push(`❌ ${destinationLabel(group)} — not joined`);
-        else if (dialog.entity?.broadcast === true && dialog.entity?.creator !== true && dialog.entity?.adminRights?.postMessages !== true) {
-          lines.push(`⚠️ ${destinationLabel(group)} — cannot post`);
-        } else lines.push(`✅ ${destinationLabel(group)} — ready`);
-      }
-    } catch (err) {
-      lines.push(`❌ Could not check personal account — ${String(err?.message || err).slice(0, 100)}`);
-    } finally {
-      try { await client?.disconnect(); } catch {}
+  if (listAccounts(uid).length) {
+    const accounts=listAccounts(uid);
+    for (const group of groups.slice(0, 25)) {
+      let ready=0,blocked=0;
+      for (const account of accounts) { let client; try { client=await openPersonalClient(uid,account.id); const dialogs=await client.getDialogs({}); let dialog=null;if(group.username)dialog=dialogs.find(item=>String(item?.entity?.username||"").toLowerCase()===String(group.username).replace(/^@/,"").toLowerCase());if(!dialog){const raw=String(group.id||"").replace(/^-100/,"").replace(/^-/,"");dialog=dialogs.find(item=>String(item?.entity?.id||"").replace(/\D/g,"")===raw);}if(dialog&&!(dialog.entity?.broadcast===true&&dialog.entity?.creator!==true&&dialog.entity?.adminRights?.postMessages!==true))ready++;else blocked++;}catch{blocked++;}finally{try{await client?.disconnect();}catch{}} }
+      lines.push(`${ready?"✅":"❌"} ${destinationLabel(group)} — ${ready}/${accounts.length} sender${accounts.length===1?"":"s"} ready${blocked?` • ${blocked} unavailable`:""}`);
     }
+
   } else {
     const botInfo = await ctx.api.getMe();
     for (const group of groups.slice(0, 30)) {
@@ -483,47 +413,18 @@ function safeSchedule(value, fallback) {
   return schedule;
 }
 function backupPayload(uid) {
-  const settings = readAppSettings(uid);
-  const pro = readProSettings(uid);
-  const text = String(settings.adMessage || "").slice(0, 4096);
-  return {
-    kind: "TelePilotConfig",
-    version: 2,
-    ownerUid: String(uid),
-    exportedAt: new Date().toISOString(),
-    message: { text, entities: safeEntities(settings.adEntities, text.length) },
-    destinations: (settings.groups || [])
-      .filter(group => /^@[A-Za-z0-9_]{5,32}$/.test(String(group.username || "")))
-      .slice(0, 1000)
-      .map(group => ({
-        label: String(group.label || "").slice(0, 120),
-        type: String(group.type || "").slice(0, 24),
-        username: String(group.username),
-      })),
-    intervalMinutes: IMPORT_INTERVALS.has(Number(settings.intervalMinutes)) ? Number(settings.intervalMinutes) : 30,
-    pro: {
-      placeholders: pro.placeholders === true,
-      staggerSeconds: [0, 2, 5, 10, 20].includes(Number(pro.staggerSeconds)) ? Number(pro.staggerSeconds) : 0,
-      schedule: safeSchedule(pro.schedule, defaultProSettings().schedule),
-      templates: (pro.templates || []).slice(0, 20).map(template => {
-        const message = String(template.message || "").slice(0, 4096);
-        return {
-          name: sanitizeName(template.name),
-          message,
-          entities: safeEntities(template.entities, message.length),
-          createdAt: Number(template.createdAt || Date.now()),
-        };
-      }),
-    },
-  };
+  const settings=readAppSettings(uid),pro=readProSettings(uid),text=String(settings.adMessage||"").slice(0,4096);
+  const templates=(pro.templates||[]).slice(0,100).map(template=>{const message=String(template.message||"").slice(0,4096);return{id:String(template.id||""),name:sanitizeName(template.name),message,entities:safeEntities(template.entities,message.length),createdAt:Number(template.createdAt||Date.now()),pinned:template.pinned===true,expiresAt:Number(template.expiresAt||0)||0};});
+  return {kind:"TelePilotConfig",version:3,ownerUid:String(uid),exportedAt:new Date().toISOString(),message:{text,entities:safeEntities(settings.adEntities,text.length)},destinations:(settings.groups||[]).filter(g=>/^@[A-Za-z0-9_]{5,32}$/.test(String(g.username||""))).slice(0,2000).map(g=>({id:String(g.id||""),label:String(g.label||"").slice(0,120),type:String(g.type||"").slice(0,24),username:String(g.username),accountMode:["inherit","all","selected"].includes(g.accountMode)?g.accountMode:"inherit",accountIds:Array.isArray(g.accountIds)?g.accountIds.map(String):[]})),intervalMinutes:IMPORT_INTERVALS.has(Number(settings.intervalMinutes))?Number(settings.intervalMinutes):30,senderMode:settings.senderMode==="all"?"all":"selected",selectedAccountIds:Array.isArray(settings.selectedAccountIds)?settings.selectedAccountIds.map(String):[],pro:{placeholders:pro.placeholders===true,staggerSeconds:[0,2,5,10,20].includes(Number(pro.staggerSeconds))?Number(pro.staggerSeconds):0,schedule:safeSchedule(pro.schedule,defaultProSettings().schedule),templates,rotation:pro.rotation,destinationOverrides:pro.destinationOverrides,destinationFolders:pro.destinationFolders,disabledFolders:pro.disabledFolders,customVariables:pro.customVariables,dateRange:pro.dateRange,activeMessageExpiresAt:Number(pro.activeMessageExpiresAt||0),postLimit:pro.postLimit,notificationMode:pro.notificationMode,autoDisableFailures:Number(pro.autoDisableFailures||3),disabledDestinationIds:pro.disabledDestinationIds,exactTimes:pro.exactTimes,oneTimeJobs:(pro.oneTimeJobs||[]).filter(j=>!j.status||j.status==="pending"),weeklyRecap:pro.weeklyRecap}};
 }
+
 function safeExport(uid) {
   const payload = backupPayload(uid);
   return { ...payload, signature: signBackupPayload(payload) };
 }
 function validateSignedImport(uid, parsed) {
   assertSafeObject(parsed, { maxDepth: 20, maxNodes: 6000 });
-  if (parsed?.kind !== "TelePilotConfig" || Number(parsed?.version) !== 2) {
+  if (parsed?.kind !== "TelePilotConfig" || ![2,3].includes(Number(parsed?.version))) {
     throw new Error("This backup uses an unsupported format. Create a fresh TelePilot export first.");
   }
   if (String(parsed.ownerUid || "") !== String(uid)) {
@@ -559,11 +460,26 @@ function validateSignedImport(uid, parsed) {
     message: { text: messageText, entities: safeEntities(payload.message?.entities, messageText.length) },
     destinations,
     intervalMinutes,
+    senderMode: payload.senderMode === "all" ? "all" : "selected",
+    selectedAccountIds: Array.isArray(payload.selectedAccountIds) ? payload.selectedAccountIds.map(String) : [],
     pro: {
       placeholders: payload.pro?.placeholders === true,
       staggerSeconds: [0, 2, 5, 10, 20].includes(Number(payload.pro?.staggerSeconds)) ? Number(payload.pro.staggerSeconds) : 0,
-      schedule: safeSchedule(payload.pro?.schedule, currentPro.schedule),
-      templates,
+      schedule: safeSchedule(payload.pro?.schedule, currentPro.schedule), templates,
+      rotation: payload.pro?.rotation && typeof payload.pro.rotation === "object" ? payload.pro.rotation : currentPro.rotation,
+      destinationOverrides: payload.pro?.destinationOverrides && typeof payload.pro.destinationOverrides === "object" ? payload.pro.destinationOverrides : {},
+      destinationFolders: payload.pro?.destinationFolders && typeof payload.pro.destinationFolders === "object" ? payload.pro.destinationFolders : {},
+      disabledFolders: Array.isArray(payload.pro?.disabledFolders) ? payload.pro.disabledFolders.map(String) : [],
+      customVariables: payload.pro?.customVariables && typeof payload.pro.customVariables === "object" ? payload.pro.customVariables : {},
+      dateRange: payload.pro?.dateRange && typeof payload.pro.dateRange === "object" ? payload.pro.dateRange : currentPro.dateRange,
+      activeMessageExpiresAt: Number(payload.pro?.activeMessageExpiresAt || 0) || 0,
+      postLimit: payload.pro?.postLimit && typeof payload.pro.postLimit === "object" ? payload.pro.postLimit : currentPro.postLimit,
+      notificationMode: ["all","important","silent"].includes(payload.pro?.notificationMode) ? payload.pro.notificationMode : currentPro.notificationMode,
+      autoDisableFailures: Math.min(10,Math.max(2,Number(payload.pro?.autoDisableFailures||3))),
+      disabledDestinationIds: Array.isArray(payload.pro?.disabledDestinationIds) ? payload.pro.disabledDestinationIds.map(String) : [],
+      exactTimes: Array.isArray(payload.pro?.exactTimes) ? payload.pro.exactTimes.slice(0,100) : [],
+      oneTimeJobs: Array.isArray(payload.pro?.oneTimeJobs) ? payload.pro.oneTimeJobs.slice(0,100) : [],
+      weeklyRecap: payload.pro?.weeklyRecap && typeof payload.pro.weeklyRecap === "object" ? payload.pro.weeklyRecap : currentPro.weeklyRecap,
     },
   };
 }
@@ -851,6 +767,8 @@ function registerHandlers(bot) {
     }
     proAwaiting.delete(uid);
     await ctx.answerCallbackQuery({ text: "Restoring…" });
+    const settingsFilePath=settingsPath(uid),proFilePath=path.join(userDir(uid),"pro-settings.json");
+    const beforeSettings=fs.existsSync(settingsFilePath)?fs.readFileSync(settingsFilePath):null,beforePro=fs.existsSync(proFilePath)?fs.readFileSync(proFilePath):null;
     try {
       savePreImportBackup(uid);
       const config = pending.config;
@@ -858,20 +776,21 @@ function registerHandlers(bot) {
       importedPro.schedule = config.pro.schedule;
       importedPro.placeholders = config.pro.placeholders;
       importedPro.staggerSeconds = config.pro.staggerSeconds;
+      Object.assign(importedPro, config.pro);
       importedPro.templates = config.pro.templates;
       writeProSettings(uid, importedPro);
       if (config.message.text) await applyMessage(ctx, config.message.text, config.message.entities);
       await applyInterval(ctx, config.intervalMinutes);
       let added = 0;
-      for (const destination of config.destinations) {
-        try { await applyDestination(ctx, destination.username); added++; } catch {}
-      }
+      for (const destination of config.destinations) { try { await applyDestination(ctx,destination.username); added++; } catch {} }
+      const restoredSettings=readJson(settingsPath(uid),{});restoredSettings.senderMode=config.senderMode;restoredSettings.selectedAccountIds=config.selectedAccountIds;const routingByUsername=new Map(config.destinations.map(d=>[String(d.username).toLowerCase(),d]));restoredSettings.groups=(restoredSettings.groups||[]).map(g=>{const r=routingByUsername.get(String(g.username||"").toLowerCase());return r?{...g,accountMode:r.accountMode||"inherit",accountIds:Array.isArray(r.accountIds)?r.accountIds:[]}:g;});fs.writeFileSync(settingsPath(uid),JSON.stringify(restoredSettings,null,2),{mode:0o600});reloadUserState(uid);
       appendSecurityEvent("backup_imported", { uid, destinations: added });
       await ctx.editMessageText(
         `📥 Restore complete\n\n✅ Signed backup verified\n✅ Message/settings restored\n✅ ${added} public destination${added === 1 ? "" : "s"} processed\n\nA signed pre-import rollback backup was saved server-side.`,
         { reply_markup: new InlineKeyboard().text("⬅️ Dashboard", "home") },
       );
     } catch (err) {
+      try { if(beforeSettings)fs.writeFileSync(settingsFilePath,beforeSettings,{mode:0o600});else fs.rmSync(settingsFilePath,{force:true}); if(beforePro)fs.writeFileSync(proFilePath,beforePro,{mode:0o600});else fs.rmSync(proFilePath,{force:true}); reloadUserState(uid); } catch(rollbackErr){ console.error("TelePilot import rollback failed:",rollbackErr?.message||rollbackErr); }
       appendSecurityEvent("backup_import_failed", { uid, reason: String(err?.message || err).slice(0, 120) });
       await ctx.editMessageText(
         `📥 Restore backup\n\n❌ ${String(err?.message || "Restore failed").slice(0, 180)}`,
@@ -942,6 +861,8 @@ export function installProControls(BotClass) {
   Object.defineProperty(BotClass.prototype, "__telepilotProControlsInstalled", { value: true });
 
   BotClass.prototype.callbackQuery = function(trigger, ...middleware) {
+    const inputOpeners=new Set(["tpl_save","sched_timezone","import_config"]);
+    if(typeof trigger==="string"&&!inputOpeners.has(trigger)){middleware=middleware.map(handler=>typeof handler!=="function"?handler:async function(ctx,next){const uid=uidOf(ctx);if(uid)proAwaiting.delete(uid);return handler.call(this,ctx,next);});}
     for (const handler of middleware) {
       if (typeof handler !== "function") continue;
       if (trigger === "message_change") appMessageChangeHandler = handler;
@@ -957,7 +878,7 @@ export function installProControls(BotClass) {
       });
     } else if (typeof trigger === "string" && ["home", "message", "tools", "templates"].includes(trigger)) {
       middleware = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx, next) {
-        const uid = uidOf(ctx); if (uid && trigger !== "message") messageEditorUsers.delete(uid); return handler.call(this, ctx, next);
+        const uid = uidOf(ctx); if (uid) messageEditorUsers.delete(uid); return handler.call(this, ctx, next);
       });
     }
     return originalCallbackQuery.call(this, trigger, ...middleware);

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { InlineKeyboard } from "grammy";
+import { listAccounts, senderSummary } from "./account-store.js";
 import {
   hasPersonalSessionFile,
   listUserIds,
@@ -82,13 +83,11 @@ function parseDays(value) {
   return out.sort();
 }
 
+function strictDateParts(date) {
+  const m=String(date||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!m)return null;const year=Number(m[1]),month=Number(m[2]),day=Number(m[3]);const d=new Date(Date.UTC(year,month-1,day));if(d.getUTCFullYear()!==year||d.getUTCMonth()!==month-1||d.getUTCDate()!==day)return null;return{year,month,day};
+}
 function localToUtcMs(date, time, offsetMinutes) {
-  const match = `${date} ${time}`.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
-  if (!match) return 0;
-  const values = match.slice(1).map(Number);
-  const [year, month, day, hour, minute] = values;
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return 0;
-  return Date.UTC(year, month - 1, day, hour, minute) - Number(offsetMinutes || 0) * 60_000;
+  const d=strictDateParts(date),t=String(time||"").match(/^(\d{2}):(\d{2})$/);if(!d||!t)return 0;const hour=Number(t[1]),minute=Number(t[2]);if(hour>23||minute>59)return 0;return Date.UTC(d.year,d.month-1,d.day,hour,minute)-Number(offsetMinutes||0)*60_000;
 }
 
 function fakeCallbackContext(ctx, data) {
@@ -412,25 +411,9 @@ async function showNotifications(ctx) {
 }
 
 async function showSession(ctx) {
-  const uid = uidOf(ctx);
-  const settings = readAppSettings(uid);
-  const pro = readV1(uid);
-  const connected = hasPersonalSessionFile(uid);
-  const label = connected ? (settings.personalUsername ? `@${settings.personalUsername}` : "Personal account") : "TelePilot Bot";
-  const kb = new InlineKeyboard();
-  if (connected) kb.text("Open Sender", "account").text("Disconnect", "account_disconnect").row();
-  else kb.text("Connect personal account", "account").row();
-  kb.text("⬅️ Power Tools", "v1_tools");
-  await ctx.editMessageText([
-    "🩺 Sender health",
-    `Sender — ${label}`,
-    `Session file — ${connected ? "Present" : "Not connected"}`,
-    `Health — ${connected ? pro.sessionHealth.status : "Bot sender"}`,
-    `Last verified — ${connected ? fmtAgo(pro.sessionHealth.lastCheckedAt) : "—"}`,
-    ...(pro.sessionHealth.lastError ? [`Last issue — ${pro.sessionHealth.lastError}`] : []),
-    "",
-    "Reconnecting a personal sender does not delete messages, templates, destinations or schedules.",
-  ].join("\n"), { reply_markup: kb });
+  const uid=uidOf(ctx),settings=readAppSettings(uid),pro=readV1(uid),accounts=listAccounts(uid),kb=new InlineKeyboard().text("Open Sender","account").row().text("⬅️ Power Tools","v1_tools");
+  const healthy=accounts.filter(a=>a.status==="connected").length,attention=accounts.filter(a=>a.status==="needs-reconnect").length;
+  await ctx.editMessageText(["🩺 Sender health",`Sender mode — ${senderSummary(settings,accounts)}`,`Connected accounts — ${accounts.length}`,`Healthy — ${healthy}`,`Needs reconnect — ${attention}`,`Overall — ${accounts.length?pro.sessionHealth.status:"Bot sender"}`,`Last verified — ${accounts.length?fmtAgo(pro.sessionHealth.lastCheckedAt):"—"}`,...(pro.sessionHealth.lastError?[`Last issue — ${pro.sessionHealth.lastError}`]:[]),"","A problem with one sender no longer disables the other connected accounts."].join("\n"),{reply_markup:kb});
 }
 
 async function showBackup(ctx) {
@@ -444,26 +427,8 @@ async function showBackup(ctx) {
 }
 
 async function showChangelog(ctx) {
-  const uid = uidOf(ctx);
-  const pro = readV1(uid);
-  pro.changelogSeen = "1.0.0";
-  writeV1(uid, pro);
-  await ctx.editMessageText([
-    "🆕 What's new in TelePilot 1.0",
-    "",
-    "• First-time guided tutorial",
-    "• Exact-time + one-time scheduling",
-    "• Message rotation and random templates",
-    "• Destination folders and message overrides",
-    "• Search + favorite templates",
-    "• Custom {variables}",
-    "• Start/end dates, message expiry and post limits",
-    "• Automatic destination failure handling",
-    "• Daily/weekly statistics and optional recap",
-    "• Posting queue, sender health and access reminders",
-    "• Emergency stop and quieter notification modes",
-    "• Owner user/key management shortcuts",
-  ].join("\n"), { reply_markup: new InlineKeyboard().text("❓ Tutorial", "tutorial_restart").row().text("⬅️ Power Tools", "v1_tools") });
+  const uid=uidOf(ctx),pro=readV1(uid);pro.changelogSeen="1.1.0";writeV1(uid,pro);
+  await ctx.editMessageText(["🆕 What's new in TelePilot 1.1","","• Unlimited connected sender accounts at the TelePilot app level","• Post from all accounts or any selected accounts at once","• Per-destination account routing — different accounts can handle different groups","• Per-destination message templates — different groups can receive different posts","• Bulk destination adding — paste one group/channel per line","• LIVE interval posting resumes after safe service restarts","• Long Telegram FLOOD_WAIT values now use the real wait time","• Exact-time and one-time jobs track partial delivery so retries do not duplicate successful sends","• Stronger account health, retry and failure classification","• Safer transactional backup restore and broader configuration backups","","Open Sender and Destination Routing to configure the new multi-account controls."].join("\n"),{reply_markup:new InlineKeyboard().text("👤 Sender","account").text("📍 Destinations","groups").row().text("⬅️ Power Tools","v1_tools")});
 }
 
 async function showAdminUsers(ctx) {
@@ -541,7 +506,7 @@ async function handlePendingText(ctx) {
 
   if (task.type === "date_range") {
     const match = value.match(/^(\d{4}-\d{2}-\d{2})\s+(?:to|→|-)\s+(\d{4}-\d{2}-\d{2})$/i);
-    if (!match || match[2] < match[1]) {
+    if (!match || !strictDateParts(match[1]) || !strictDateParts(match[2]) || match[2] < match[1]) {
       await ctx.api.editMessageText(ctx.chat.id, task.messageId, "📅 Active dates\n\n❌ Use: 2026-09-08 to 2026-09-30", { reply_markup: new InlineKeyboard().text("Try again", "v1_date_range").row().text("⬅️ Limits", "v1_limits") });
       return true;
     }
@@ -775,6 +740,10 @@ export function installV1Controls(BotClass) {
   };
 
   BotClass.prototype.callbackQuery = function(trigger, ...middleware) {
+    const inputOpeners = new Set(["v1_exact_add","v1_once_add","v1_date_range","v1_expiry_set","v1_limit_set","v1_variable_add","v1_variable_remove","v1_search_dest","v1_search_tpl"]);
+    if (typeof trigger === "string" && !inputOpeners.has(trigger)) {
+      middleware = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx,next) { const uid=uidOf(ctx); if(uid) pending.delete(uid); return handler.call(this,ctx,next); });
+    }
     for (const handler of middleware) {
       if (typeof handler !== "function") continue;
       if (trigger === "message_change") appMessageChangeHandler = handler;
