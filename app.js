@@ -57,6 +57,8 @@ const USERS_DIR = path.join(DATA_DIR, "users");
 fs.mkdirSync(USERS_DIR, { recursive: true });
 const states = new Map();
 const loginAttempts = new Map();
+const personalTargetCache = new Map();
+const PERSONAL_TARGET_CACHE_MS = 10 * 60_000;
 
 // TELEPILOT_SECURITY_PACK_V1
 installConsoleRedaction();
@@ -505,7 +507,10 @@ function accountLabel(state) {
 
 async function ensurePersonalClient(state) {
   if (!hasPersonalSession(state.uid)) return null;
-  if (state.personalClient) return state.personalClient;
+  if (state.personalClient) {
+    state.personalClient.__telepilotOwnerUid = String(state.uid);
+    return state.personalClient;
+  }
   if (state.personalRestorePromise) return state.personalRestorePromise;
   state.personalRestorePromise = (async () => {
     let client;
@@ -514,14 +519,19 @@ async function ensurePersonalClient(state) {
         connectionRetries: 5,
         floodSleepThreshold: 60,
       });
+      client.__telepilotOwnerUid = String(state.uid);
       await client.connect();
       if (!(await client.checkAuthorization())) throw new Error("Saved Telegram session is no longer authorized");
       const me = await client.getMe();
       state.personalUsername = me?.username || state.personalUsername || "";
       state.personalClient = client;
+      state.personalRestoreError = "";
+      state.personalRestoreFatal = false;
       saveState(state);
       return client;
     } catch (err) {
+      state.personalRestoreError = telegramErrorCode(err).slice(0, 120) || "UNKNOWN";
+      state.personalRestoreFatal = isFatalPersonalSessionError(err);
       try { await client?.disconnect(); } catch {}
       console.warn(`Could not restore personal Telegram account for user ${state.uid}:`, err?.message || err);
       return null;
@@ -567,7 +577,10 @@ async function completeLogin(attempt, user) {
   if (state.personalClient && state.personalClient !== attempt.client) {
     try { await state.personalClient.disconnect(); } catch {}
   }
+  attempt.client.__telepilotOwnerUid = String(state.uid);
   state.personalClient = attempt.client;
+  state.personalRestoreError = "";
+  state.personalRestoreFatal = false;
   saveState(state);
   logAdminEvent("account_connected", { uid: String(state.uid) });
   appendSecurityEvent("account_connected", { uid: String(state.uid) });
@@ -604,6 +617,7 @@ async function beginPersonalLogin(uid, phone) {
     connectionRetries: 5,
     floodSleepThreshold: 0,
   });
+  client.__telepilotOwnerUid = String(uid);
   const attempt = {
     uid: Number(uid),
     token,
@@ -687,14 +701,13 @@ async function submitLoginCode(attempt, code) {
   if (attempt.stage !== "code") return;
   const value = String(code || "").replace(/\D/g, "");
   if (!/^\d{3,10}$/.test(value)) return failLoginAttempt(attempt, "code", new Error("PHONE_CODE_INVALID"));
+  let result;
   try {
-    const result = await attempt.client.invoke(new Api.auth.SignIn({
+    result = await attempt.client.invoke(new Api.auth.SignIn({
       phoneNumber: attempt.phone,
       phoneCodeHash: attempt.phoneCodeHash,
       phoneCode: value,
     }));
-    const user = result?.user || result;
-    await completeLogin(attempt, user);
   } catch (err) {
     const codeName = telegramErrorCode(err);
     if (codeName.includes("SESSION_PASSWORD_NEEDED")) {
@@ -703,7 +716,17 @@ async function submitLoginCode(attempt, code) {
       return;
     }
     attempt.error = cleanAuthError(err);
-    return failLoginAttempt(attempt, "code", err);
+    if (codeName.includes("PHONE_CODE_INVALID")) return failLoginAttempt(attempt, "code", err);
+    if (codeName.includes("PHONE_CODE_EXPIRED")) attempt.stage = "error";
+    throw new Error(attempt.error);
+  }
+  try {
+    await completeLogin(attempt, result?.user || result);
+  } catch (err) {
+    attempt.stage = "error";
+    attempt.error = "Telegram accepted the login, but TelePilot could not finish connecting the account. Start the connection again.";
+    appendSecurityEvent("login_finalize_failed", { uid: String(attempt.uid), reason: telegramErrorCode(err).slice(0, 80) });
+    throw new Error(attempt.error);
   }
 }
 
@@ -712,8 +735,9 @@ async function submitLoginPassword(attempt, password) {
   const value = String(password || "");
   if (!value) return failLoginAttempt(attempt, "password", new Error("PASSWORD_HASH_INVALID"));
   let passwordError = null;
+  let user;
   try {
-    const user = await attempt.client.signInWithPassword(
+    user = await attempt.client.signInWithPassword(
       { apiId: API_ID, apiHash: API_HASH },
       {
         password: async () => value,
@@ -723,10 +747,20 @@ async function submitLoginPassword(attempt, password) {
         },
       },
     );
+  } catch (err) {
+    const authErr = passwordError || err;
+    const codeName = telegramErrorCode(authErr);
+    attempt.error = cleanAuthError(authErr);
+    if (codeName.includes("PASSWORD_HASH_INVALID")) return failLoginAttempt(attempt, "password", authErr);
+    throw new Error(attempt.error);
+  }
+  try {
     await completeLogin(attempt, user);
   } catch (err) {
-    attempt.error = cleanAuthError(passwordError || err);
-    return failLoginAttempt(attempt, "password", passwordError || err);
+    attempt.stage = "error";
+    attempt.error = "Telegram accepted the login, but TelePilot could not finish connecting the account. Start the connection again.";
+    appendSecurityEvent("login_finalize_failed", { uid: String(attempt.uid), reason: telegramErrorCode(err).slice(0, 80) });
+    throw new Error(attempt.error);
   }
 }
 
@@ -830,7 +864,7 @@ async function resolveDestination(target, ownerUid) {
 
     const wanted = String(target).slice(1).toLowerCase();
     let dialogs;
-    try { dialogs = await client.getDialogs({ limit: 500 }); }
+    try { dialogs = await client.getDialogs({}); }
     catch { throw new Error("TelePilot could not read your connected account's chats. Reconnect the account and try again."); }
 
     const dialog = dialogs.find(item => String(item?.entity?.username || "").toLowerCase() === wanted);
@@ -898,9 +932,12 @@ function stopPostingLoop(state) {
   if (state.postingTimer) clearTimeout(state.postingTimer);
   state.postingTimer = null;
 }
-async function resolvePersonalTarget(client, destination) {
+async function resolvePersonalTarget(client, destination, uid) {
   if (destination.username) return destination.username;
-  const dialogs = await client.getDialogs({ limit: 500 });
+  const cacheKey = `${uid}:${destination.id}`;
+  const cached = personalTargetCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PERSONAL_TARGET_CACHE_MS) return cached.entity;
+  const dialogs = await client.getDialogs({});
   for (const dialog of dialogs) {
     const candidates = [
       dialog?.id,
@@ -908,9 +945,15 @@ async function resolvePersonalTarget(client, destination) {
       dialog?.inputEntity?.chatId,
       dialog?.inputEntity?.channelId,
     ].filter(v => v !== undefined && v !== null).map(v => String(v));
-    if (candidates.includes(String(destination.id))) return dialog;
+    const normalizedTarget = String(destination.id).replace(/^-100/, "").replace(/^-/, "");
+    const matched = candidates.includes(String(destination.id))
+      || candidates.some(value => value.replace(/\D/g, "") === normalizedTarget);
+    if (matched) {
+      personalTargetCache.set(cacheKey, { at: Date.now(), entity: dialog });
+      return dialog;
+    }
   }
-  throw new Error("This personal account could not resolve that private destination. Add a public username or reopen the group in Telegram and try again.");
+  throw new Error("This personal account could not resolve that private destination. Reopen the group in Telegram and try again.");
 }
 function isFatalPersonalSessionError(err) {
   const code = telegramErrorCode(err);
@@ -928,8 +971,19 @@ async function sendCycleBody(state) {
 
   const personalClient = hasPersonalSession(state.uid) ? await ensurePersonalClient(state) : null;
   if (hasPersonalSession(state.uid) && !personalClient) {
-    stopPostingLoop(state);
-    await autoDeleteNotice(state.uid, "⚠️ Your personal Telegram session could not be restored. Reconnect the account.", 15000);
+    state.lastRunAt = Date.now();
+    state.lastCycleSuccess = 0;
+    state.lastCycleFailed = targets.length;
+    saveState(state);
+    if (state.personalRestoreFatal) {
+      stopPostingLoop(state);
+      await autoDeleteNotice(state.uid, "⚠️ Your personal Telegram session is no longer authorized. Reconnect the account.", 15000);
+    } else {
+      const noticeRate = takeRateLimit("personal-restore-notice", String(state.uid), 1, 30 * 60_000);
+      if (noticeRate.ok) {
+        await autoDeleteNotice(state.uid, "⚠️ Telegram connection issue. Your session is still saved and TelePilot will retry automatically.", 15000);
+      }
+    }
     return;
   }
 
@@ -940,7 +994,7 @@ async function sendCycleBody(state) {
     if (!state.posting || !hasAccess(state)) { stopPostingLoop(state); break; }
     try {
       if (personalClient) {
-        const entity = await resolvePersonalTarget(personalClient, target);
+        const entity = await resolvePersonalTarget(personalClient, target, state.uid);
         await personalClient.sendMessage(entity, {
           message,
           ...(formattingEntities.length ? { formattingEntities } : {}),
@@ -953,11 +1007,30 @@ async function sendCycleBody(state) {
       if (state.posting) await new Promise(resolve => setTimeout(resolve, POST_GAP_MS));
     } catch (err) {
       failed++;
+      const errorCode = telegramErrorCode(err);
+      personalTargetCache.delete(`${state.uid}:${target.id}`);
       console.error(`User ${state.uid} failed to post to ${target.id}:`, err?.errorMessage || err?.description || err?.message || err);
       if (personalClient && isFatalPersonalSessionError(err)) {
         stopPostingLoop(state);
         await autoDeleteNotice(state.uid, "⚠️ Your personal Telegram session is no longer authorized. Reconnect the account.", 15000);
         break;
+      }
+      const destinationIssue = errorCode.includes("CHANNEL_PRIVATE")
+        || errorCode.includes("CHAT_WRITE_FORBIDDEN")
+        || errorCode.includes("USER_BANNED_IN_CHANNEL")
+        || errorCode.includes("CHAT_SEND_PHOTOS_FORBIDDEN")
+        || errorCode.includes("CHAT_SEND_VIDEOS_FORBIDDEN")
+        || errorCode.includes("CHAT_SEND_MEDIA_FORBIDDEN");
+      if (destinationIssue) {
+        const noticeRate = takeRateLimit("destination-error-notice", `${state.uid}:${target.id}:${errorCode.slice(0, 50)}`, 1, 6 * 60 * 60_000);
+        if (noticeRate.ok) {
+          const detail = errorCode.includes("CHANNEL_PRIVATE")
+            ? "the connected account can no longer access this destination"
+            : errorCode.includes("CHAT_SEND_")
+              ? "this destination does not allow that media type"
+              : "the connected account cannot post in this destination";
+          await autoDeleteNotice(state.uid, `⚠️ ${destinationLabel(target)} failed: ${detail}. Check its permissions or remove it from Destinations.`, 20000);
+        }
       }
     }
   }
@@ -1061,7 +1134,8 @@ function htmlPage(token) {
 <p class="tiny">This link expires automatically. TelePilot stores the resulting Telegram session, not the code or 2FA password.</p>
 </main>
 <script>
-const token=${safeToken};
+const token=(location.hash.length>1?decodeURIComponent(location.hash.slice(1)):${safeToken});
+if(location.hash) history.replaceState(null,"",location.pathname+location.search);
 const statusEl=document.getElementById("status"), codeForm=document.getElementById("codeForm"), passwordForm=document.getElementById("passwordForm"), errorEl=document.getElementById("error");
 function show(stage,data){
   codeForm.classList.toggle("hidden",stage!=="code");
@@ -2625,11 +2699,13 @@ function readCookies(req) {
   return out;
 }
 function connectCookie(token, maxAge = 600) {
-  return `__Host-telepilot_connect=${encodeURIComponent(token || "")}; Path=/; Max-Age=${Math.max(0, maxAge)}; HttpOnly; Secure; SameSite=Strict`;
+  return `__Host-telepilot_connect=${encodeURIComponent(token || "")}; Path=/; Max-Age=${Math.max(0, maxAge)}; HttpOnly; Secure; SameSite=Lax`;
 }
 function authAttemptFromRequest(req, fallbackToken = "") {
   const cookieToken = readCookies(req)["__Host-telepilot_connect"] || "";
-  return getAttemptByBrowserToken(cookieToken) || getAttemptByToken(fallbackToken);
+  return getAttemptByBrowserToken(cookieToken)
+    || getAttemptByBrowserToken(fallbackToken)
+    || getAttemptByToken(fallbackToken);
 }
 function enforceHttpRate(req, res, scope, limit, windowMs) {
   const rate = takeRateLimit(scope, requestAddress(req), limit, windowMs);
@@ -2659,7 +2735,7 @@ const healthServer = http.createServer(async (req, res) => {
         attempt.token = "";
         const browserToken = rotateBrowserToken(attempt);
         res.writeHead(303, {
-          location: "/connect",
+          location: `/connect#${encodeURIComponent(browserToken)}` ,
           "set-cookie": connectCookie(browserToken),
           "cache-control": "no-store",
           "referrer-policy": "no-referrer",
@@ -2668,10 +2744,9 @@ const healthServer = http.createServer(async (req, res) => {
         return res.end();
       }
       const attempt = authAttemptFromRequest(req);
-      if (!attempt) {
-        res.writeHead(410, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        return res.end("<h1>TelePilot link expired</h1><p>Return to the bot and start account connection again.</p>");
-      }
+      // Some Telegram/Android in-app browsers do not persist the redirect cookie.
+      // Serve the generic page anyway: its fragment-held browser token authenticates
+      // the API calls, while a truly invalid token still receives HTTP 410 from /auth/status.
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
@@ -2704,7 +2779,6 @@ const healthServer = http.createServer(async (req, res) => {
       if (!userRate.ok) return sendJson(res, 429, { error: "Too many login attempts. Start the connection again later." });
       try {
         await submitLoginCode(attempt, body.code);
-        if (attempt.stage === "password") res.setHeader("set-cookie", connectCookie(rotateBrowserToken(attempt)));
         if (attempt.stage === "done") res.setHeader("set-cookie", connectCookie("", 0));
         return sendJson(res, 200, { stage: attempt.stage, error: attempt.error || "" });
       } catch (err) {
@@ -2757,7 +2831,11 @@ const idleSweep = setInterval(() => {
 }, 10 * 60_000);
 idleSweep.unref?.();
 
-bot.catch(err => console.error("Bot error:", err.error));
+bot.catch(err => {
+  const value = String(err?.error?.description || err?.error?.message || err?.error || "");
+  if (value.includes("message is not modified")) return;
+  console.error("Bot error:", err.error);
+});
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;

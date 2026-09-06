@@ -273,28 +273,37 @@ function errorText(err) {
   return String(err?.description || err?.errorMessage || err?.message || err || "Unknown error").slice(0, 220);
 }
 
-function retryDelayMs(err) {
-  const retryAfter = Number(err?.parameters?.retry_after || 0);
-  if (retryAfter > 0 && retryAfter <= 60) return retryAfter * 1000;
+export function floodWaitSeconds(err) {
+  const direct = Number(err?.seconds || err?.retryAfter || err?.parameters?.retry_after || 0);
+  if (Number.isFinite(direct) && direct > 0) return Math.ceil(direct);
   const match = errorText(err).toUpperCase().match(/FLOOD_WAIT_?(\d+)/);
-  if (match && Number(match[1]) <= 60) return Number(match[1]) * 1000;
-  return 1200;
+  return match ? Number(match[1]) : 0;
 }
 
-function isRetryable(err) {
+export function retryDelayMs(err, attempt = 0) {
+  const flood = floodWaitSeconds(err);
+  if (flood > 0) return (flood + 1) * 1000;
+  return Math.min(10_000, 1200 * (2 ** Math.max(0, Number(attempt) || 0)));
+}
+
+export function isRetryable(err) {
   const code = Number(err?.error_code || 0);
   const text = errorText(err).toUpperCase();
   if (code === 429 || code >= 500) return true;
   return ["TIMEOUT", "TIMED OUT", "ECONNRESET", "EAI_AGAIN", "RPC_CALL_FAIL", "INTERNAL", "SERVER_ERROR", "FLOOD_WAIT"].some(token => text.includes(token));
 }
 
-async function withRetry(fn) {
-  try { return await fn(); }
-  catch (err) {
-    if (!isRetryable(err)) throw err;
-    await new Promise(resolve => setTimeout(resolve, retryDelayMs(err)));
-    return fn();
+async function withRetry(fn, maxRetries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { return await fn(); }
+    catch (err) {
+      lastError = err;
+      if (!isRetryable(err) || attempt >= maxRetries) throw err;
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs(err, attempt)));
+    }
   }
+  throw lastError;
 }
 
 function fakeMessage(rendered) {
@@ -396,12 +405,15 @@ export function installPostingEngineEnhancements(ApiClass, TelegramClientClass) 
 
     TelegramClientClass.prototype.sendMessage = async function(entity, params = {}, ...rest) {
       const message = String(params?.message || "");
-      let uid = clientOwners.get(this) || "";
+      let uid = String(this.__telepilotOwnerUid || clientOwners.get(this) || "");
       if (!uid) {
         try {
           const me = await originalGetMe.call(this);
           uid = findUidByPersonalUsername(me?.username || "");
-          if (uid) clientOwners.set(this, uid);
+          if (uid) {
+            clientOwners.set(this, uid);
+            this.__telepilotOwnerUid = String(uid);
+          }
         } catch {}
       }
       if (!uid) return originalSendMessage.call(this, entity, params, ...rest);
