@@ -59,15 +59,17 @@ assert.ok(!app.includes('text("▶️ Confirm start", "start_confirm")'), "norma
 assert.ok(app.includes("topicId") && app.includes("accountJoin"), "destination v1.2 fields are not preserved");
 assert.ok(startup.includes("installUxNavigation") && startup.includes("installDestinationAutomation"), "v1.2 bot modules not installed");
 assert.ok(startup.includes("startDestinationAutomationWorker"), "destination approval worker not started");
+const workerStartAt = startup.indexOf("startDestinationAutomationWorker();");
+const appImportAt = startup.indexOf('await import("./app.js")');
+assert.ok(workerStartAt >= 0 && appImportAt >= 0 && workerStartAt < appImportAt, "destination worker must start before app.js enters awaited long polling");
 for (const label of ["▶ Start", "⏹ Stop", "⌂ Home", "🧩 Posting Setup", "👤 Accounts", "📍 Destinations", "⚙️ Settings"]) {
   assert.ok(ux.includes(label), `new home layout missing ${label}`);
 }
 assert.ok(onboarding.includes("Addlist") || onboarding.includes("addlist"), "tutorial does not explain Addlist destination setup");
 assert.ok(onboarding.includes("Posting Setup"), "tutorial does not use the simplified Posting Setup navigation");
-
-console.log("TelePilot v1.2 regression checks passed");
-
 assert.ok(app.includes("readyDestinationCount"), "Home/start readiness must use ready destinations, not just saved destinations");
 assert.ok(app.includes("scheduleRoutingSync"), "sender routing changes must queue destination membership preparation");
 assert.ok(ux.includes("private t.me/+ invites") && ux.includes("t.me/addlist/..."), "normalized Add Destination screen lost v1.2 import guidance");
 assert.ok(onboarding.includes("needsTopic") && onboarding.includes("Choose Topics"), "tutorial must wait for forum-topic selection");
+
+console.log("TelePilot v1.2 regression checks passed");
