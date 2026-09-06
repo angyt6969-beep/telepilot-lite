@@ -1,0 +1,51 @@
+name: Fix TelePilot MTProto Reliability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/fix_teleproto_reliability.py"
+      - ".github/workflows/fix-teleproto-reliability.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: /tmp/telepilot-reliability-ci
+      TELEPILOT_SECURITY_SECRET: ci-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      TELEPILOT_SESSION_KEY_B64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Apply MTProto and login reliability fixes
+        run: python3 scripts/fix_teleproto_reliability.py
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check posting-engine-enhancements.js
+          node --check teleproto-reliability-test.mjs
+      - name: Reliability regression checks
+        run: node teleproto-reliability-test.mjs
+      - name: Existing security regression tests
+        run: npm test
+      - name: Diff validation
+        run: git diff --check
+      - name: Commit repaired production code
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js posting-engine-enhancements.js teleproto-reliability-test.mjs
+          git diff --cached --exit-code && exit 0
+          git commit -m "Harden Telegram login and MTProto reliability"
+          git push origin HEAD:main
