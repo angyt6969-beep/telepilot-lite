@@ -10,6 +10,7 @@ import { installDestinationAutomation, startDestinationAutomationWorker } from "
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
+import { installUxV13VisualPolish } from "./ux-v13-visual-polish.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
@@ -63,12 +64,11 @@ prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 
-// Wrapper order is intentional. v1.3 is placed immediately inside v1.2 so it sees the
-// normalized v1.2 screens, then replaces them with the current Dashboard/Activity layout.
-// The v1.3 polish wrapper sits immediately inside v1.3 so it receives the finished v1.3
-// screen and can update tutorial copy / add recovery controls. Deep premium emoji processing
-// remains downstream so v1_* controls receive Telegram custom-emoji button icons whenever
-// a semantic icon is available.
+// Wrapper order is intentional. The visual-polish layer is installed first, making it
+// the final processor immediately before the raw Bot API call. That lets it enforce final
+// entity offsets, explicit custom-emoji IDs, owner navigation and back-button ordering after
+// every older UI wrapper has finished its own transformations.
+installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
 installV1Ui(Api);
