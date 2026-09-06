@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { InlineKeyboard } from "grammy";
+import { hasAnyAccount, listAccounts, senderSummary } from "./account-store.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 let appStartHandler = null;
@@ -9,7 +10,6 @@ function uidOf(ctx) { return ctx?.from?.id ? String(ctx.from.id) : ""; }
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function settingsPath(uid) { return path.join(userDir(uid), "settings.json"); }
 function onboardingPath(uid) { return path.join(userDir(uid), "onboarding.json"); }
-function personalSessionPath(uid) { return path.join(userDir(uid), "personal-session.enc"); }
 
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
@@ -51,10 +51,7 @@ function accessActive(uid) {
   if (saved.accessLifetime === true) return true;
   return Number(saved.accessUntil || 0) > Date.now();
 }
-function hasPersonalSession(uid) {
-  try { return fs.existsSync(personalSessionPath(uid)) && fs.statSync(personalSessionPath(uid)).size > 20; }
-  catch { return false; }
-}
+function hasPersonalSession(uid) { return hasAnyAccount(uid); }
 function formatInterval(minutes) {
   const n = Number(minutes || 30);
   if (n === 60) return "1 hour";
@@ -72,7 +69,7 @@ function welcomePage() {
       "",
       "• Post to multiple groups and channels",
       "• Schedule and repeat posts",
-      "• Post from TelePilot Bot or your personal Telegram account",
+      "• Post from TelePilot Bot or one or more personal Telegram accounts",
       "• Preview, manage and monitor everything from the bot",
       "",
       "Continue to activate your TelePilot access.",
@@ -88,7 +85,7 @@ function featuresPage() {
     text: [
       "✨ What you get with TelePilot",
       "",
-      "📱 Personal-account or bot posting",
+      "📱 One or more personal-account senders, or bot posting",
       "👥 Multiple Telegram destinations",
       "📝 Saved messages, media and templates",
       "⏱ Repeating intervals and scheduling",
@@ -133,7 +130,7 @@ function setupPage2(uid) {
       "📱 Step 1 of 5 — Choose your sender",
       "",
       connected
-        ? "✅ Your personal Telegram account is connected."
+        ? "✅ At least one personal Telegram account is connected."
         : "Choose who should send your posts.",
       "",
       "TelePilot Bot is the simplest option. A personal account lets posts appear from your own Telegram account.",
@@ -228,7 +225,7 @@ function setupPage7(uid) {
   const groups = Array.isArray(saved.groups) ? saved.groups.length : 0;
   const messageReady = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
   const sender = hasPersonalSession(uid)
-    ? (saved.personalUsername ? `@${saved.personalUsername}` : "Personal account")
+    ? senderSummary(saved, listAccounts(uid))
     : "TelePilot Bot";
   return {
     text: [
