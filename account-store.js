@@ -215,25 +215,37 @@ export function removeAllAccounts(uid) {
 export function normalizeAccountSelection(settings, accounts = []) {
   const valid = new Set(accounts.map(item => String(item.id)));
   const selected = [...new Set((Array.isArray(settings?.selectedAccountIds) ? settings.selectedAccountIds : []).map(String).filter(id => valid.has(id)))];
-  const mode = settings?.senderMode === "all" ? "all" : "selected";
+  const requestedMode = String(settings?.senderMode || "");
+  // Preserve legacy behaviour for profiles created before senderMode existed:
+  // a connected personal account remains selected unless the user explicitly chooses Bot.
+  const mode = requestedMode === "bot" ? "bot" : requestedMode === "all" ? "all" : "selected";
   if (mode === "selected" && !selected.length && accounts[0]) selected.push(String(accounts[0].id));
   return { mode, selected };
+}
+export function usesBotSender(settings, destination = null, accounts = []) {
+  if (!accounts.length) return true;
+  const routeMode = ["inherit", "bot", "all", "selected"].includes(destination?.accountMode) ? destination.accountMode : "inherit";
+  if (routeMode === "bot") return true;
+  if (routeMode !== "inherit") return false;
+  return normalizeAccountSelection(settings, accounts).mode === "bot";
 }
 export function effectiveAccountIds(settings, destination = null, accounts = []) {
   if (!accounts.length) return [];
   const valid = new Set(accounts.map(item => String(item.id)));
-  const routeMode = ["inherit", "all", "selected"].includes(destination?.accountMode) ? destination.accountMode : "inherit";
+  const routeMode = ["inherit", "bot", "all", "selected"].includes(destination?.accountMode) ? destination.accountMode : "inherit";
+  if (routeMode === "bot") return [];
   if (routeMode === "all") return accounts.map(item => String(item.id));
   if (routeMode === "selected") {
-    const routed = [...new Set((Array.isArray(destination?.accountIds) ? destination.accountIds : []).map(String).filter(id => valid.has(id)))];
-    return routed.length ? routed : [];
+    return [...new Set((Array.isArray(destination?.accountIds) ? destination.accountIds : []).map(String).filter(id => valid.has(id)))];
   }
   const global = normalizeAccountSelection(settings, accounts);
+  if (global.mode === "bot") return [];
   return global.mode === "all" ? accounts.map(item => String(item.id)) : global.selected;
 }
 export function senderSummary(settings, accounts = []) {
   if (!accounts.length) return "TelePilot Bot";
   const selected = normalizeAccountSelection(settings, accounts);
+  if (selected.mode === "bot") return "TelePilot Bot";
   if (selected.mode === "all") return accounts.length === 1 ? accountDisplayLabel(accounts[0]) : `All ${accounts.length} accounts`;
   if (selected.selected.length === 1) return accountDisplayLabel(accounts.find(item => item.id === selected.selected[0]));
   return `${selected.selected.length} selected accounts`;

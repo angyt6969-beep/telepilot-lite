@@ -39,6 +39,19 @@ assert.deepEqual(
   [first.id],
 );
 
+// Explicit TelePilot Bot mode remains available even while accounts stay connected.
+assert.equal(accounts.usesBotSender({ senderMode: "bot", selectedAccountIds: [first.id] }, null, listed), true);
+assert.deepEqual(accounts.effectiveAccountIds({ senderMode: "bot", selectedAccountIds: [first.id] }, null, listed), []);
+assert.equal(accounts.senderSummary({ senderMode: "bot", selectedAccountIds: [first.id] }, listed), "TelePilot Bot");
+assert.equal(accounts.usesBotSender({ senderMode: "all", selectedAccountIds: [] }, { accountMode: "bot" }, listed), true);
+assert.deepEqual(accounts.effectiveAccountIds({ senderMode: "all", selectedAccountIds: [] }, { accountMode: "bot" }, listed), []);
+// An explicit destination account route overrides global Bot mode.
+assert.equal(accounts.usesBotSender({ senderMode: "bot", selectedAccountIds: [] }, { accountMode: "all" }, listed), false);
+assert.deepEqual(
+  accounts.effectiveAccountIds({ senderMode: "bot", selectedAccountIds: [] }, { accountMode: "all" }, listed).sort(),
+  listed.map(item => item.id).sort(),
+);
+
 // Reconnecting the same Telegram account updates it instead of creating a duplicate.
 const firstAgain = accounts.saveAccountSession(uid, { id: 101, username: "alpha_sender", firstName: "Alpha Updated" }, "session-alpha-new");
 assert.equal(firstAgain.id, first.id);
@@ -87,6 +100,8 @@ const controls = source("v1-controls.js");
 const pro = source("pro-controls.js");
 const support = source("support-center.js");
 const security = source("security-core.js");
+const extras = source("v1-extras.js");
+const senderUi = source("sender-destination-ui.js");
 
 assert.match(app, /TELEPILOT_MULTI_ACCOUNT_V11/);
 assert.match(app, /postingEnabled/);
@@ -94,6 +109,8 @@ assert.match(app, /accessGrants/);
 assert.match(app, /loadPersistedLogins/);
 assert.match(app, /selectedAccountIds/);
 assert.match(app, /accountMode/);
+assert.match(app, /account_mode_bot/);
+assert.match(app, /inherit\|bot\|all/);
 assert.match(app, /split\(\/\\r\?\\n\//);
 assert.match(engine, /transientCount/);
 assert.match(engine, /permanentCount/);
@@ -101,6 +118,10 @@ assert.match(engine, /__telepilotSkipped/);
 assert.match(worker, /EXACT_CATCHUP_MS/);
 assert.match(worker, /deliveryKey/);
 assert.match(worker, /nextAttemptAt/);
+assert.match(worker, /usesBotSender/);
+assert.match(extras, /senderSummary/);
+assert.match(extras, /listAccounts/);
+assert.doesNotMatch(senderUi, /personal-session\.enc/);
 assert.match(controls, /strictDateParts/);
 assert.match(controls, /What's new in TelePilot 1\.1/);
 assert.match(pro, /version:3/);

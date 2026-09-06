@@ -20,6 +20,7 @@ import {
   saveAccountSession,
   senderSummary,
   updateAccountStatus,
+  usesBotSender,
 } from "./account-store.js";
 import { withDispatchContext } from "./dispatch-context.js";
 import { isFatalSessionError, readProSettings } from "./posting-engine-enhancements.js";
@@ -164,7 +165,7 @@ function normalizeSavedGroups(value) {
       label: String(item.label || item.title || id).slice(0, 120),
       type: String(item.type || "group"),
       username: item.username ? String(item.username) : "",
-      accountMode: ["inherit", "all", "selected"].includes(item.accountMode) ? item.accountMode : "inherit",
+      accountMode: ["inherit", "bot", "all", "selected"].includes(item.accountMode) ? item.accountMode : "inherit",
       accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String))],
     });
   }
@@ -598,7 +599,7 @@ async function completeLogin(attempt, user) {
   if (previous && previous !== attempt.client) try { await previous.disconnect(); } catch {}
   state.personalClients.set(account.id, attempt.client);
   const accounts = listAccounts(state.uid);
-  if (!(state.selectedAccountIds || []).length) state.selectedAccountIds = [account.id];
+  if (state.senderMode !== "bot" && !(state.selectedAccountIds || []).length) state.selectedAccountIds = [account.id];
   state.selectedAccountIds = normalizeAccountSelection(state, accounts).selected;
   state.personalUsername = accounts.length === 1 ? account.username : "";
   saveState(state);
@@ -870,7 +871,8 @@ function personalDialogPeerId(dialog) {
 async function resolveDestination(target, ownerUid) {
   const ownerState = ownerUid ? getState(ownerUid) : null;
   const accounts = ownerState ? listAccounts(ownerState.uid) : [];
-  if (ownerState && accounts.length) {
+  const botSender = ownerState ? usesBotSender(ownerState, null, accounts) : true;
+  if (ownerState && accounts.length && !botSender) {
     if (!String(target).startsWith("@")) throw new Error("Personal-account setup needs a public @username or t.me link. Private groups can be added with /addhere.");
     const wanted = String(target).slice(1).toLowerCase();
     let matched = null;
@@ -886,7 +888,7 @@ async function resolveDestination(target, ownerUid) {
       matched = dialog;
       break;
     }
-    if (!matched) throw new Error(`None of your connected accounts can currently post to @${wanted}. Join it with at least one sender account and check channel permissions.`);
+    if (!matched) throw new Error(`None of your selected sender accounts can currently post to @${wanted}. Join it with at least one sender account and check channel permissions.`);
     let chat = null;
     try { chat = await bot.api.getChat(`@${wanted}`); } catch {}
     if (chat && ["group", "supergroup", "channel"].includes(chat.type)) return { id: String(chat.id), label: String(chat.title || chat.username || chat.id).slice(0,120), type: chat.type, username: chat.username ? `@${chat.username}` : `@${wanted}`, accountMode: "inherit", accountIds: [] };
@@ -905,11 +907,10 @@ async function resolveDestination(target, ownerUid) {
   if (ownerUid) {
     let ownerMember;
     try { ownerMember = await bot.api.getChatMember(chat.id, Number(ownerUid)); } catch { throw new Error("I could not verify that you are an admin of that destination."); }
-    if (!["creator", "administrator"].includes(ownerMember.status)) throw new Error("Only an admin of that group/channel can add it to their TelePilot profile.");
+    if (!["creator", "administrator"].includes(ownerMember.status)) throw new Error("Only an admin of that group/channel can add it while TelePilot Bot is the sender.");
   }
   return { id: String(chat.id), label: String(chat.title || chat.username || chat.id).slice(0,120), type: chat.type, username: chat.username ? `@${chat.username}` : "", accountMode: "inherit", accountIds: [] };
 }
-
 function stopPostingLoop(state, persist = true) {
   state.posting = false;
   state.nextRunAt = null;
@@ -945,8 +946,9 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
   let success = 0, failed = 0;
   for (const target of targets) {
     if (!state.posting || !hasAccess(state)) break;
-    const ids = effectiveAccountIds(state, target, accounts);
-    if (!accounts.length) {
+    const botSender = usesBotSender(state, target, accounts);
+    const ids = botSender ? [] : effectiveAccountIds(state, target, accounts);
+    if (botSender) {
       try {
         const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"bot", senderLabel:"TelePilot Bot", autoDisableEligible:true }, () => bot.api.sendMessage(target.id, message, state.adEntities.length ? { entities:state.adEntities } : {}));
         if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
@@ -1039,9 +1041,10 @@ function groupsKeyboard(state) {
   return kb.text("⬅️ Back", "home");
 }
 async function showGroups(ctx, state) {
-  const hint = hasPersonalSession(state.uid)
-    ? "Paste one or many public destinations (one per line). Use Routing to choose which accounts post to each destination and which message template it uses."
-    : "Paste one or many public destinations (one per line). @TelePilottBot must have posting permissions; private groups can use /addhere.";
+  const accounts = listAccounts(state.uid);
+  const hint = usesBotSender(state, null, accounts)
+    ? "Paste one or many public destinations (one per line). @TelePilottBot must have posting permissions; private groups can use /addhere."
+    : "Paste one or many public destinations (one per line). Use Routing to choose which accounts post to each destination and which message template it uses.";
   await ctx.editMessageText(
     `👥 GROUPS & CHANNELS\n\n${groupList(state)}\n\n${hint}`,
     { reply_markup: groupsKeyboard(state) },
@@ -1071,8 +1074,9 @@ async function showRemoveGroupPage(ctx, state, requestedPage = 0) {
 const ROUTE_PAGE_SIZE = 8;
 const ACCOUNT_PAGE_SIZE = 8;
 function routeAccountLabel(state, group) {
-  const accounts = listAccounts(state.uid), ids = effectiveAccountIds(state, group, accounts);
-  if (!accounts.length) return "TelePilot Bot";
+  const accounts = listAccounts(state.uid);
+  if (usesBotSender(state, group, accounts)) return "TelePilot Bot";
+  const ids = effectiveAccountIds(state, group, accounts);
   if (group.accountMode === "all") return `All ${accounts.length} accounts`;
   if (group.accountMode === "selected") return `${ids.length} selected account${ids.length === 1 ? "" : "s"}`;
   return `Inherit · ${senderSummary(state, accounts)}`;
@@ -1082,13 +1086,36 @@ async function showRoutingPage(ctx, state, requestedPage=0) {
   state.groups.slice(start,start+ROUTE_PAGE_SIZE).forEach((g,o)=>kb.text(`🎯 ${destinationLabel(g).slice(0,36)}`,`route_dest:${start+o}:${page}`).row());
   if(pages>1){if(page>0)kb.text("◀ Prev",`route_groups:${page-1}`);if(page<pages-1)kb.text("Next ▶",`route_groups:${page+1}`);kb.row();}
   kb.text("⬅️ Destinations","groups");
-  await ctx.editMessageText(`🎯 DESTINATION ROUTING\n\nChoose a destination. Each destination can inherit your global sender selection, use all accounts, or use selected accounts. You can also assign a different saved message template.\n\nPage ${page+1}/${pages}`,{reply_markup:kb});
-}
-async function showRouteDestination(ctx,state,index,backPage=0){const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);const pro=readProSettings(state.uid),overrideId=String(pro.destinationOverrides?.[String(group.id)]||""),template=(pro.templates||[]).find(t=>String(t.id)===overrideId),kb=new InlineKeyboard().text("Inherit senders",`route_mode:${index}:inherit:${backPage}`).text("All accounts",`route_mode:${index}:all:${backPage}`).row().text("Choose accounts",`route_accounts:${index}:0:${backPage}`).row().text("📝 Choose message",`v1_override_dest:${index}`).row().text("⬅️ Routing",`route_groups:${backPage}`);await ctx.editMessageText(["🎯 DESTINATION ROUTING",destinationLabel(group),"",`Senders — ${routeAccountLabel(state,group)}`,`Message — ${template?String(template.name||"Template"):"Default / rotation"}`,"","This destination can use different sender accounts and a different message from your other destinations."].join("\n"),{reply_markup:kb});}
-async function showRouteAccounts(ctx,state,index,requestedPage=0,backPage=0){const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);const accounts=listAccounts(state.uid),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),selected=new Set((group.accountIds||[]).map(String)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`route_account_toggle:${index}:${a.id}:${page}:${backPage}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`route_accounts:${index}:${page-1}:${backPage}`);if(page<pages-1)kb.text("Next ▶",`route_accounts:${index}:${page+1}:${backPage}`);kb.row();}kb.text("⬅️ Destination",`route_dest:${index}:${backPage}`);await ctx.editMessageText(`👤 ROUTE SENDERS\n\n${destinationLabel(group)}\nSelected — ${selected.size}\n\nToggle any number of connected accounts. There is no TelePilot account-count limit.`,{reply_markup:kb});}
-async function showAccounts(ctx,state,requestedPage=0){clearAwaiting(state);const accounts=listAccounts(state.uid),selection=normalizeAccountSelection(state,accounts),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard().text("＋ Add account","account_phone").row();if(accounts.length)kb.text(selection.mode==="all"?"✅ All accounts":"Use all accounts","account_mode_all").text(selection.mode==="selected"?"✅ Selected":"Choose accounts","account_select:0").row();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${a.status==="needs-reconnect"?"⚠️":"👤"} ${accountDisplayLabel(a).slice(0,36)}`,`account_detail:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account:${page+1}`);kb.row();}kb.text("⬅️ Dashboard","home");await ctx.editMessageText(["👤 SENDER ACCOUNTS",`Connected — ${accounts.length}`,`Posting mode — ${senderSummary(state,accounts)}`,"","Connect as many Telegram accounts as you need, then post from all of them or any selected set. Destination Routing can override the sender set per group/channel."].join("\n"),{reply_markup:kb});}
-async function showAccountSelection(ctx,state,requestedPage=0){const accounts=listAccounts(state.uid),selected=new Set((state.selectedAccountIds||[]).map(String)),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`account_toggle:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account_select:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account_select:${page+1}`);kb.row();}kb.text("⬅️ Senders","account");await ctx.editMessageText(`👤 CHOOSE SENDER ACCOUNTS\n\nSelected — ${selected.size}\n\nToggle any accounts. Selected mode sends each routed post from every selected account.`,{reply_markup:kb});}
+  await ctx.editMessageText(`🎯 DESTINATION ROUTING
 
+Choose a destination. Each destination can inherit your global sender selection, use TelePilot Bot, use all connected accounts, or use selected accounts. You can also assign a different saved message template.
+
+Page ${page+1}/${pages}`,{reply_markup:kb});
+}
+async function showRouteDestination(ctx,state,index,backPage=0){
+  const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);
+  const pro=readProSettings(state.uid),overrideId=String(pro.destinationOverrides?.[String(group.id)]||""),template=(pro.templates||[]).find(t=>String(t.id)===overrideId);
+  const kb=new InlineKeyboard().text("Inherit senders",`route_mode:${index}:inherit:${backPage}`).text("TelePilot Bot",`route_mode:${index}:bot:${backPage}`).row().text("All accounts",`route_mode:${index}:all:${backPage}`).text("Choose accounts",`route_accounts:${index}:0:${backPage}`).row().text("📝 Choose message",`v1_override_dest:${index}`).row().text("⬅️ Routing",`route_groups:${backPage}`);
+  await ctx.editMessageText(["🎯 DESTINATION ROUTING",destinationLabel(group),"",`Senders — ${routeAccountLabel(state,group)}`,`Message — ${template?String(template.name||"Template"):"Default / rotation"}`,"","This destination can use TelePilot Bot, different sender accounts and a different message from your other destinations."].join("\n"),{reply_markup:kb});
+}
+async function showRouteAccounts(ctx,state,index,requestedPage=0,backPage=0){const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);const accounts=listAccounts(state.uid),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),selected=new Set((group.accountIds||[]).map(String)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`route_account_toggle:${index}:${a.id}:${page}:${backPage}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`route_accounts:${index}:${page-1}:${backPage}`);if(page<pages-1)kb.text("Next ▶",`route_accounts:${index}:${page+1}:${backPage}`);kb.row();}kb.text("⬅️ Destination",`route_dest:${index}:${backPage}`);await ctx.editMessageText(`👤 ROUTE SENDERS
+
+${destinationLabel(group)}
+Selected — ${selected.size}
+
+Toggle any number of connected accounts. There is no TelePilot account-count limit.`,{reply_markup:kb});}
+async function showAccounts(ctx,state,requestedPage=0){
+  clearAwaiting(state);const accounts=listAccounts(state.uid),selection=normalizeAccountSelection(state,accounts),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard().text("＋ Add account","account_phone").row();
+  kb.text(selection.mode==="bot"?"✅ TelePilot Bot":"Use TelePilot Bot","account_mode_bot").row();
+  if(accounts.length)kb.text(selection.mode==="all"?"✅ All accounts":"Use all accounts","account_mode_all").text(selection.mode==="selected"?"✅ Selected":"Choose accounts","account_select:0").row();
+  accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${a.status==="needs-reconnect"?"⚠️":"👤"} ${accountDisplayLabel(a).slice(0,36)}`,`account_detail:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account:${page+1}`);kb.row();}kb.text("⬅️ Dashboard","home");
+  await ctx.editMessageText(["👤 SENDER ACCOUNTS",`Connected — ${accounts.length}`,`Posting mode — ${senderSummary(state,accounts)}`,"","Keep personal accounts connected without being forced to use them. Choose TelePilot Bot, all connected accounts, or any selected set. Destination Routing can override the sender per group/channel."].join("\n"),{reply_markup:kb});
+}
+async function showAccountSelection(ctx,state,requestedPage=0){const accounts=listAccounts(state.uid),selected=new Set((state.selectedAccountIds||[]).map(String)),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`account_toggle:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account_select:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account_select:${page+1}`);kb.row();}kb.text("⬅️ Senders","account");await ctx.editMessageText(`👤 CHOOSE SENDER ACCOUNTS
+
+Selected — ${selected.size}
+
+Toggle any accounts. Selected mode sends each routed post from every selected account.`,{reply_markup:kb});}
 function htmlPage(token) {
   const safeToken = JSON.stringify(String(token));
   return `<!doctype html>
@@ -2210,16 +2237,13 @@ bot.command("addhere", async ctx => {
   let ownerMember;
   try { ownerMember = await bot.api.getChatMember(ctx.chat.id, ctx.from.id); }
   catch { return ctx.reply("I couldn't verify your group permissions."); }
-  if (hasPersonalSession(state.uid)) {
-    if (["left", "kicked"].includes(ownerMember.status)
-      || (ownerMember.status === "restricted" && ownerMember.can_send_messages !== true)) {
-      return ctx.reply("Your connected personal account does not currently have permission to post in this group.");
-    }
-  } else if (!["creator", "administrator"].includes(ownerMember.status)) {
+  const accounts = listAccounts(state.uid);
+  const botSender = usesBotSender(state, null, accounts);
+  if (botSender && !["creator", "administrator"].includes(ownerMember.status)) {
     return ctx.reply("Only a group admin can link this group when using TelePilot Bot as the sender.");
   }
 
-  if (!hasPersonalSession(state.uid)) {
+  if (botSender) {
     let botMember;
     try { botMember = await bot.api.getChatMember(ctx.chat.id, BOT_USER_ID); }
     catch { return ctx.reply("I couldn't verify TelePilot's permissions in this group."); }
@@ -2282,6 +2306,7 @@ bot.callbackQuery("account_phone", async ctx => {
   await ctx.answerCallbackQuery(); const state=stateFromCtx(ctx); state.awaiting="phone"; state.awaitingPromptMessageId=ctx.callbackQuery.message?.message_id||null; state.awaitingPromptChatId=ctx.chat?.id||null;
   await ctx.editMessageText("📱 CONNECT ACCOUNT\n\nSend the phone number for the Telegram account you want to add, including country code.\n\nYou can connect additional accounts the same way later.\n\nExample: +37120000000",{reply_markup:new InlineKeyboard().text("⬅️ Cancel","account")});
 });
+bot.callbackQuery("account_mode_bot", async ctx => { const state=stateFromCtx(ctx);state.senderMode="bot";saveState(state);await ctx.answerCallbackQuery({text:"Posting with TelePilot Bot"});await showAccounts(ctx,state,0); });
 bot.callbackQuery("account_mode_all", async ctx => { const state=stateFromCtx(ctx);state.senderMode="all";saveState(state);await ctx.answerCallbackQuery({text:"Posting from all connected accounts"});await showAccounts(ctx,state,0); });
 bot.callbackQuery(/^account_select:(\d+)$/, async ctx => {const state=stateFromCtx(ctx);state.senderMode="selected";saveState(state);await ctx.answerCallbackQuery();await showAccountSelection(ctx,state,Number(ctx.match[1]));});
 bot.callbackQuery(/^account_toggle:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),id=String(ctx.match[1]),set=new Set((state.selectedAccountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);state.senderMode="selected";state.selectedAccountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Selected":"Deselected"});await showAccountSelection(ctx,state,Number(ctx.match[2]));});
@@ -2342,9 +2367,10 @@ bot.callbackQuery("add_group", async ctx => {
   state.awaiting = "group";
   state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
   state.awaitingPromptChatId = ctx.chat?.id || null;
-  const instructions = hasPersonalSession(state.uid)
-    ? "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\nAt least one connected account must already be joined and able to post. After adding, open Routing to choose exactly which account(s) post to each destination. Private groups without a username can use /addhere."
-    : "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\n@TelePilottBot must be an admin with posting permission in each destination. For private groups, use /addhere inside the group.";
+  const accounts = listAccounts(state.uid);
+  const instructions = usesBotSender(state, null, accounts)
+    ? "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\n@TelePilottBot must be an admin with posting permission in each destination. For private groups, use /addhere inside the group."
+    : "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\nAt least one selected connected account must already be joined and able to post. After adding, open Routing to choose exactly which account(s) post to each destination. Private groups without a username can use /addhere.";
   await ctx.editMessageText(
     instructions,
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "groups") },
@@ -2352,7 +2378,7 @@ bot.callbackQuery("add_group", async ctx => {
 });
 bot.callbackQuery(/^route_groups:(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRoutingPage(ctx,stateFromCtx(ctx),Number(ctx.match[1]));});
 bot.callbackQuery(/^route_dest:(\d+):(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRouteDestination(ctx,stateFromCtx(ctx),Number(ctx.match[1]),Number(ctx.match[2]));});
-bot.callbackQuery(/^route_mode:(\d+):(inherit|all):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode=ctx.match[2];if(group.accountMode!=="selected")group.accountIds=[];saveState(state);await ctx.answerCallbackQuery({text:group.accountMode==="all"?"Using all accounts":"Using global sender selection"});await showRouteDestination(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]));});
+bot.callbackQuery(/^route_mode:(\d+):(inherit|bot|all):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode=ctx.match[2];if(group.accountMode!=="selected")group.accountIds=[];saveState(state);const notice=group.accountMode==="all"?"Using all accounts":group.accountMode==="bot"?"Using TelePilot Bot":"Using global sender selection";await ctx.answerCallbackQuery({text:notice});await showRouteDestination(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]));});
 bot.callbackQuery(/^route_accounts:(\d+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode="selected";saveState(state);await ctx.answerCallbackQuery();await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[2]),Number(ctx.match[3]));});
 bot.callbackQuery(/^route_account_toggle:(\d+):([A-Za-z0-9_-]+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});const id=String(ctx.match[2]),set=new Set((group.accountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);group.accountMode="selected";group.accountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Added to route":"Removed from route"});await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]),Number(ctx.match[4]));});
 

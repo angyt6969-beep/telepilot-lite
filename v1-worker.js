@@ -8,6 +8,7 @@ import {
   listAccounts,
   loadAccountSession,
   updateAccountStatus,
+  usesBotSender,
 } from "./account-store.js";
 import { withDispatchContext } from "./dispatch-context.js";
 import { isFatalSessionError, listUserIds, readAppSettings } from "./posting-engine-enhancements.js";
@@ -43,17 +44,18 @@ async function personalTarget(client,destination,dialogCache){if(destination?.us
 async function sendCycle(uid,settings,bot,options={}){
   const groups=Array.isArray(settings.groups)?settings.groups:[];
   if(!groups.length||!settings.adMessage)return{sent:0,failed:0,skipped:0,delivered:[],errors:["Missing message or destination"]};
-  const accounts=listAccounts(uid), clients=new Map(), dialogCaches=new Map();
+  const accounts=listAccounts(uid),clients=new Map(),dialogCaches=new Map();
   const delivered=new Set(Array.isArray(options.delivered)?options.delivered.map(String):[]);
-  const newlyDelivered=[], errors=[];let sent=0,failed=0,skipped=0;
-  const cycleId=String(options.cycleId||`worker:${uid}:${Date.now()}`), forcedTemplateId=String(options.templateId||"");
+  const newlyDelivered=[],errors=[];let sent=0,failed=0,skipped=0;
+  const cycleId=String(options.cycleId||`worker:${uid}:${Date.now()}`),forcedTemplateId=String(options.templateId||"");
+  const byId=new Map(accounts.map(a=>[String(a.id),a]));
   try{
-    if(!accounts.length){
-      for(const destination of groups){const key=deliveryId(destination,"");if(delivered.has(key))continue;try{const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,settings.adEntities?.length?{entities:settings.adEntities}:{}));if(result?.__telepilotSkipped)skipped++;else sent++;newlyDelivered.push(key);}catch(err){failed++;errors.push(String(err?.description||err?.message||err).slice(0,180));}}
-      return{sent,failed,skipped,delivered:newlyDelivered,errors};
-    }
-    const byId=new Map(accounts.map(a=>[String(a.id),a]));
     for(const destination of groups){
+      if(usesBotSender(settings,destination,accounts)){
+        const key=deliveryId(destination,"");if(delivered.has(key))continue;
+        try{const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,settings.adEntities?.length?{entities:settings.adEntities}:{}));if(result?.__telepilotSkipped)skipped++;else sent++;newlyDelivered.push(key);}catch(err){failed++;errors.push(String(err?.description||err?.message||err).slice(0,180));}
+        continue;
+      }
       const accountIds=effectiveAccountIds(settings,destination,accounts);
       if(!accountIds.length){skipped++;continue;}
       for(const accountId of accountIds){
