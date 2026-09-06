@@ -1,11 +1,11 @@
-import fs from "node:fs";
-import path from "node:path";
+import crypto from "node:crypto";
 import { InlineKeyboard } from "grammy";
+import { effectiveAccountIds, listAccounts, usesBotSender } from "./account-store.js";
+import { destinationAccountReady } from "./destination-automation.js";
 import { readAppSettings, writeAppSettings } from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
 import { readQolState, writeQolState } from "./qol-store.js";
-
-const DATA_DIR = process.env.DATA_DIR || "/data";
+import { readV1, writeV1 } from "./v1-engine.js";
 
 function uidOf(ctx) { return String(ctx?.from?.id || ""); }
 function inline(text, callback_data) { return { text, callback_data }; }
@@ -33,7 +33,6 @@ function insertBeforeDashboard(other, row) {
 }
 function transformTutorial(text, other) {
   let value = String(text || "");
-  let next = other;
   if (value.startsWith("👋 Welcome to TelePilot")) {
     value = value.replace(
       "The main app is organized into Home, Posting Setup, Accounts, Destinations and Settings.",
@@ -52,11 +51,14 @@ function transformTutorial(text, other) {
       "We will configure Accounts → Destinations/Addlists → Posting Setup → Preview, then use Activity to monitor it.",
     );
   }
-  return { text: value, other: next };
+  return { text: value, other };
 }
 function transform(text, other) {
   let result = transformTutorial(text, other);
   const value = String(result.text || "");
+  if (value.startsWith("📝 Posting Setup") && !hasCallback(result.other, "v1_send_once_v13")) {
+    result.other = insertBeforeDashboard(result.other, [inline("⚡ Send Once", "v1_send_once_v13"), inline("🕒 Schedule Once", "v1_once_add")]);
+  }
   if (value.startsWith("📁 Destinations") && !hasCallback(result.other, "v1_dest_browse_v13")) {
     result.other = insertBeforeDashboard(result.other, [inline("📋 Browse", "v1_dest_browse_v13")]);
   }
@@ -88,7 +90,69 @@ function removeImportedDestinations(uid, importId) {
   try { syncUserGroups(uid); } catch {}
   return { ok: true, removed };
 }
+function readyDestinationCount(uid) {
+  const settings = readAppSettings(uid);
+  const accounts = listAccounts(uid);
+  const pro = readV1(uid);
+  const disabled = new Set((pro.disabledDestinationIds || []).map(String));
+  let ready = 0;
+  for (const group of settings.groups || []) {
+    if (disabled.has(String(group?.id || ""))) continue;
+    if (group?.topicRequired === true && !Number(group?.topicId || 0)) continue;
+    if (usesBotSender(settings, group, accounts)) { ready++; continue; }
+    const ids = effectiveAccountIds(settings, group, accounts);
+    if (ids.some(accountId => destinationAccountReady(group, accountId))) ready++;
+  }
+  return ready;
+}
+function queueSendOnce(uid) {
+  const settings = readAppSettings(uid);
+  const pro = readV1(uid);
+  if (!String(settings.adMessage || "").trim()) return { ok: false, error: "Set a message first." };
+  const ready = readyDestinationCount(uid);
+  if (!ready) return { ok: false, error: "No destination is ready. Fix destination issues first." };
+  if (pro.paused === true) return { ok: false, error: "Posting is paused. Resume it from Activity before sending once." };
+  const recent = (pro.oneTimeJobs || []).find(job => job?.quickSend === true && (!job.status || job.status === "pending") && Number(job.createdAt || 0) > Date.now() - 30_000);
+  if (recent) return { ok: false, queued: true, error: "A Send Once job is already queued." };
+  pro.oneTimeJobs ||= [];
+  pro.oneTimeJobs.push({
+    id: `quick_${crypto.randomBytes(5).toString("hex")}`,
+    runAt: Date.now(),
+    templateId: "",
+    status: "pending",
+    createdAt: Date.now(),
+    nextAttemptAt: 0,
+    delivered: [],
+    attempts: 0,
+    quickSend: true,
+  });
+  writeV1(uid, pro);
+  return { ok: true, ready };
+}
 function registerCallbacks(bot) {
+  bot.callbackQuery("v1_send_once_v13", async ctx => {
+    const uid = uidOf(ctx);
+    const result = queueSendOnce(uid);
+    await ctx.answerCallbackQuery({
+      text: result.ok ? `Queued for ${result.ready} ready destination${result.ready === 1 ? "" : "s"}.` : result.error,
+      show_alert: !result.ok && !result.queued,
+    });
+    if (!result.ok) return;
+    await ctx.editMessageText([
+      "⚡ Send Once queued",
+      "",
+      `Ready destinations  ${result.ready}`,
+      "",
+      "The one-time worker will send this setup on its next scheduler tick (normally within about 30 seconds). It does not turn interval posting on.",
+      "",
+      "Open Activity to watch the result.",
+    ].join("\n"), {
+      reply_markup: new InlineKeyboard()
+        .text("📊 Activity", "v1_activity_v13")
+        .row()
+        .text("📝 Posting Setup", "v1_posting_setup_v13"),
+    });
+  });
   bot.callbackQuery("v1_import_undo_v13", async ctx => {
     const uid = uidOf(ctx);
     const row = latestUndoableImport(uid);
