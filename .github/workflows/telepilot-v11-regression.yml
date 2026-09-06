@@ -36,4 +36,6 @@ jobs:
         run: |
           for f in app.js account-store.js dispatch-context.js login-attempt-store.js runtime-hooks.js posting-engine-enhancements.js pro-controls.js security-core.js support-center.js v1-controls.js v1-engine.js v1-worker.js onboarding.js startup.js; do node --check "$f"; done
       - name: Existing tests
+        env:
+          TELEPILOT_SECURITY_SECRET: test-only-regression-secret-012345678901234567890
         run: npm test
