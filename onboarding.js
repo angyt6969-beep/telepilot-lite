@@ -147,6 +147,7 @@ function setupPage2(uid) {
 function setupPage3(uid) {
   const saved = settingsFor(uid);
   const groups = Array.isArray(saved.groups) ? saved.groups : [];
+  const needsTopic = groups.filter(group => group?.topicRequired === true && !Number(group?.topicId || 0)).length;
   return {
     text: [
       "📍 Step 2 of 5 — Destinations",
@@ -155,11 +156,14 @@ function setupPage3(uid) {
       "",
       "Paste public links, private invite links or a t.me/addlist/... shared folder. With a personal sender selected, TelePilot automatically joins missing groups.",
       "",
-      "If a group uses forum topics, TelePilot asks you to choose the exact topic. Join requests and verification stay Pending instead of blocking the rest of your setup."
-    ].join("\n"),
-    keyboard: groups.length
+      "If a group uses forum topics, TelePilot asks you to choose the exact topic. Join requests and verification stay Pending instead of blocking the rest of your setup.",
+      needsTopic ? `\n💬 ${needsTopic} forum destination${needsTopic === 1 ? " still needs" : "s still need"} a posting topic before this tutorial continues.` : ""
+    ].filter(Boolean).join("\n"),
+    keyboard: groups.length && needsTopic === 0
       ? new InlineKeyboard().text("📍 Destinations", "groups").row().text("← Back", "tutorial:2").text("Next →", "tutorial:4").row().text("Skip", "tutorial:skip")
-      : new InlineKeyboard().text("＋ Add Destinations", "groups").row().text("← Back", "tutorial:2").text("Skip", "tutorial:skip"),
+      : groups.length
+        ? new InlineKeyboard().text("💬 Choose Topics", "dest_topics").row().text("📍 Destinations", "groups").row().text("← Back", "tutorial:2").text("Skip", "tutorial:skip")
+        : new InlineKeyboard().text("＋ Add Destinations", "groups").row().text("← Back", "tutorial:2").text("Skip", "tutorial:skip"),
   };
 }
 

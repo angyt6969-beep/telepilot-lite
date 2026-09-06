@@ -12,12 +12,13 @@ import {
 } from "./account-store.js";
 import { listUserIds, readAppSettings, writeAppSettings } from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
+import { advanceTutorialAfterAction } from "./onboarding.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
-const WORKER_INTERVAL_MS = 5 * 60_000;
+const WORKER_INTERVAL_MS = 60_000;
 const JOIN_GAP_MS = 1400;
 const TOPIC_PAGE_SIZE = 8;
 const RECHECK_PER_TICK = 12;
@@ -40,6 +41,7 @@ function readAutomation(uid) {
     version: 1,
     topicQueue: Array.isArray(raw.topicQueue) ? raw.topicQueue : [],
     unresolvedInvites: Array.isArray(raw.unresolvedInvites) ? raw.unresolvedInvites : [],
+    routingQueue: Array.isArray(raw.routingQueue) ? raw.routingQueue : [],
     lastWorkerAt: Number(raw.lastWorkerAt || 0) || 0,
   };
 }
@@ -48,6 +50,7 @@ function writeAutomation(uid, value) {
     version: 1,
     topicQueue: Array.isArray(value?.topicQueue) ? value.topicQueue.slice(-500) : [],
     unresolvedInvites: Array.isArray(value?.unresolvedInvites) ? value.unresolvedInvites.slice(-500) : [],
+    routingQueue: Array.isArray(value?.routingQueue) ? value.routingQueue.slice(-1000) : [],
     lastWorkerAt: Number(value?.lastWorkerAt || 0) || 0,
   };
   writeJsonAtomic(automationPath(uid), normalized);
@@ -655,6 +658,183 @@ async function showPending(ctx) {
   ].join("\n"), { reply_markup: kb });
 }
 
+function setGroupAccountStatus(uid, destinationId, accountId, status, reason = "") {
+  const settings = readAppSettings(uid);
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const group = groups.find(row => String(row?.id || "") === String(destinationId || ""));
+  if (!group) return false;
+  group.accountJoin = { ...(group.accountJoin || {}) };
+  group.accountJoin[String(accountId)] = accountJoinEntry(status, reason);
+  group.joinStatus = overallStatus(group);
+  writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+  syncUserGroups(uid);
+  return true;
+}
+
+export function queueRoutingSync(uid, destinationId = "", onlyAccountIds = []) {
+  const id = String(uid || "");
+  if (!id) return 0;
+  const settings = readAppSettings(id);
+  const accounts = listAccounts(id);
+  const filter = new Set((Array.isArray(onlyAccountIds) ? onlyAccountIds : []).map(String));
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const store = readAutomation(id);
+  const existing = new Set((store.routingQueue || []).map(row => `${row.destinationId}|${row.accountId}`));
+  let queued = 0, changed = false;
+  for (const group of groups) {
+    if (destinationId && String(group.id) !== String(destinationId)) continue;
+    const required = effectiveAccountIds(settings, group, accounts).map(String);
+    for (const accountId of required) {
+      if (filter.size && !filter.has(accountId)) continue;
+      const current = group.accountJoin?.[accountId];
+      if (current?.status === "ready") continue;
+      const key = `${group.id}|${accountId}`;
+      if (!existing.has(key)) {
+        store.routingQueue.push({ destinationId: String(group.id), accountId, queuedAt: Date.now() });
+        existing.add(key);
+        queued++;
+      }
+      if (!current) {
+        group.accountJoin = { ...(group.accountJoin || {}) };
+        group.accountJoin[accountId] = accountJoinEntry("pending", "TelePilot is preparing this destination for the selected sender account.");
+        group.joinStatus = overallStatus(group);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    writeAppSettings(id, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+    syncUserGroups(id);
+  }
+  writeAutomation(id, store);
+  return queued;
+}
+
+async function joinOneAddlistDestination(client, group) {
+  const slug = String(group?.sourceSlug || "");
+  if (!slug) throw new Error("The original Addlist is unavailable for this destination.");
+  const invite = await client.api.chatlists.checkChatlistInvite({ slug });
+  const chats = Array.isArray(invite?.chats) ? invite.chats : [];
+  const wanted = String(group.id || "").replace(/^-100/, "").replace(/^-/, "").replace(/\D/g, "");
+  let entity = chats.find(chat => idString(chat?.id || "").replace(/\D/g, "") === wanted) || null;
+  const isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
+  const peers = isAlready
+    ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : [])
+    : (Array.isArray(invite?.peers) ? invite.peers : []);
+  const peer = peers.find(row => peerKey(row) === wanted) || null;
+  if (peer) {
+    const input = await inputPeer(client, entity || peer);
+    try {
+      if (isAlready) {
+        await client.api.chatlists.joinChatlistUpdates({
+          chatlist: new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) }),
+          peers: [input],
+        });
+      } else {
+        await client.api.chatlists.joinChatlistInvite({ slug, peers: [input] });
+      }
+    } catch (err) {
+      if (errorCode(err).includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
+      throw err;
+    }
+  }
+  if (!entity) {
+    try { entity = await client.getEntity(group.id); } catch {}
+  }
+  return entity
+    ? { entity, status: "ready", reason: "" }
+    : { entity: null, status: "failed", reason: "Telegram could not resolve this Addlist destination for the selected account." };
+}
+
+async function prepareExistingDestination(uid, group, account, client) {
+  let joined;
+  if (group.username) {
+    joined = await joinPublic(client, { kind: "public", username: normalizeUsername(group.username), original: group.username });
+  } else if (group.source === "invite" && group.sourceSlug) {
+    joined = await joinPrivateInvite(client, { kind: "invite", hash: group.sourceSlug, original: "Private invite" });
+  } else if (group.source === "addlist" && group.sourceSlug) {
+    joined = await joinOneAddlistDestination(client, group);
+  } else {
+    let entity = null;
+    try { entity = await client.getEntity(group.id); } catch {}
+    joined = entity
+      ? { entity, status: "ready", reason: "" }
+      : { entity: null, status: "failed", reason: "This private destination has no reusable invite. Add it again with its invite or Addlist link." };
+  }
+  if (!joined.entity) {
+    setGroupAccountStatus(uid, group.id, account.id, joined.status || "failed", joined.reason || "Destination is not ready.");
+    if (joined.status === "pending" && group.source === "invite" && group.sourceSlug) {
+      addUnresolvedInvite(uid, { accountId: account.id, kind: "invite", hash: group.sourceSlug, original: group.label || "Private invite", status: "pending", reason: joined.reason });
+    }
+    return false;
+  }
+  await processEntityForAccount(uid, account, client, joined.entity, {
+    kind: group.source || (group.username ? "public" : "existing"),
+    slug: group.source === "addlist" ? group.sourceSlug : "",
+    hash: group.source === "invite" ? group.sourceSlug : "",
+    original: group.username || group.label || group.id,
+  });
+  return true;
+}
+
+export async function processRoutingQueue(uid, maxItems = 4) {
+  const id = String(uid || "");
+  const accounts = listAccounts(id);
+  const byId = new Map(accounts.map(account => [String(account.id), account]));
+  const initial = readAutomation(id);
+  const work = (initial.routingQueue || []).slice(0, Math.max(1, Number(maxItems) || 4));
+  if (!work.length) return { checked: 0, changed: 0 };
+  const processed = new Set();
+  const clients = new Map();
+  let checked = 0, changed = 0;
+  try {
+    for (const item of work) {
+      const key = `${item.destinationId}|${item.accountId}`;
+      const settings = readAppSettings(id);
+      const group = (settings.groups || []).find(row => String(row.id) === String(item.destinationId));
+      const account = byId.get(String(item.accountId));
+      if (!group || !account || !effectiveAccountIds(settings, group, accounts).map(String).includes(String(account.id))) {
+        processed.add(key);
+        continue;
+      }
+      let client = clients.get(account.id);
+      if (!client) {
+        try { client = await openAccountClient(id, account); clients.set(account.id, client); }
+        catch (err) {
+          setGroupAccountStatus(id, group.id, account.id, "failed", `Sender connection failed: ${String(err?.message || err).slice(0, 120)}`);
+          processed.add(key);
+          continue;
+        }
+      }
+      checked++;
+      try {
+        changed += (await prepareExistingDestination(id, group, account, client)) ? 1 : 0;
+        processed.add(key);
+      } catch (err) {
+        const code = errorCode(err);
+        if (code.includes("FLOOD_WAIT")) break;
+        const reason = code.includes("CHANNELS_TOO_MUCH")
+          ? "This account has reached Telegram's joined-channel limit."
+          : code.includes("INVITE_SLUG_EXPIRED") || code.includes("INVITE_HASH_EXPIRED")
+            ? "The original invite has expired."
+            : String(err?.message || err).slice(0, 160);
+        setGroupAccountStatus(id, group.id, account.id, "failed", reason);
+        processed.add(key);
+      }
+      await sleep(JOIN_GAP_MS);
+    }
+  } finally {
+    for (const client of clients.values()) try { await client.disconnect(); } catch {}
+  }
+  if (processed.size) {
+    const latest = readAutomation(id);
+    latest.routingQueue = (latest.routingQueue || []).filter(row => !processed.has(`${row.destinationId}|${row.accountId}`));
+    writeAutomation(id, latest);
+  }
+  if (changed) syncUserGroups(id);
+  return { checked, changed };
+}
+
 async function resolveForRecheck(client, group) {
   if (group.username) return client.getEntity(group.username);
   return client.getEntity(group.id);
@@ -740,6 +920,9 @@ function installHandlers(bot) {
     const result = chooseTopic(String(ctx.from?.id || ""), String(ctx.match?.[1] || ""), Number(ctx.match?.[2] || 0));
     if (!result) return ctx.answerCallbackQuery({ text: "That topic is no longer available.", show_alert: true });
     await ctx.answerCallbackQuery({ text: `Posting topic: ${result.topic.title}` });
+    const remaining = topicQueueForGroups(String(ctx.from?.id || ""));
+    const tutorialScreen = remaining.length ? null : advanceTutorialAfterAction(String(ctx.from?.id || ""), 3, 4);
+    if (tutorialScreen) return ctx.editMessageText(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard });
     await showTopicIndex(ctx);
   });
   bot.callbackQuery("dest_pending", async ctx => { await ctx.answerCallbackQuery(); await showPending(ctx); });
@@ -774,8 +957,9 @@ export function startDestinationAutomationWorker() {
       for (const uid of listUserIds()) {
         const store = readAutomation(uid);
         const settings = readAppSettings(uid);
-        const hasAttention = store.unresolvedInvites.length || (settings.groups || []).some(group => Object.values(group.accountJoin || {}).some(row => ["pending", "verification"].includes(String(row?.status || ""))));
+        const hasAttention = store.routingQueue.length || store.unresolvedInvites.length || (settings.groups || []).some(group => Object.values(group.accountJoin || {}).some(row => ["pending", "verification"].includes(String(row?.status || ""))));
         if (!hasAttention) continue;
+        try { if (store.routingQueue.length) await processRoutingQueue(uid, 4); } catch (err) { console.warn(`Destination routing sync failed for ${uid}:`, err?.message || err); }
         try { await recheckDestinations(uid, RECHECK_PER_TICK); } catch (err) { console.warn(`Destination recheck failed for ${uid}:`, err?.message || err); }
       }
     } finally { workerBusy = false; }

@@ -12,6 +12,8 @@ const {
   parseDestinationInput,
   suggestTopic,
   destinationAccountReady,
+  queueRoutingSync,
+  processRoutingQueue,
 } = await import("./destination-automation.js");
 
 assert.deepEqual(parseDestinationInput("https://t.me/addlist/LBw-ofcpUfhjN2Uy")?.kind, "addlist");
@@ -36,6 +38,8 @@ assert.equal(destinationAccountReady({ id: "-1001", topicRequired: true, topicId
 assert.equal(destinationAccountReady({ id: "-1001", topicRequired: true, topicId: 1, accountJoin: { a: { status: "ready" } } }, "a"), true);
 assert.equal(destinationAccountReady({ id: "-1001", accountJoin: { a: { status: "pending" } } }, "a"), false);
 assert.equal(destinationAccountReady({ id: "-1001", accountJoin: { a: { status: "verification" } } }, "a"), false);
+assert.equal(typeof queueRoutingSync, "function");
+assert.equal(typeof processRoutingQueue, "function");
 
 const app = fs.readFileSync("app.js", "utf8");
 const startup = fs.readFileSync("startup.js", "utf8");
@@ -47,9 +51,9 @@ for (const marker of ["parseDestinationInput", "handleDestinationText", "destina
   assert.ok(app.includes(marker), `app.js missing ${marker}`);
 }
 assert.ok(app.includes("message_thread_id"), "Bot API forum-topic routing missing in interval sender");
-assert.ok(app.includes("topMsgId"), "personal MTProto forum-topic routing missing in interval sender");
+assert.ok(app.includes("InputReplyToMessage"), "personal MTProto forum-topic routing missing in interval sender");
 assert.ok(worker.includes("message_thread_id"), "Bot API forum-topic routing missing in scheduled worker");
-assert.ok(worker.includes("topMsgId"), "personal MTProto forum-topic routing missing in scheduled worker");
+assert.ok(worker.includes("InputReplyToMessage"), "personal MTProto forum-topic routing missing in scheduled worker");
 assert.ok(worker.includes("destinationAccountReady"), "scheduled worker must respect per-account destination readiness");
 assert.ok(!app.includes('text("▶️ Confirm start", "start_confirm")'), "normal Start still requires a second confirmation");
 assert.ok(app.includes("topicId") && app.includes("accountJoin"), "destination v1.2 fields are not preserved");
@@ -62,3 +66,8 @@ assert.ok(onboarding.includes("Addlist") || onboarding.includes("addlist"), "tut
 assert.ok(onboarding.includes("Posting Setup"), "tutorial does not use the simplified Posting Setup navigation");
 
 console.log("TelePilot v1.2 regression checks passed");
+
+assert.ok(app.includes("readyDestinationCount"), "Home/start readiness must use ready destinations, not just saved destinations");
+assert.ok(app.includes("scheduleRoutingSync"), "sender routing changes must queue destination membership preparation");
+assert.ok(ux.includes("private t.me/+ invites") && ux.includes("t.me/addlist/..."), "normalized Add Destination screen lost v1.2 import guidance");
+assert.ok(onboarding.includes("needsTopic") && onboarding.includes("Choose Topics"), "tutorial must wait for forum-topic selection");

@@ -134,6 +134,23 @@ function transform(text, other) {
     return { text: clean, other: replaceKeyboard(other, rows) };
   }
   if (value.startsWith("📝 Message") || value.startsWith("⏱ Schedule") || value.startsWith("👁 Smart preview")) return transformSectionBack(value, other);
+  if (value.startsWith("📍 Add destination")) {
+    const next = relabelNavigation(other, "groups", "← Destinations");
+    return {
+      text: [
+        "📍 Add destinations",
+        "",
+        "Paste one or many Telegram destinations, one per line.",
+        "",
+        "Supported: @usernames, public links, private t.me/+ invites and t.me/addlist/... shared folders.",
+        "With a selected personal sender, TelePilot joins missing chats automatically. Forum groups ask you to choose the exact posting topic.",
+        "Join requests and verification-required groups stay Pending until Telegram allows posting.",
+        "",
+        "TelePilot Bot destinations still require the bot to be added with posting permission."
+      ].join("\n"),
+      other: next,
+    };
+  }
   if (value.startsWith("📍 Destinations") || value.startsWith("💬 Choose posting topics") || value.startsWith("⏳ Pending & verification")) return normalizeDestinationNav(value, other);
   return { text: value, other };
 }

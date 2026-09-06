@@ -30,6 +30,8 @@ import {
   destinationMenu,
   handleDestinationText,
   parseDestinationInput,
+  processRoutingQueue,
+  queueRoutingSync,
   recordDestinationFailure,
 } from "./destination-automation.js";
 import { loadPersistedLogins, persistLoginAttempt, removePersistedLogin } from "./login-attempt-store.js";
@@ -821,6 +823,22 @@ Need a key? Message @noahxrp to get yours.";
   }
   if (locked) stopPostingLoop(state);
 }
+function readyDestinationCount(state) {
+  const accounts = listAccounts(state.uid);
+  let ready = 0;
+  for (const group of state.groups || []) {
+    if (group.topicRequired === true && !Number(group.topicId || 0)) continue;
+    if (usesBotSender(state, group, accounts)) { ready++; continue; }
+    const ids = effectiveAccountIds(state, group, accounts);
+    if (ids.some(id => destinationAccountReady(group, id))) ready++;
+  }
+  return ready;
+}
+function scheduleRoutingSync(state, destinationId = "", accountIds = []) {
+  const queued = queueRoutingSync(state.uid, destinationId, accountIds);
+  if (queued > 0) void processRoutingQueue(state.uid, Math.min(4, queued)).catch(err => console.warn(`Routing sync failed for ${state.uid}:`, err?.message || err));
+  return queued;
+}
 function mainKeyboard(state) {
   const kb = new InlineKeyboard()
     .text("👤 Account", "account").text("📝 Message", "message").row()
@@ -837,7 +855,7 @@ function dashboard(state) {
     `👤 Posting as: ${accountLabel(state)}`,
     `🔑 Access: ${accessLabel(state)}`,
     `📝 Message: ${state.adMessage ? `✅ Set (${state.adMessage.length} chars)` : "❌ Not set"}`,
-    `👥 Groups: ${state.groups.length}`,
+    `👥 Groups: ${readyDestinationCount(state)}`,
     `⏱ Interval: ${formatInterval(state.intervalMinutes)}`,
     state.posting ? `⏳ Next post: ${formatUntil(state)}` : null,
   ].filter(Boolean).join("\n");
@@ -1000,7 +1018,7 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
         const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"personal", senderLabel:accountDisplayLabel(account), accountId:String(account.id), autoDisableEligible:ids.length === 1 }, () => client.sendMessage(entity, {
           message,
           ...(state.adEntities.length ? { formattingEntities:toMtprotoEntities(state.adEntities) } : {}),
-          ...(Number(target.topicId || 0) > 1 ? { replyTo:Number(target.topicId), topMsgId:Number(target.topicId) } : {}),
+          ...(Number(target.topicId || 0) > 1 ? { replyTo: new Api.InputReplyToMessage({ replyToMsgId: Number(target.topicId) }) } : {}),
         }));
         if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
       } catch (err) {
@@ -2340,11 +2358,11 @@ bot.callbackQuery("account_phone", async ctx => {
   await ctx.editMessageText("📱 CONNECT ACCOUNT\n\nSend the phone number for the Telegram account you want to add, including country code.\n\nYou can connect additional accounts the same way later.\n\nExample: +37120000000",{reply_markup:new InlineKeyboard().text("⬅️ Cancel","account")});
 });
 bot.callbackQuery("account_mode_bot", async ctx => { const state=stateFromCtx(ctx);state.senderMode="bot";saveState(state);await ctx.answerCallbackQuery({text:"Posting with TelePilot Bot"});await showAccounts(ctx,state,0); });
-bot.callbackQuery("account_mode_all", async ctx => { const state=stateFromCtx(ctx);state.senderMode="all";saveState(state);await ctx.answerCallbackQuery({text:"Posting from all connected accounts"});await showAccounts(ctx,state,0); });
+bot.callbackQuery("account_mode_all", async ctx => { const state=stateFromCtx(ctx);state.senderMode="all";saveState(state);scheduleRoutingSync(state);await ctx.answerCallbackQuery({text:"Posting from all connected accounts"});await showAccounts(ctx,state,0); });
 bot.callbackQuery(/^account_select:(\d+)$/, async ctx => {const state=stateFromCtx(ctx);state.senderMode="selected";saveState(state);await ctx.answerCallbackQuery();await showAccountSelection(ctx,state,Number(ctx.match[1]));});
-bot.callbackQuery(/^account_toggle:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),id=String(ctx.match[1]),set=new Set((state.selectedAccountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);state.senderMode="selected";state.selectedAccountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Selected":"Deselected"});await showAccountSelection(ctx,state,Number(ctx.match[2]));});
+bot.callbackQuery(/^account_toggle:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),id=String(ctx.match[1]),set=new Set((state.selectedAccountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);state.senderMode="selected";state.selectedAccountIds=[...set];saveState(state);if(set.has(id))scheduleRoutingSync(state,"",[id]);await ctx.answerCallbackQuery({text:set.has(id)?"Selected":"Deselected"});await showAccountSelection(ctx,state,Number(ctx.match[2]));});
 bot.callbackQuery(/^account_detail:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),account=listAccounts(state.uid).find(a=>a.id===ctx.match[1]);if(!account)return ctx.answerCallbackQuery({text:"Account not found."});await ctx.answerCallbackQuery();const selected=(state.selectedAccountIds||[]).map(String).includes(account.id);const kb=new InlineKeyboard().text(selected?"Selected globally":"Use only this account",`account_only:${account.id}`).row().text("🔌 Disconnect",`account_remove:${account.id}:${ctx.match[2]}`).row().text("⬅️ Senders",`account:${ctx.match[2]}`);await ctx.editMessageText(["👤 SENDER ACCOUNT",accountDisplayLabel(account),"",`Status — ${account.status}`,`Telegram ID — ${account.telegramId||"—"}`,`Global selection — ${selected?"Selected":"Not selected"}`,account.lastError?`Last issue — ${account.lastError}`:"","Disconnecting this sender does not remove your destinations, messages or schedules."].filter(Boolean).join("\n"),{reply_markup:kb});});
-bot.callbackQuery(/^account_only:([A-Za-z0-9_-]+)$/,async ctx=>{const state=stateFromCtx(ctx),id=String(ctx.match[1]);state.senderMode="selected";state.selectedAccountIds=[id];saveState(state);await ctx.answerCallbackQuery({text:"Using this account globally"});await showAccounts(ctx,state,0);});
+bot.callbackQuery(/^account_only:([A-Za-z0-9_-]+)$/,async ctx=>{const state=stateFromCtx(ctx),id=String(ctx.match[1]);state.senderMode="selected";state.selectedAccountIds=[id];saveState(state);scheduleRoutingSync(state,"",[id]);await ctx.answerCallbackQuery({text:"Using this account globally"});await showAccounts(ctx,state,0);});
 bot.callbackQuery(/^account_remove:([A-Za-z0-9_-]+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),id=String(ctx.match[1]);await ctx.answerCallbackQuery({text:"Disconnecting…"});await disconnectOneAccount(state,id,true);await showAccounts(ctx,state,Number(ctx.match[2]));});
 // Compatibility/admin deletion path: this deliberately disconnects every connected account.
 bot.callbackQuery("account_disconnect", async ctx => { const state=stateFromCtx(ctx);await ctx.answerCallbackQuery({text:"Disconnecting all accounts…"});await disconnectPersonalAccount(state,state.uid);await showHome(ctx,state); });
@@ -2412,9 +2430,9 @@ bot.callbackQuery("add_group", async ctx => {
 });
 bot.callbackQuery(/^route_groups:(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRoutingPage(ctx,stateFromCtx(ctx),Number(ctx.match[1]));});
 bot.callbackQuery(/^route_dest:(\d+):(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRouteDestination(ctx,stateFromCtx(ctx),Number(ctx.match[1]),Number(ctx.match[2]));});
-bot.callbackQuery(/^route_mode:(\d+):(inherit|bot|all):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode=ctx.match[2];if(group.accountMode!=="selected")group.accountIds=[];saveState(state);const notice=group.accountMode==="all"?"Using all accounts":group.accountMode==="bot"?"Using TelePilot Bot":"Using global sender selection";await ctx.answerCallbackQuery({text:notice});await showRouteDestination(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]));});
+bot.callbackQuery(/^route_mode:(\d+):(inherit|bot|all):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode=ctx.match[2];if(group.accountMode!=="selected")group.accountIds=[];saveState(state);if(group.accountMode!=="bot")scheduleRoutingSync(state,group.id);const notice=group.accountMode==="all"?"Using all accounts":group.accountMode==="bot"?"Using TelePilot Bot":"Using global sender selection";await ctx.answerCallbackQuery({text:notice});await showRouteDestination(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]));});
 bot.callbackQuery(/^route_accounts:(\d+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode="selected";saveState(state);await ctx.answerCallbackQuery();await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[2]),Number(ctx.match[3]));});
-bot.callbackQuery(/^route_account_toggle:(\d+):([A-Za-z0-9_-]+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});const id=String(ctx.match[2]),set=new Set((group.accountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);group.accountMode="selected";group.accountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Added to route":"Removed from route"});await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]),Number(ctx.match[4]));});
+bot.callbackQuery(/^route_account_toggle:(\d+):([A-Za-z0-9_-]+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});const id=String(ctx.match[2]),set=new Set((group.accountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);group.accountMode="selected";group.accountIds=[...set];saveState(state);if(set.has(id))scheduleRoutingSync(state,group.id,[id]);await ctx.answerCallbackQuery({text:set.has(id)?"Added to route":"Removed from route"});await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]),Number(ctx.match[4]));});
 
 bot.callbackQuery("remove_group_menu", async ctx => {
   await ctx.answerCallbackQuery();
@@ -2514,8 +2532,7 @@ async function startPostingFromControl(ctx) {
   if (state.posting) return ctx.answerCallbackQuery({ text: "TelePilot is already running." });
   if (!state.adMessage) return ctx.answerCallbackQuery({ text: "Set a message first.", show_alert: true });
   if (!state.groups.length) return ctx.answerCallbackQuery({ text: "Add at least one destination first.", show_alert: true });
-  const readyDestinations = state.groups.filter(group => !(group.topicRequired === true && !Number(group.topicId || 0)));
-  if (!readyDestinations.length) return ctx.answerCallbackQuery({ text: "Choose a posting topic for your forum destinations first.", show_alert: true });
+  if (!readyDestinationCount(state)) return ctx.answerCallbackQuery({ text: "No destination is ready yet. Finish topic selection, approval or verification first.", show_alert: true });
   await ctx.answerCallbackQuery({ text: "Starting…" });
   startPostingLoop(state);
   logAdminEvent("posting_started", { uid: String(state.uid) });
@@ -2671,7 +2688,8 @@ bot.on("message:text", async ctx => {
       };
     }
 
-    const tutorialScreen = (result.added || result.duplicates || result.attention)
+    const needsTopicChoice = state.groups.some(group => group.topicRequired === true && !Number(group.topicId || 0));
+    const tutorialScreen = !needsTopicChoice && (result.added || result.duplicates || result.attention)
       ? advanceTutorialAfterAction(state.uid, 3, 4)
       : null;
     if (tutorialScreen) {
