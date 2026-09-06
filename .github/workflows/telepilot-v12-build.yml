@@ -1,0 +1,58 @@
+name: TelePilot v1.2 Build
+
+on:
+  push:
+    branches: [telepilot-ux-v12]
+    paths:
+      - "scripts/telepilot_v12_patch.py"
+      - ".github/workflows/telepilot-v12-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: /tmp/telepilot-v12-ci
+      TELEPILOT_SECURITY_SECRET: ci-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      TELEPILOT_SESSION_KEY_B64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+      TELEPILOT_SUPPORT_USERNAME: noahxrp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: telepilot-ux-v12
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Apply v1.2 integration
+        run: python3 scripts/telepilot_v12_patch.py
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check destination-automation.js
+          node --check ux-v12.js
+          node --check runtime-hooks.js
+          node --check startup.js
+          node --check app.js
+          node --check onboarding.js
+          node --check v1-worker.js
+          node --check telepilot-v12-regression-test.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Confirm generated diff
+        run: |
+          git status --short
+          git diff --check
+          test -n "$(git status --porcelain)"
+      - name: Commit validated v1.2 source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js startup.js runtime-hooks.js onboarding.js v1-worker.js destination-automation.js package.json telepilot-v12-regression-test.mjs ux-v12.js
+          git commit -m "Integrate simplified UX and destination automation"
+          git push origin HEAD:telepilot-ux-v12
