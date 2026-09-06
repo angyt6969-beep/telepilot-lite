@@ -1,0 +1,53 @@
+name: TelePilot v1.2 Finalize
+
+on:
+  push:
+    branches:
+      - telepilot-ux-v12
+    paths:
+      - scripts/telepilot_v12_finalize.py
+      - .github/workflows/telepilot-v12-finalize.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: telepilot-ux-v12
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply release finalization
+        run: python3 scripts/telepilot_v12_finalize.py
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check destination-automation.js
+          node --check onboarding.js
+          node --check ux-v12.js
+          node --check v1-worker.js
+      - name: Full regression suite
+        run: npm test
+      - name: Diff validation
+        run: |
+          git diff --check
+          git status --short
+      - name: Commit validated release source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js destination-automation.js onboarding.js ux-v12.js v1-worker.js telepilot-v12-regression-test.mjs
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "Finalize TelePilot v1.2 release"
+          git push origin HEAD:telepilot-ux-v12
