@@ -43,6 +43,32 @@ function chatsForPeers(chats, peers) {
   if (!wanted.size) return [];
   return (Array.isArray(chats) ? chats : []).filter(chat => wanted.has(chatKey(chat)) && chat?.className !== "ChannelForbidden");
 }
+function mergeChats(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const chat of Array.isArray(list) ? list : []) {
+      const key = chatKey(chat);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(chat);
+    }
+  }
+  return out;
+}
+function mergePeers(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const peer of Array.isArray(list) ? list : []) {
+      const key = peerKey(peer);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(peer);
+    }
+  }
+  return out;
+}
 function stateFor(client) {
   let state = stateByClient.get(client);
   if (!state) {
@@ -61,19 +87,6 @@ async function folderLimit(client, originalInvoke) {
     state.premium = false;
   }
   return state.premium ? PREMIUM_FOLDER_CHAT_LIMIT : STANDARD_FOLDER_CHAT_LIMIT;
-}
-function inputPeerDescriptor(peer) {
-  if (!peer || typeof peer !== "object") return null;
-  if (peer?.channelId !== undefined) {
-    const channelId = valueString(peer.channelId).replace(/\D/g, "");
-    const accessHash = valueString(peer.accessHash);
-    if (channelId && /^-?\d+$/.test(accessHash)) return { kind: "channel", channelId, accessHash };
-  }
-  if (peer?.chatId !== undefined) {
-    const chatId = valueString(peer.chatId).replace(/\D/g, "");
-    if (chatId) return { kind: "chat", chatId };
-  }
-  return null;
 }
 function chatPeerDescriptor(chat) {
   if (!chat || chat?.className === "ChannelForbidden") return null;
@@ -132,18 +145,31 @@ function storeCheck(client, slug, result) {
   }
   return row;
 }
-function updateCheckFromRefresh(client, row, refreshed) {
-  if (!row || !refreshed) return;
-  row.fullChats = Array.isArray(refreshed?.chats) ? refreshed.chats.slice() : [];
+function updateCheckFromRefresh(client, row, refreshed, joinedPeers = []) {
+  if (!row) return [];
+  const refreshedChats = Array.isArray(refreshed?.chats) ? refreshed.chats.slice() : [];
+  row.fullChats = mergeChats(row.fullChats, refreshedChats);
   row.at = Date.now();
-  const confirmed = isAlreadyInvite(refreshed) ? chatsForPeers(row.fullChats, refreshed?.alreadyPeers) : [];
+
+  const alreadyPeers = isAlreadyInvite(refreshed)
+    ? (Array.isArray(refreshed?.alreadyPeers) ? refreshed.alreadyPeers : [])
+    : (Array.isArray(row.result?.alreadyPeers) ? row.result.alreadyPeers : []);
+  const exposedPeers = mergePeers(alreadyPeers, joinedPeers);
+  const confirmed = chatsForPeers(row.fullChats, exposedPeers);
+
   mutateArray(row.result?.chats, confirmed);
-  if (refreshed?.alreadyPeers !== undefined) row.result.alreadyPeers = refreshed.alreadyPeers;
-  if (refreshed?.missingPeers !== undefined) row.result.missingPeers = refreshed.missingPeers;
+  if (refreshed?.alreadyPeers !== undefined) row.result.alreadyPeers = mergePeers(refreshed.alreadyPeers, joinedPeers);
+  else if (joinedPeers.length) row.result.alreadyPeers = mergePeers(row.result?.alreadyPeers, joinedPeers);
+  if (refreshed?.missingPeers !== undefined) {
+    const joined = new Set(joinedPeers.map(peerKey).filter(Boolean));
+    row.result.missingPeers = (Array.isArray(refreshed.missingPeers) ? refreshed.missingPeers : []).filter(peer => !joined.has(peerKey(peer)));
+  }
   if (refreshed?.filterId !== undefined) row.result.filterId = refreshed.filterId;
+
   queueConfirmedCleanup(client, confirmed);
   const state = stateFor(client);
-  if (Number.isInteger(Number(refreshed?.filterId))) state.checksByFilter.set(String(Number(refreshed.filterId)), row);
+  if (Number.isInteger(Number(row.result?.filterId))) state.checksByFilter.set(String(Number(row.result.filterId)), row);
+  return confirmed;
 }
 function requestedTotal(row) {
   if (!row?.result) return 0;
@@ -185,13 +211,16 @@ export function installAddlistSafety(TelegramClientClass = TelegramClient) {
       const requested = Array.isArray(request?.peers) ? request.peers : [];
       const peers = requested.slice(0, limit);
       if (!peers.length) return null;
+
       const result = await originalInvoke.call(this, new Api.chatlists.JoinChatlistInvite({ slug, peers }), ...rest);
       let refreshed = null;
       try { refreshed = await originalInvoke.call(this, new Api.chatlists.CheckChatlistInvite({ slug })); } catch {}
-      if (row && refreshed) updateCheckFromRefresh(this, row, refreshed);
+      const confirmedChats = row ? updateCheckFromRefresh(this, row, refreshed, peers) : [];
+
       const total = Math.max(requested.length, requestedTotal(row));
-      const confirmed = refreshed?.alreadyPeers?.length || row?.result?.alreadyPeers?.length || 0;
+      const confirmed = confirmedChats.length || refreshed?.alreadyPeers?.length || row?.result?.alreadyPeers?.length || peers.length;
       if (total > limit) recordCapacity(this, { slug, total, limit, confirmed, premium: limit === PREMIUM_FOLDER_CHAT_LIMIT });
+      console.log(`Addlist join accepted ${peers.length} peer(s); exposing ${confirmed} confirmed peer(s)`);
       return result;
     }
 
@@ -209,21 +238,23 @@ export function installAddlistSafety(TelegramClientClass = TelegramClient) {
         if (row && total > limit) recordCapacity(this, { slug: row.slug, total, limit, confirmed: alreadyCount, premium: limit === PREMIUM_FOLDER_CHAT_LIMIT });
         return null;
       }
+
       const result = await originalInvoke.call(this, new Api.chatlists.JoinChatlistUpdates({ chatlist: request.chatlist, peers }), ...rest);
+      let refreshed = null;
       if (row?.slug) {
-        try {
-          const refreshed = await originalInvoke.call(this, new Api.chatlists.CheckChatlistInvite({ slug: row.slug }));
-          updateCheckFromRefresh(this, row, refreshed);
-        } catch {}
+        try { refreshed = await originalInvoke.call(this, new Api.chatlists.CheckChatlistInvite({ slug: row.slug })); } catch {}
       }
+      const confirmedChats = row ? updateCheckFromRefresh(this, row, refreshed, peers) : [];
+
       const cached = state.updateCache.get(filterId);
       if (cached?.result?.missingPeers) {
         const joined = new Set(peers.map(peerKey).filter(Boolean));
         cached.result.missingPeers = cached.result.missingPeers.filter(peer => !joined.has(peerKey(peer)));
       }
       const total = requestedTotal(row);
-      const confirmed = row?.result?.alreadyPeers?.length || alreadyCount;
+      const confirmed = confirmedChats.length || row?.result?.alreadyPeers?.length || alreadyCount + peers.length;
       if (row && total > limit) recordCapacity(this, { slug: row.slug, total, limit, confirmed, premium: limit === PREMIUM_FOLDER_CHAT_LIMIT });
+      console.log(`Addlist update accepted ${peers.length} peer(s); exposing ${confirmed} confirmed peer(s)`);
       return result;
     }
 
