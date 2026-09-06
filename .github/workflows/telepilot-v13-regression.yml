@@ -36,6 +36,7 @@ jobs:
           node --check destination-automation.js
           node --check qol-store.js
           node --check ux-v13.js
+          node --check ux-v13-polish.js
           node --check onboarding.js
           node --check runtime-hooks.js
           node --check v1-engine.js
