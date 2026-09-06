@@ -18,6 +18,12 @@ const {
   setDestinationNote,
   setPendingInput,
 } = await import("./qol-store.js");
+const {
+  accountDisplayLabel,
+  listAccounts,
+  saveAccountSession,
+  setAccountAlias,
+} = await import("./account-store.js");
 
 const uid = "123456";
 assert.equal(defaultQolState().topicPreference.mode, "suggest");
@@ -33,7 +39,16 @@ patchQolState(uid, { topicPreference: { mode: "auto_exact", words: ["Advertising
 assert.equal(readQolState(uid).topicPreference.mode, "auto_exact");
 assert.deepEqual(readQolState(uid).topicPreference.words, ["advertising", "marketplace"]);
 
+const aliasUid = "654321";
+const savedAccount = saveAccountSession(aliasUid, { id: "998877", username: "original_name", firstName: "Test" }, "test-session-string-long-enough-for-encrypted-storage");
+assert.equal(listAccounts(aliasUid).length, 1, "Account-store alias test session was not persisted");
+setAccountAlias(aliasUid, savedAccount.id, "Shop Account");
+const aliased = listAccounts(aliasUid)[0];
+assert.equal(aliased.alias, "Shop Account", "Account alias did not persist");
+assert.equal(accountDisplayLabel(aliased), "Shop Account", "Account alias is not preferred in display labels");
+
 const ux = fs.readFileSync("ux-v13.js", "utf8");
+const polish = fs.readFileSync("ux-v13-polish.js", "utf8");
 const startup = fs.readFileSync("startup.js", "utf8");
 const accountStore = fs.readFileSync("account-store.js", "utf8");
 const destinationAutomation = fs.readFileSync("destination-automation.js", "utf8");
@@ -64,18 +79,30 @@ assert.ok(ux.includes('inline("📊 Activity", "v1_activity_v13")'), "Activity m
 assert.ok(ux.includes("t.me/addlist/..."), "Destination copy does not advertise Addlist importing");
 assert.ok(ux.includes("automatically join supported destinations"), "Destination copy does not explain personal-account auto joining");
 assert.ok(ux.includes("verification/captcha"), "Destination copy does not explain manual verification");
-assert.ok(ux.includes("ready /" ) || ux.includes("ready / ${summary.total}"), "Destination readiness summary missing");
+assert.ok(ux.includes("ready / ${summary.total}"), "Destination readiness summary missing");
 assert.ok(ux.includes("Automatic retry  On") && ux.includes("Broken-destination auto-skip  On"), "Activity does not surface automatic handling");
 assert.ok(ux.includes("Auto-pick exact matches"), "Safe topic preference mode missing");
 assert.ok(ux.includes("Applying a saved setup is blocked while interval posting is running"), "Saved setup safety guard copy missing");
 assert.ok(ux.includes("__telepilotUxV13TextPatched"), "v1.3 restart-safe text-input interception is not installed");
+
+for (const marker of [
+  "v1_send_once_v13",
+  "v1_import_undo_v13",
+  "v1_dest_browse_v13",
+  "Dashboard, Posting Setup, Activity",
+  "Destinations/Addlists",
+]) assert.ok(polish.includes(marker), `v1.3 polish missing ${marker}`);
+assert.ok(polish.includes("normally within about 30 seconds"), "Send Once does not disclose scheduler timing");
+assert.ok(polish.includes("This is destructive, so it requires this one confirmation"), "Import undo is missing destructive-action confirmation");
+assert.ok(polish.includes("readyDestinationCount"), "Send Once is missing a readiness preflight");
 
 assert.ok(accountStore.includes("alias: cleanAlias"), "Account aliases are not persisted");
 assert.ok(accountStore.includes("export function setAccountAlias"), "Account alias setter missing");
 assert.ok(accountStore.includes("if (cleanAlias(account.alias))"), "Account aliases are not used in display labels");
 
 assert.ok(startup.includes("installUxV13Navigation(Bot)"), "v1.3 bot navigation not installed");
-assert.ok(startup.includes("installUxV13(Api);\ninstallUxV12(Api);"), "v1.3 API wrapper must sit immediately inside v1.2");
+assert.ok(startup.includes("installUxV13PolishNavigation(Bot)"), "v1.3 polish callbacks not installed");
+assert.ok(startup.includes("installUxV13Polish(Api);\ninstallUxV13(Api);\ninstallUxV12(Api);"), "v1.3 wrapper order is incorrect");
 assert.ok(startup.includes("startQolV13Worker()"), "v1.3 QOL worker not started before app import");
 
 assert.ok(destinationAutomation.includes("chatlists.checkChatlistInvite"), "Addlist inspection support regressed");
