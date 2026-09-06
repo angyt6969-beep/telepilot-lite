@@ -29,7 +29,7 @@ const PAGE_PREFIXES = [
   "🔔 Notifications",
   "🩺 Sender health",
   "📦 Backup & restore",
-  "🆕 What's new in TelePilot 1.0",
+  "🆕 What's new in TelePilot 1.1",
   "🛑 Emergency stop",
   "🛡 TelePilot user management",
   "🛡 User details",

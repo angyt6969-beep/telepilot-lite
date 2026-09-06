@@ -9,6 +9,24 @@ import { Api, TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import { advanceTutorialAfterAction } from "./onboarding.js";
 import {
+  accountDisplayLabel,
+  effectiveAccountIds,
+  hasAnyAccount,
+  listAccounts,
+  loadAccountSession,
+  normalizeAccountSelection,
+  removeAccount,
+  removeAllAccounts,
+  saveAccountSession,
+  senderSummary,
+  updateAccountStatus,
+  usesBotSender,
+} from "./account-store.js";
+import { withDispatchContext } from "./dispatch-context.js";
+import { isFatalSessionError, readProSettings } from "./posting-engine-enhancements.js";
+import { setReloadUserStateHandler } from "./runtime-hooks.js";
+import { loadPersistedLogins, persistLoginAttempt, removePersistedLogin } from "./login-attempt-store.js";
+import {
   appendSecurityEvent,
   getExternalSessionKey,
   isSecurityLockdown,
@@ -61,6 +79,7 @@ const personalTargetCache = new Map();
 const PERSONAL_TARGET_CACHE_MS = 10 * 60_000;
 
 // TELEPILOT_SECURITY_PACK_V1
+// TELEPILOT_MULTI_ACCOUNT_V11
 installConsoleRedaction();
 const sensitiveCallbacks = new Map();
 
@@ -135,23 +154,52 @@ function isAdmin(uid) { return ADMIN_IDS.has(String(uid)); }
 function normalizeSavedGroups(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
+  const seen = new Set();
   for (const item of value) {
     if (!item || typeof item !== "object") continue;
     const id = String(item.id || "");
-    if (!/^-\d+$/.test(id)) continue;
+    if (!/^-\d+$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
     out.push({
       id,
       label: String(item.label || item.title || id).slice(0, 120),
       type: String(item.type || "group"),
       username: item.username ? String(item.username) : "",
+      accountMode: ["inherit", "bot", "all", "selected"].includes(item.accountMode) ? item.accountMode : "inherit",
+      accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String))],
     });
   }
   return out;
 }
 function loadUserSettings(uid) { return readJson(settingsFile(uid), {}); }
+function legacyAccessGrants(saved) {
+  if (Array.isArray(saved.accessGrants)) return saved.accessGrants.filter(g => g && typeof g === "object").map(g => ({
+    id: String(g.id || crypto.randomBytes(6).toString("hex")),
+    keyId: String(g.keyId || ""),
+    source: String(g.source || "legacy"),
+    lifetime: g.lifetime === true,
+    expiresAt: Number(g.expiresAt || 0) || 0,
+    createdAt: Number(g.createdAt || 0) || Date.now(),
+    revokedAt: Number(g.revokedAt || 0) || 0,
+  }));
+  const grants = [];
+  if (saved.accessLifetime === true) grants.push({ id: "legacy-lifetime", keyId: String(saved.accessKeyId || ""), source: "legacy", lifetime: true, expiresAt: 0, createdAt: Date.now(), revokedAt: 0 });
+  else if (Number(saved.accessUntil || 0) > 0) grants.push({ id: "legacy-timed", keyId: String(saved.accessKeyId || ""), source: "legacy", lifetime: false, expiresAt: Number(saved.accessUntil), createdAt: Date.now(), revokedAt: 0 });
+  return grants;
+}
+function recomputeAccessState(state) {
+  const now = Date.now();
+  const grants = Array.isArray(state.accessGrants) ? state.accessGrants : [];
+  const active = grants.filter(g => !Number(g.revokedAt || 0) && (g.lifetime === true || Number(g.expiresAt || 0) > now));
+  state.accessLifetime = active.some(g => g.lifetime === true);
+  state.accessUntil = state.accessLifetime ? null : active.reduce((max, g) => Math.max(max, Number(g.expiresAt || 0)), 0) || null;
+  return active;
+}
 function createState(uid) {
   const saved = loadUserSettings(uid);
-  return {
+  const accounts = listAccounts(uid);
+  const selection = normalizeAccountSelection(saved, accounts);
+  const state = {
     uid: Number(uid),
     adMessage: typeof saved.adMessage === "string" ? saved.adMessage : "",
     adEntities: Array.isArray(saved.adEntities) ? saved.adEntities : [],
@@ -164,7 +212,10 @@ function createState(uid) {
     accessLifetime: saved.accessLifetime === true,
     accessUntil: Number.isFinite(Number(saved.accessUntil)) ? Number(saved.accessUntil) : null,
     accessKeyId: typeof saved.accessKeyId === "string" ? saved.accessKeyId : null,
+    accessGrants: legacyAccessGrants(saved),
     accessRevoked: saved.accessRevoked === true,
+    senderMode: selection.mode,
+    selectedAccountIds: selection.selected,
     personalUsername: typeof saved.personalUsername === "string" ? saved.personalUsername : "",
     telegramUsername: typeof saved.telegramUsername === "string" ? saved.telegramUsername : "",
     telegramFirstName: typeof saved.telegramFirstName === "string" ? saved.telegramFirstName : "",
@@ -172,16 +223,18 @@ function createState(uid) {
     createdAt: Number.isFinite(Number(saved.createdAt)) ? Number(saved.createdAt) : null,
     lastSeenAt: Number.isFinite(Number(saved.lastSeenAt)) ? Number(saved.lastSeenAt) : null,
     postingTimer: null,
-    posting: false,
+    posting: saved.postingEnabled === true,
     cyclePromise: null,
-    nextRunAt: null,
+    nextRunAt: Number(saved.nextRunAt || 0) || null,
     awaiting: null,
     awaitingPromptMessageId: null,
     awaitingPromptChatId: null,
-    personalClient: null,
-    personalRestorePromise: null,
+    personalClients: new Map(),
+    personalRestorePromises: new Map(),
     lastTouchedAt: Date.now(),
   };
+  recomputeAccessState(state);
+  return state;
 }
 function getState(uid) {
   const key = String(uid);
@@ -190,10 +243,22 @@ function getState(uid) {
   state.lastTouchedAt = Date.now();
   return state;
 }
+function reloadState(uid) {
+  const key = String(uid);
+  const old = states.get(key);
+  if (old) {
+    if (old.postingTimer) clearTimeout(old.postingTimer);
+    for (const client of old.personalClients?.values?.() || []) void client.disconnect().catch(() => {});
+  }
+  states.delete(key);
+  return true;
+}
+setReloadUserStateHandler(reloadState);
 function saveState(state) {
   fs.mkdirSync(userDir(state.uid), { recursive: true, mode: 0o700 });
+  recomputeAccessState(state);
   writeJsonAtomic(settingsFile(state.uid), {
-    version: 3,
+    version: 4,
     adMessage: state.adMessage,
     adEntities: state.adEntities,
     groups: state.groups,
@@ -205,13 +270,18 @@ function saveState(state) {
     accessLifetime: state.accessLifetime,
     accessUntil: state.accessUntil,
     accessKeyId: state.accessKeyId,
+    accessGrants: state.accessGrants,
     accessRevoked: state.accessRevoked,
+    senderMode: state.senderMode,
+    selectedAccountIds: state.selectedAccountIds,
     personalUsername: state.personalUsername,
     telegramUsername: state.telegramUsername,
     telegramFirstName: state.telegramFirstName,
     telegramLastName: state.telegramLastName,
     createdAt: state.createdAt,
     lastSeenAt: state.lastSeenAt,
+    postingEnabled: state.posting === true,
+    nextRunAt: state.nextRunAt,
   });
 }
 
@@ -278,6 +348,16 @@ function generateLicenseKey(duration, boundTo = null) {
   }
   throw new Error("Could not generate a unique key");
 }
+function addAccessGrant(state, grant) {
+  state.accessGrants = Array.isArray(state.accessGrants) ? state.accessGrants : [];
+  state.accessGrants.push({
+    id: String(grant.id || crypto.randomBytes(6).toString("hex")),
+    keyId: String(grant.keyId || ""), source: String(grant.source || "admin"),
+    lifetime: grant.lifetime === true, expiresAt: Number(grant.expiresAt || 0) || 0,
+    createdAt: Number(grant.createdAt || 0) || Date.now(), revokedAt: Number(grant.revokedAt || 0) || 0,
+  });
+  recomputeAccessState(state);
+}
 function redeemLicenseKey(state, rawKey) {
   const uid = String(state?.uid || "");
   const rate = takeRateLimit("key-redeem", uid, 5, 10 * 60_000);
@@ -289,38 +369,27 @@ function redeemLicenseKey(state, rawKey) {
   const normalized = normalizeKey(rawKey);
   const supported = /^TP-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(normalized)
     || /^TP-[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}-[A-Z2-9]{5}$/.test(normalized);
-  if (!supported) {
-    appendSecurityEvent("key_redeem_failed", { uid, reason: "format" });
-    return { ok: false, error: "This key cannot be used." };
-  }
+  if (!supported) return { ok: false, error: "This key cannot be used." };
   const db = loadKeyDb();
   const record = db.keys.find(item => licenseRecordMatches(item, normalized));
   if (!record || record.revokedAt || record.redeemedAt || (record.boundTo && String(record.boundTo) !== uid)) {
-    appendSecurityEvent("key_redeem_failed", {
-      uid,
-      reason: record?.boundTo && String(record.boundTo) !== uid ? "bound_mismatch" : "unusable",
-    });
+    appendSecurityEvent("key_redeem_failed", { uid, reason: record?.boundTo && String(record.boundTo) !== uid ? "bound_mismatch" : "unusable" });
     return { ok: false, error: "This key cannot be used." };
   }
   record.redeemedAt = Date.now();
   record.redeemedBy = uid;
-  if (record.lifetime) {
-    state.accessLifetime = true;
-    state.accessUntil = null;
-  } else {
+  if (record.lifetime) addAccessGrant(state, { keyId: record.id, source: "key", lifetime: true });
+  else {
+    recomputeAccessState(state);
     const base = Math.max(Date.now(), Number(state.accessUntil || 0));
-    state.accessUntil = base + Number(record.durationDays) * 86_400_000;
+    addAccessGrant(state, { keyId: record.id, source: "key", expiresAt: base + Number(record.durationDays) * 86_400_000 });
   }
   state.accessKeyId = record.id;
   state.accessRevoked = false;
   saveKeyDb(db);
   saveState(state);
   resetRateLimit("key-redeem", uid);
-  logAdminEvent("key_redeemed", {
-    uid,
-    keyId: record.id,
-    duration: record.lifetime ? "lifetime" : `${record.durationDays}d`,
-  });
+  logAdminEvent("key_redeemed", { uid, keyId: record.id, duration: record.lifetime ? "lifetime" : `${record.durationDays}d` });
   appendSecurityEvent("key_redeemed", { uid, keyId: record.id, bound: !!record.boundTo });
   return { ok: true, record };
 }
@@ -335,88 +404,29 @@ function revokeKey(identifier) {
   saveKeyDb(db);
   if (record.redeemedBy) {
     const state = getState(record.redeemedBy);
-    if (state.accessKeyId === record.id) {
-      state.accessRevoked = true;
-      stopPostingLoop(state);
+    let changed = false;
+    for (const grant of state.accessGrants || []) {
+      if (String(grant.keyId || "") === String(record.id) && !grant.revokedAt) { grant.revokedAt = Date.now(); changed = true; }
+    }
+    if (changed) {
+      recomputeAccessState(state);
+      if (!hasAccess(state)) stopPostingLoop(state);
       saveState(state);
     }
   }
   return { ok: true, record };
 }
 
-const EXTERNAL_SESSION_ENCRYPTION_KEY = getExternalSessionKey();
-function getLegacySessionEncryptionKey() {
-  try {
-    if (fs.existsSync(SESSION_KEY_FILE)) {
-      const raw = fs.readFileSync(SESSION_KEY_FILE);
-      if (raw.length === 32) return raw;
-    }
-    if (EXTERNAL_SESSION_ENCRYPTION_KEY) return null;
-    const key = crypto.randomBytes(32);
-    fs.writeFileSync(SESSION_KEY_FILE, key, { mode: 0o600 });
-    return key;
-  } catch (err) {
-    throw new Error(`Could not initialize personal session encryption key: ${err?.message || err}`);
-  }
-}
-const LEGACY_SESSION_ENCRYPTION_KEY = getLegacySessionEncryptionKey();
-const SESSION_ENCRYPTION_KEY = EXTERNAL_SESSION_ENCRYPTION_KEY || LEGACY_SESSION_ENCRYPTION_KEY;
-if (!SESSION_ENCRYPTION_KEY) throw new Error("No personal-session encryption key is available");
-
-function encryptSession(value) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", SESSION_ENCRYPTION_KEY, iv);
-  const encrypted = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return JSON.stringify({
-    v: 2,
-    keyVersion: EXTERNAL_SESSION_ENCRYPTION_KEY ? "env" : "legacy",
-    iv: iv.toString("base64"),
-    tag: tag.toString("base64"),
-    data: encrypted.toString("base64"),
-  });
-}
-function decryptSession(payload) {
-  const parsed = JSON.parse(payload);
-  let key = null;
-  if (parsed?.v === 1) key = LEGACY_SESSION_ENCRYPTION_KEY;
-  else if (parsed?.v === 2 && parsed?.keyVersion === "env") key = EXTERNAL_SESSION_ENCRYPTION_KEY;
-  else if (parsed?.v === 2 && parsed?.keyVersion === "legacy") key = LEGACY_SESSION_ENCRYPTION_KEY;
-  else throw new Error("Unsupported session format");
-  if (!key) throw new Error("Session encryption key is unavailable");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.iv, "base64"));
-  decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(parsed.data, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
-}
-function hasPersonalSession(uid) {
-  try { return fs.existsSync(personalSessionFile(uid)) && fs.statSync(personalSessionFile(uid)).size > 20; }
-  catch { return false; }
-}
-function savePersonalSession(uid, sessionString) {
-  fs.mkdirSync(userDir(uid), { recursive: true, mode: 0o700 });
-  const file = personalSessionFile(uid);
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, encryptSession(sessionString), { mode: 0o600 });
-  fs.renameSync(temp, file);
-}
-function loadPersonalSession(uid) {
-  const raw = fs.readFileSync(personalSessionFile(uid), "utf8");
-  const parsed = JSON.parse(raw);
-  const session = decryptSession(raw);
-  if (parsed?.v === 1 && EXTERNAL_SESSION_ENCRYPTION_KEY) {
-    savePersonalSession(uid, session);
-    appendSecurityEvent("session_encryption_migrated", { uid: String(uid) });
-  }
-  return session;
-}
-function removePersonalSession(uid) {
-  try { fs.rmSync(personalSessionFile(uid), { force: true }); } catch {}
-}
+function hasPersonalSession(uid) { return hasAnyAccount(uid); }
 
 const bot = new Bot(BOT_TOKEN);
+for (const saved of loadPersistedLogins(LOGIN_TTL_MS)) {
+  try {
+    const client = new TelegramClient(new StringSession(saved.sessionString), API_ID, API_HASH, { connectionRetries: 5, floodSleepThreshold: 0 });
+    client.__telepilotOwnerUid = String(saved.uid);
+    loginAttempts.set(String(saved.uid), { ...saved, uid: Number(saved.uid), client });
+  } catch (err) { console.warn(`Could not restore pending login for ${saved.uid}:`, err?.message || err); }
+}
 const botInfo = await bot.api.getMe();
 const BOT_USER_ID = botInfo.id;
 
@@ -499,54 +509,64 @@ function formatUntil(state) {
   if (s < 60) return "<1 min";
   return formatInterval(Math.ceil(s / 60));
 }
-function accountLabel(state) {
-  if (!hasPersonalSession(state.uid)) return "Bot posting";
-  if (state.personalUsername) return `@${state.personalUsername}`;
-  return "Personal account";
-}
-
-async function ensurePersonalClient(state) {
-  if (!hasPersonalSession(state.uid)) return null;
-  if (state.personalClient) {
-    state.personalClient.__telepilotOwnerUid = String(state.uid);
-    return state.personalClient;
-  }
-  if (state.personalRestorePromise) return state.personalRestorePromise;
-  state.personalRestorePromise = (async () => {
+function accountLabel(state) { return senderSummary(state, listAccounts(state.uid)); }
+async function ensurePersonalClient(state, accountId) {
+  const account = listAccounts(state.uid).find(item => item.id === String(accountId));
+  if (!account) return null;
+  if (state.personalClients.has(account.id)) return state.personalClients.get(account.id);
+  if (state.personalRestorePromises.has(account.id)) return state.personalRestorePromises.get(account.id);
+  const promise = (async () => {
     let client;
     try {
-      client = new TelegramClient(new StringSession(loadPersonalSession(state.uid)), API_ID, API_HASH, {
-        connectionRetries: 5,
-        floodSleepThreshold: 60,
-      });
+      client = new TelegramClient(new StringSession(loadAccountSession(state.uid, account.id)), API_ID, API_HASH, { connectionRetries: 5, floodSleepThreshold: 60 });
       client.__telepilotOwnerUid = String(state.uid);
+      client.__telepilotAccountId = String(account.id);
       await client.connect();
       if (!(await client.checkAuthorization())) throw new Error("Saved Telegram session is no longer authorized");
       const me = await client.getMe();
-      state.personalUsername = me?.username || state.personalUsername || "";
-      state.personalClient = client;
-      state.personalRestoreError = "";
-      state.personalRestoreFatal = false;
-      saveState(state);
+      updateAccountStatus(state.uid, account.id, { telegramId: me?.id, username: me?.username, firstName: me?.firstName, lastName: me?.lastName, status: "connected", lastError: "", lastVerifiedAt: Date.now() });
+      state.personalClients.set(account.id, client);
       return client;
     } catch (err) {
-      state.personalRestoreError = telegramErrorCode(err).slice(0, 120) || "UNKNOWN";
-      state.personalRestoreFatal = isFatalPersonalSessionError(err);
+      updateAccountStatus(state.uid, account.id, { status: isFatalSessionError(err) ? "needs-reconnect" : "unknown", lastError: telegramErrorCode(err).slice(0, 120), lastVerifiedAt: Date.now() });
       try { await client?.disconnect(); } catch {}
-      console.warn(`Could not restore personal Telegram account for user ${state.uid}:`, err?.message || err);
+      console.warn(`Could not restore personal Telegram account ${account.id} for user ${state.uid}:`, err?.message || err);
       return null;
-    } finally {
-      state.personalRestorePromise = null;
-    }
+    } finally { state.personalRestorePromises.delete(account.id); }
   })();
-  return state.personalRestorePromise;
+  state.personalRestorePromises.set(account.id, promise);
+  return promise;
+}
+async function disconnectOneAccount(state, accountId, logout = true) {
+  const id = String(accountId);
+  const client = state.personalClients.get(id);
+  state.personalClients.delete(id);
+  state.personalRestorePromises.delete(id);
+  if (logout) try { await client?.logOut(); } catch {}
+  try { await client?.disconnect(); } catch {}
+  removeAccount(state.uid, id);
+  state.selectedAccountIds = (state.selectedAccountIds || []).map(String).filter(value => value !== id);
+  for (const group of state.groups) group.accountIds = (group.accountIds || []).map(String).filter(value => value !== id);
+  const accounts = listAccounts(state.uid);
+  const selection = normalizeAccountSelection(state, accounts);
+  state.senderMode = selection.mode;
+  state.selectedAccountIds = selection.selected;
+  state.personalUsername = accounts.length === 1 ? accounts[0].username : "";
+  saveState(state);
 }
 
 function cancelLoginAttempt(uid, reason = "cancelled") {
   const attempt = loginAttempts.get(String(uid));
-  if (!attempt) return;
+  if (!attempt) { if (reason !== "shutdown") removePersistedLogin(uid); return; }
+  if (reason === "shutdown") {
+    try { persistLoginAttempt(attempt); } catch {}
+    loginAttempts.delete(String(uid));
+    try { void attempt.client?.disconnect(); } catch {}
+    return;
+  }
   loginAttempts.delete(String(uid));
   attempt.stage = reason;
+  removePersistedLogin(uid);
   try { void attempt.client?.disconnect(); } catch {}
 }
 function createLoginToken() { return crypto.randomBytes(32).toString("base64url"); }
@@ -571,43 +591,32 @@ function cleanAuthError(err) {
 
 async function completeLogin(attempt, user) {
   const state = getState(attempt.uid);
-  const me = (user?.username || user?.firstName) ? user : await attempt.client.getMe();
-  savePersonalSession(attempt.uid, attempt.client.session.save());
-  state.personalUsername = me?.username || "";
-  if (state.personalClient && state.personalClient !== attempt.client) {
-    try { await state.personalClient.disconnect(); } catch {}
-  }
+  const me = (user?.id || user?.username || user?.firstName) ? user : await attempt.client.getMe();
+  const account = saveAccountSession(attempt.uid, me, attempt.client.session.save());
   attempt.client.__telepilotOwnerUid = String(state.uid);
-  state.personalClient = attempt.client;
-  state.personalRestoreError = "";
-  state.personalRestoreFatal = false;
+  attempt.client.__telepilotAccountId = String(account.id);
+  const previous = state.personalClients.get(account.id);
+  if (previous && previous !== attempt.client) try { await previous.disconnect(); } catch {}
+  state.personalClients.set(account.id, attempt.client);
+  const accounts = listAccounts(state.uid);
+  if (state.senderMode !== "bot" && !(state.selectedAccountIds || []).length) state.selectedAccountIds = [account.id];
+  state.selectedAccountIds = normalizeAccountSelection(state, accounts).selected;
+  state.personalUsername = accounts.length === 1 ? account.username : "";
   saveState(state);
-  logAdminEvent("account_connected", { uid: String(state.uid) });
-  appendSecurityEvent("account_connected", { uid: String(state.uid) });
+  logAdminEvent("account_connected", { uid: String(state.uid), accountId: account.id });
+  appendSecurityEvent("account_connected", { uid: String(state.uid), accountId: account.id });
   void notifySecurityAdmins(`A personal Telegram account was connected for user ${state.uid}.`);
   attempt.client = null;
   attempt.stage = "done";
+  removePersistedLogin(attempt.uid);
   attempt.doneAt = Date.now();
   const tutorialScreen = advanceTutorialAfterAction(attempt.uid, 2, 3);
   try {
-    if (tutorialScreen) {
-      await bot.api.sendMessage(
-        attempt.uid,
-        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\n\n${tutorialScreen.text}`,
-        { reply_markup: tutorialScreen.keyboard },
-      );
-    } else {
-      await bot.api.sendMessage(
-        attempt.uid,
-        `✅ Personal account connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}.\n\nTelePilot will now post using this personal account.`,
-        { reply_markup: new InlineKeyboard().text("✈️ Open TelePilot", "home") },
-      );
-    }
+    const label = accountDisplayLabel(account);
+    if (tutorialScreen) await bot.api.sendMessage(attempt.uid, `✅ ${label} connected.\n\n${tutorialScreen.text}`, { reply_markup: tutorialScreen.keyboard });
+    else await bot.api.sendMessage(attempt.uid, `✅ ${label} connected.\n\nYou now have ${accounts.length} connected account${accounts.length === 1 ? "" : "s"}.`, { reply_markup: new InlineKeyboard().text("👤 Manage senders", "account") });
   } catch {}
-  setTimeout(() => {
-    const current = loginAttempts.get(String(attempt.uid));
-    if (current === attempt) loginAttempts.delete(String(attempt.uid));
-  }, 2 * 60_000);
+  setTimeout(() => { const current = loginAttempts.get(String(attempt.uid)); if (current === attempt) loginAttempts.delete(String(attempt.uid)); }, 2 * 60_000);
 }
 
 async function beginPersonalLogin(uid, phone) {
@@ -639,6 +648,7 @@ async function beginPersonalLogin(uid, phone) {
     attempt.phoneCodeHash = sent.phoneCodeHash;
     attempt.isCodeViaApp = sent.isCodeViaApp === true;
     attempt.stage = "code";
+    persistLoginAttempt(attempt);
     appendSecurityEvent("login_started", { uid: String(uid) });
     return {
       url: `${PUBLIC_URL.replace(/\/+$/, "")}/connect?token=${encodeURIComponent(token)}`,
@@ -681,11 +691,13 @@ function getAttemptByBrowserToken(token) {
 function rotateBrowserToken(attempt) {
   const token = createLoginToken();
   attempt.browserToken = token;
+  try { persistLoginAttempt(attempt); } catch {}
   return token;
 }
 function failLoginAttempt(attempt, kind, err) {
   const field = kind === "password" ? "passwordFailures" : "codeFailures";
   attempt[field] = Number(attempt[field] || 0) + 1;
+  try { persistLoginAttempt(attempt); } catch {}
   const count = attempt[field];
   appendSecurityEvent("login_attempt_failed", { uid: String(attempt.uid), stage: kind, count });
   if (count >= 5) {
@@ -703,6 +715,7 @@ async function submitLoginCode(attempt, code) {
   if (!/^\d{3,10}$/.test(value)) return failLoginAttempt(attempt, "code", new Error("PHONE_CODE_INVALID"));
   let result;
   try {
+    await attempt.client.connect();
     result = await attempt.client.invoke(new Api.auth.SignIn({
       phoneNumber: attempt.phone,
       phoneCodeHash: attempt.phoneCodeHash,
@@ -713,6 +726,7 @@ async function submitLoginCode(attempt, code) {
     if (codeName.includes("SESSION_PASSWORD_NEEDED")) {
       attempt.stage = "password";
       attempt.error = "";
+      try { persistLoginAttempt(attempt); } catch {}
       return;
     }
     attempt.error = cleanAuthError(err);
@@ -737,6 +751,7 @@ async function submitLoginPassword(attempt, password) {
   let passwordError = null;
   let user;
   try {
+    await attempt.client.connect();
     user = await attempt.client.signInWithPassword(
       { apiId: API_ID, apiHash: API_HASH },
       {
@@ -855,217 +870,162 @@ function personalDialogPeerId(dialog) {
 }
 async function resolveDestination(target, ownerUid) {
   const ownerState = ownerUid ? getState(ownerUid) : null;
-  if (ownerState && hasPersonalSession(ownerState.uid)) {
-    const client = await ensurePersonalClient(ownerState);
-    if (!client) throw new Error("Reconnect your personal Telegram account first.");
-    if (!String(target).startsWith("@")) {
-      throw new Error("Personal-account setup currently needs a public @username or t.me link. Private groups can still be added with /addhere.");
-    }
-
+  const accounts = ownerState ? listAccounts(ownerState.uid) : [];
+  const botSender = ownerState ? usesBotSender(ownerState, null, accounts) : true;
+  if (ownerState && accounts.length && !botSender) {
+    if (!String(target).startsWith("@")) throw new Error("Personal-account setup needs a public @username or t.me link. Private groups can be added with /addhere.");
     const wanted = String(target).slice(1).toLowerCase();
-    let dialogs;
-    try { dialogs = await client.getDialogs({}); }
-    catch { throw new Error("TelePilot could not read your connected account's chats. Reconnect the account and try again."); }
-
-    const dialog = dialogs.find(item => String(item?.entity?.username || "").toLowerCase() === wanted);
-    if (!dialog) {
-      throw new Error(`${accountLabel(ownerState)} is not joined to that group/channel. Join it with the connected account first, then retry.`);
+    const selectedAccountIds = effectiveAccountIds(ownerState, null, accounts);
+    const accountById = new Map(accounts.map(account => [String(account.id), account]));
+    let matched = null;
+    for (const accountId of selectedAccountIds) {
+      const account = accountById.get(String(accountId));
+      if (!account) continue;
+      const client = await ensurePersonalClient(ownerState, account.id);
+      if (!client) continue;
+      let dialogs;
+      try { dialogs = await client.getDialogs({}); } catch { continue; }
+      const dialog = dialogs.find(item => String(item?.entity?.username || "").toLowerCase() === wanted);
+      if (!dialog) continue;
+      const entity = dialog.entity;
+      if (entity?.broadcast === true && entity?.creator !== true && entity?.adminRights?.postMessages !== true) continue;
+      matched = dialog;
+      break;
     }
-
-    const entity = dialog.entity;
-    if (entity?.broadcast === true && entity?.creator !== true && entity?.adminRights?.postMessages !== true) {
-      throw new Error(`${accountLabel(ownerState)} is joined to that channel but does not have permission to post. Give that account Post Messages permission first.`);
-    }
-
+    if (!matched) throw new Error(`None of your selected sender accounts can currently post to @${wanted}. Join it with at least one sender account and check channel permissions.`);
     let chat = null;
     try { chat = await bot.api.getChat(`@${wanted}`); } catch {}
-    if (chat && ["group", "supergroup", "channel"].includes(chat.type)) {
-      return {
-        id: String(chat.id),
-        label: String(chat.title || chat.username || chat.id).slice(0, 120),
-        type: chat.type,
-        username: chat.username ? `@${chat.username}` : `@${wanted}`,
-      };
-    }
-
-    const peerId = personalDialogPeerId(dialog);
-    if (!peerId) throw new Error("TelePilot could not identify that destination from your connected account.");
-    return {
-      id: peerId,
-      label: String(entity?.title || entity?.username || target).slice(0, 120),
-      type: entity?.broadcast === true ? "channel" : entity?.megagroup === true ? "supergroup" : "group",
-      username: `@${wanted}`,
-    };
+    if (chat && ["group", "supergroup", "channel"].includes(chat.type)) return { id: String(chat.id), label: String(chat.title || chat.username || chat.id).slice(0,120), type: chat.type, username: chat.username ? `@${chat.username}` : `@${wanted}`, accountMode: "inherit", accountIds: [] };
+    const peerId = personalDialogPeerId(matched);
+    if (!peerId) throw new Error("TelePilot could not identify that destination.");
+    const entity = matched.entity;
+    return { id: peerId, label: String(entity?.title || entity?.username || target).slice(0,120), type: entity?.broadcast === true ? "channel" : entity?.megagroup === true ? "supergroup" : "group", username: `@${wanted}`, accountMode: "inherit", accountIds: [] };
   }
-
   let chat;
-  try { chat = await bot.api.getChat(target); }
-  catch (err) { throw new Error(cleanDestinationError(err)); }
-  if (!chat || !["group", "supergroup", "channel"].includes(chat.type)) {
-    throw new Error("That destination is not a Telegram group or channel.");
-  }
+  try { chat = await bot.api.getChat(target); } catch (err) { throw new Error(cleanDestinationError(err)); }
+  if (!chat || !["group", "supergroup", "channel"].includes(chat.type)) throw new Error("That destination is not a Telegram group or channel.");
   let member;
-  try { member = await bot.api.getChatMember(chat.id, BOT_USER_ID); }
-  catch { throw new Error("Add @TelePilottBot to that group/channel first, then try again."); }
+  try { member = await bot.api.getChatMember(chat.id, BOT_USER_ID); } catch { throw new Error("Add @TelePilottBot to that group/channel first, then try again."); }
   if (member.status !== "administrator") throw new Error("Make @TelePilottBot an admin in that group/channel first.");
-  if (chat.type === "channel" && member.can_post_messages !== true) {
-    throw new Error("Give @TelePilottBot permission to post messages in that channel.");
-  }
+  if (chat.type === "channel" && member.can_post_messages !== true) throw new Error("Give @TelePilottBot permission to post messages in that channel.");
   if (ownerUid) {
     let ownerMember;
-    try { ownerMember = await bot.api.getChatMember(chat.id, Number(ownerUid)); }
-    catch { throw new Error("I could not verify that you are an admin of that destination."); }
-    if (!["creator", "administrator"].includes(ownerMember.status)) {
-      throw new Error("Only an admin of that group/channel can add it to their TelePilot profile.");
-    }
+    try { ownerMember = await bot.api.getChatMember(chat.id, Number(ownerUid)); } catch { throw new Error("I could not verify that you are an admin of that destination."); }
+    if (!["creator", "administrator"].includes(ownerMember.status)) throw new Error("Only an admin of that group/channel can add it while TelePilot Bot is the sender.");
   }
-  return {
-    id: String(chat.id),
-    label: String(chat.title || chat.username || chat.id).slice(0, 120),
-    type: chat.type,
-    username: chat.username ? `@${chat.username}` : "",
-  };
+  return { id: String(chat.id), label: String(chat.title || chat.username || chat.id).slice(0,120), type: chat.type, username: chat.username ? `@${chat.username}` : "", accountMode: "inherit", accountIds: [] };
 }
-function stopPostingLoop(state) {
+function stopPostingLoop(state, persist = true) {
   state.posting = false;
   state.nextRunAt = null;
   if (state.postingTimer) clearTimeout(state.postingTimer);
   state.postingTimer = null;
+  if (persist) saveState(state);
 }
-async function resolvePersonalTarget(client, destination, uid) {
+function suspendPostingLoop(state) {
+  if (state.postingTimer) clearTimeout(state.postingTimer);
+  state.postingTimer = null;
+}
+async function resolvePersonalTarget(client, destination, uid, accountId) {
   if (destination.username) return destination.username;
-  const cacheKey = `${uid}:${destination.id}`;
+  const cacheKey = `${uid}:${accountId}:${destination.id}`;
   const cached = personalTargetCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PERSONAL_TARGET_CACHE_MS) return cached.entity;
   const dialogs = await client.getDialogs({});
   for (const dialog of dialogs) {
-    const candidates = [
-      dialog?.id,
-      dialog?.entity?.id,
-      dialog?.inputEntity?.chatId,
-      dialog?.inputEntity?.channelId,
-    ].filter(v => v !== undefined && v !== null).map(v => String(v));
-    const normalizedTarget = String(destination.id).replace(/^-100/, "").replace(/^-/, "");
-    const matched = candidates.includes(String(destination.id))
-      || candidates.some(value => value.replace(/\D/g, "") === normalizedTarget);
-    if (matched) {
-      personalTargetCache.set(cacheKey, { at: Date.now(), entity: dialog });
-      return dialog;
+    const candidates = [dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v));
+    const target = String(destination.id).replace(/^-100/, "").replace(/^-/, "");
+    if (candidates.includes(String(destination.id)) || candidates.some(value => value.replace(/\D/g, "") === target)) {
+      personalTargetCache.set(cacheKey, { at: Date.now(), entity: dialog }); return dialog;
     }
   }
-  throw new Error("This personal account could not resolve that private destination. Reopen the group in Telegram and try again.");
+  throw new Error("This account could not resolve that private destination. Open the group in Telegram and try again.");
 }
-function isFatalPersonalSessionError(err) {
-  const code = telegramErrorCode(err);
-  return code.includes("AUTH_KEY_UNREGISTERED")
-    || code.includes("SESSION_REVOKED")
-    || code.includes("SESSION_EXPIRED")
-    || code.includes("AUTH_KEY_DUPLICATED")
-    || code.includes("USER_DEACTIVATED");
-}
-async function sendCycleBody(state) {
+function isFatalPersonalSessionError(err) { return isFatalSessionError(err); }
+async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now()}`) {
   if (!state.posting || !hasAccess(state)) { stopPostingLoop(state); return; }
-  const message = state.adMessage;
-  const targets = [...state.groups];
+  const message = state.adMessage, targets = [...state.groups], accounts = listAccounts(state.uid);
   if (!message || !targets.length) { stopPostingLoop(state); return; }
-
-  const personalClient = hasPersonalSession(state.uid) ? await ensurePersonalClient(state) : null;
-  if (hasPersonalSession(state.uid) && !personalClient) {
-    state.lastRunAt = Date.now();
-    state.lastCycleSuccess = 0;
-    state.lastCycleFailed = targets.length;
-    saveState(state);
-    if (state.personalRestoreFatal) {
-      stopPostingLoop(state);
-      await autoDeleteNotice(state.uid, "⚠️ Your personal Telegram session is no longer authorized. Reconnect the account.", 15000);
-    } else {
-      const noticeRate = takeRateLimit("personal-restore-notice", String(state.uid), 1, 30 * 60_000);
-      if (noticeRate.ok) {
-        await autoDeleteNotice(state.uid, "⚠️ Telegram connection issue. Your session is still saved and TelePilot will retry automatically.", 15000);
-      }
-    }
-    return;
-  }
-
-  const formattingEntities = personalClient ? toMtprotoEntities(state.adEntities) : [];
-  let success = 0;
-  let failed = 0;
+  const accountById = new Map(accounts.map(item => [String(item.id), item]));
+  let success = 0, failed = 0;
   for (const target of targets) {
-    if (!state.posting || !hasAccess(state)) { stopPostingLoop(state); break; }
-    try {
-      if (personalClient) {
-        const entity = await resolvePersonalTarget(personalClient, target, state.uid);
-        await personalClient.sendMessage(entity, {
-          message,
-          ...(formattingEntities.length ? { formattingEntities } : {}),
-        });
-      } else {
-        await bot.api.sendMessage(target.id, message, state.adEntities.length ? { entities: state.adEntities } : {});
+    if (!state.posting || !hasAccess(state)) break;
+    const botSender = usesBotSender(state, target, accounts);
+    const ids = botSender ? [] : effectiveAccountIds(state, target, accounts);
+    if (botSender) {
+      try {
+        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"bot", senderLabel:"TelePilot Bot", autoDisableEligible:true }, () => bot.api.sendMessage(target.id, message, state.adEntities.length ? { entities:state.adEntities } : {}));
+        if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
+      } catch (err) { failed++; console.error(`User ${state.uid} bot post failed ${target.id}:`, err?.description || err?.message || err); }
+      continue;
+    }
+    if (!ids.length) continue;
+    for (const accountId of ids) {
+      const account = accountById.get(String(accountId));
+      if (!account) { failed++; continue; }
+      try {
+        const client = await ensurePersonalClient(state, account.id);
+        if (!client) throw new Error(account.status === "needs-reconnect" ? "Account needs reconnect" : "Telegram connection unavailable");
+        const entity = await resolvePersonalTarget(client, target, state.uid, account.id);
+        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"personal", senderLabel:accountDisplayLabel(account), accountId:String(account.id), autoDisableEligible:ids.length === 1 }, () => client.sendMessage(entity, { message, ...(state.adEntities.length ? { formattingEntities:toMtprotoEntities(state.adEntities) } : {}) }));
+        if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
+      } catch (err) {
+        failed++;
+        personalTargetCache.delete(`${state.uid}:${account.id}:${target.id}`);
+        const code = telegramErrorCode(err);
+        console.error(`User ${state.uid}/${account.id} failed to post to ${target.id}:`, err?.errorMessage || err?.message || err);
+        if (isFatalPersonalSessionError(err)) updateAccountStatus(state.uid, account.id, { status:"needs-reconnect", lastError:code.slice(0,120), lastVerifiedAt:Date.now() });
+        const notice = takeRateLimit("destination-error-notice", `${state.uid}:${account.id}:${target.id}:${code.slice(0,40)}`, 1, 6*60*60_000);
+        if (notice.ok) await autoDeleteNotice(state.uid, `⚠️ ${accountDisplayLabel(account)} → ${destinationLabel(target)} failed. ${isFatalPersonalSessionError(err) ? "Reconnect that sender account." : "Check sender membership/permissions or Destination routing."}`, 20000);
       }
-      success++;
-      state.totalSent++;
       if (state.posting) await new Promise(resolve => setTimeout(resolve, POST_GAP_MS));
-    } catch (err) {
-      failed++;
-      const errorCode = telegramErrorCode(err);
-      personalTargetCache.delete(`${state.uid}:${target.id}`);
-      console.error(`User ${state.uid} failed to post to ${target.id}:`, err?.errorMessage || err?.description || err?.message || err);
-      if (personalClient && isFatalPersonalSessionError(err)) {
-        stopPostingLoop(state);
-        await autoDeleteNotice(state.uid, "⚠️ Your personal Telegram session is no longer authorized. Reconnect the account.", 15000);
-        break;
-      }
-      const destinationIssue = errorCode.includes("CHANNEL_PRIVATE")
-        || errorCode.includes("CHAT_WRITE_FORBIDDEN")
-        || errorCode.includes("USER_BANNED_IN_CHANNEL")
-        || errorCode.includes("CHAT_SEND_PHOTOS_FORBIDDEN")
-        || errorCode.includes("CHAT_SEND_VIDEOS_FORBIDDEN")
-        || errorCode.includes("CHAT_SEND_MEDIA_FORBIDDEN");
-      if (destinationIssue) {
-        const noticeRate = takeRateLimit("destination-error-notice", `${state.uid}:${target.id}:${errorCode.slice(0, 50)}`, 1, 6 * 60 * 60_000);
-        if (noticeRate.ok) {
-          const detail = errorCode.includes("CHANNEL_PRIVATE")
-            ? "the connected account can no longer access this destination"
-            : errorCode.includes("CHAT_SEND_")
-              ? "this destination does not allow that media type"
-              : "the connected account cannot post in this destination";
-          await autoDeleteNotice(state.uid, `⚠️ ${destinationLabel(target)} failed: ${detail}. Check its permissions or remove it from Destinations.`, 20000);
-        }
-      }
     }
   }
-  state.lastRunAt = Date.now();
-  state.lastCycleSuccess = success;
-  state.lastCycleFailed = failed;
-  saveState(state);
-  logAdminEvent("post_cycle", { uid: String(state.uid), success, failed });
+  state.lastRunAt = Date.now(); state.lastCycleSuccess = success; state.lastCycleFailed = failed; saveState(state);
+  logAdminEvent("post_cycle", { uid:String(state.uid), success, failed });
 }
-function runCycle(state) {
+function runCycle(state, cycleId) {
   if (state.cyclePromise) return state.cyclePromise;
-  state.cyclePromise = sendCycleBody(state).finally(() => { state.cyclePromise = null; });
+  state.cyclePromise = sendCycleBody(state, cycleId).finally(() => { state.cyclePromise = null; });
   return state.cyclePromise;
 }
-function scheduleNextCycle(state) {
+function scheduleCycleAt(state, runAt) {
   if (state.postingTimer) clearTimeout(state.postingTimer);
-  state.postingTimer = null;
   if (!state.posting || !hasAccess(state)) { stopPostingLoop(state); return; }
-  const delay = state.intervalMinutes * 60_000;
-  state.nextRunAt = Date.now() + delay;
+  const delayMs = state.intervalMinutes * 60_000;
+  let target = Number(runAt || 0) || Date.now() + delayMs;
+  while (target <= Date.now()) target += delayMs;
+  state.nextRunAt = target; saveState(state);
   state.postingTimer = setTimeout(async () => {
     state.postingTimer = null;
-    state.nextRunAt = null;
-    await runCycle(state);
-    if (state.posting) scheduleNextCycle(state);
-  }, delay);
+    const scheduledAt = target;
+    await runCycle(state, `interval:${state.uid}:${scheduledAt}`);
+    if (!state.posting) return;
+    let next = scheduledAt + delayMs;
+    while (next <= Date.now()) next += delayMs;
+    scheduleCycleAt(state, next);
+  }, Math.max(1, target - Date.now()));
 }
+function scheduleNextCycle(state) { scheduleCycleAt(state, Date.now() + state.intervalMinutes * 60_000); }
 function startPostingLoop(state) {
-  if (state.posting || !hasAccess(state)) return;
+  if (!hasAccess(state)) return;
+  if (state.posting && (state.postingTimer || state.cyclePromise)) return;
   state.posting = true;
-  state.nextRunAt = null;
-  void (async () => {
-    await runCycle(state);
-    if (state.posting && !state.postingTimer) scheduleNextCycle(state);
-  })();
+  const startedAt = Date.now(); state.nextRunAt = startedAt + state.intervalMinutes * 60_000; saveState(state);
+  void (async () => { await runCycle(state, `interval:${state.uid}:${startedAt}`); if (state.posting && !state.postingTimer) scheduleCycleAt(state, state.nextRunAt || startedAt + state.intervalMinutes*60_000); })();
+}
+function restorePostingLoops() {
+  for (const entry of fs.readdirSync(USERS_DIR, { withFileTypes:true })) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    const saved = loadUserSettings(entry.name);
+    if (saved.postingEnabled !== true) continue;
+    const state = getState(entry.name);
+    if (!hasAccess(state) || !state.adMessage || !state.groups.length) { stopPostingLoop(state); continue; }
+    state.posting = true;
+    const due = Number(saved.nextRunAt || 0);
+    if (due && due > Date.now()) scheduleCycleAt(state, due);
+    else void (async () => { const now=Date.now(); await runCycle(state, `interval:${state.uid}:restore:${now}`); if (state.posting) scheduleCycleAt(state, now + state.intervalMinutes*60_000); })();
+  }
 }
 
 function groupList(state) {
@@ -1078,16 +1038,17 @@ function groupList(state) {
   return lines.join("\n");
 }
 function groupsKeyboard(state) {
-  const kb = new InlineKeyboard().text("➕ Add destination", "add_group");
-  if (state.groups.length) kb.text("➖ Remove", "remove_group_menu");
+  const kb = new InlineKeyboard().text("➕ Add destinations", "add_group");
+  if (state.groups.length) kb.text("🎯 Routing", "route_groups:0").row().text("➖ Remove", "remove_group_menu");
   kb.row();
   if (state.groups.length) kb.text("🗑 Clear all", "clear_groups").row();
   return kb.text("⬅️ Back", "home");
 }
 async function showGroups(ctx, state) {
-  const hint = hasPersonalSession(state.uid)
-    ? "Public destinations use your connected personal account and do not require @TelePilottBot to be an admin. For private groups without a username, /addhere can still be used for setup."
-    : "Add @TelePilottBot as an admin in each destination first. In a group, you can also send /addhere while you are a group admin.";
+  const accounts = listAccounts(state.uid);
+  const hint = usesBotSender(state, null, accounts)
+    ? "Paste one or many public destinations (one per line). @TelePilottBot must have posting permissions; private groups can use /addhere."
+    : "Paste one or many public destinations (one per line). Use Routing to choose which accounts post to each destination and which message template it uses.";
   await ctx.editMessageText(
     `👥 GROUPS & CHANNELS\n\n${groupList(state)}\n\n${hint}`,
     { reply_markup: groupsKeyboard(state) },
@@ -1113,6 +1074,52 @@ async function showRemoveGroupPage(ctx, state, requestedPage = 0) {
   );
 }
 
+
+const ROUTE_PAGE_SIZE = 8;
+const ACCOUNT_PAGE_SIZE = 8;
+function routeAccountLabel(state, group) {
+  const accounts = listAccounts(state.uid);
+  if (usesBotSender(state, group, accounts)) return "TelePilot Bot";
+  const ids = effectiveAccountIds(state, group, accounts);
+  if (group.accountMode === "all") return `All ${accounts.length} accounts`;
+  if (group.accountMode === "selected") return `${ids.length} selected account${ids.length === 1 ? "" : "s"}`;
+  return `Inherit · ${senderSummary(state, accounts)}`;
+}
+async function showRoutingPage(ctx, state, requestedPage=0) {
+  const pages=Math.max(1,Math.ceil(state.groups.length/ROUTE_PAGE_SIZE)), page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)), start=page*ROUTE_PAGE_SIZE, kb=new InlineKeyboard();
+  state.groups.slice(start,start+ROUTE_PAGE_SIZE).forEach((g,o)=>kb.text(`🎯 ${destinationLabel(g).slice(0,36)}`,`route_dest:${start+o}:${page}`).row());
+  if(pages>1){if(page>0)kb.text("◀ Prev",`route_groups:${page-1}`);if(page<pages-1)kb.text("Next ▶",`route_groups:${page+1}`);kb.row();}
+  kb.text("⬅️ Destinations","groups");
+  await ctx.editMessageText(`🎯 DESTINATION ROUTING
+
+Choose a destination. Each destination can inherit your global sender selection, use TelePilot Bot, use all connected accounts, or use selected accounts. You can also assign a different saved message template.
+
+Page ${page+1}/${pages}`,{reply_markup:kb});
+}
+async function showRouteDestination(ctx,state,index,backPage=0){
+  const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);
+  const pro=readProSettings(state.uid),overrideId=String(pro.destinationOverrides?.[String(group.id)]||""),template=(pro.templates||[]).find(t=>String(t.id)===overrideId);
+  const kb=new InlineKeyboard().text("Inherit senders",`route_mode:${index}:inherit:${backPage}`).text("TelePilot Bot",`route_mode:${index}:bot:${backPage}`).row().text("All accounts",`route_mode:${index}:all:${backPage}`).text("Choose accounts",`route_accounts:${index}:0:${backPage}`).row().text("📝 Choose message",`v1_override_dest:${index}`).row().text("⬅️ Routing",`route_groups:${backPage}`);
+  await ctx.editMessageText(["🎯 DESTINATION ROUTING",destinationLabel(group),"",`Senders — ${routeAccountLabel(state,group)}`,`Message — ${template?String(template.name||"Template"):"Default / rotation"}`,"","This destination can use TelePilot Bot, different sender accounts and a different message from your other destinations."].join("\n"),{reply_markup:kb});
+}
+async function showRouteAccounts(ctx,state,index,requestedPage=0,backPage=0){const group=state.groups[index];if(!group)return showRoutingPage(ctx,state,backPage);const accounts=listAccounts(state.uid),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),selected=new Set((group.accountIds||[]).map(String)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`route_account_toggle:${index}:${a.id}:${page}:${backPage}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`route_accounts:${index}:${page-1}:${backPage}`);if(page<pages-1)kb.text("Next ▶",`route_accounts:${index}:${page+1}:${backPage}`);kb.row();}kb.text("⬅️ Destination",`route_dest:${index}:${backPage}`);await ctx.editMessageText(`👤 ROUTE SENDERS
+
+${destinationLabel(group)}
+Selected — ${selected.size}
+
+Toggle any number of connected accounts. There is no TelePilot account-count limit.`,{reply_markup:kb});}
+async function showAccounts(ctx,state,requestedPage=0){
+  clearAwaiting(state);const accounts=listAccounts(state.uid),selection=normalizeAccountSelection(state,accounts),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard().text("＋ Add account","account_phone").row();
+  kb.text(selection.mode==="bot"?"✅ TelePilot Bot":"Use TelePilot Bot","account_mode_bot").row();
+  if(accounts.length)kb.text(selection.mode==="all"?"✅ All accounts":"Use all accounts","account_mode_all").text(selection.mode==="selected"?"✅ Selected":"Choose accounts","account_select:0").row();
+  accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${a.status==="needs-reconnect"?"⚠️":"👤"} ${accountDisplayLabel(a).slice(0,36)}`,`account_detail:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account:${page+1}`);kb.row();}kb.text("⬅️ Dashboard","home");
+  await ctx.editMessageText(["👤 SENDER ACCOUNTS",`Connected — ${accounts.length}`,`Posting mode — ${senderSummary(state,accounts)}`,"","Keep personal accounts connected without being forced to use them. Choose TelePilot Bot, all connected accounts, or any selected set. Destination Routing can override the sender per group/channel."].join("\n"),{reply_markup:kb});
+}
+async function showAccountSelection(ctx,state,requestedPage=0){const accounts=listAccounts(state.uid),selected=new Set((state.selectedAccountIds||[]).map(String)),pages=Math.max(1,Math.ceil(accounts.length/ACCOUNT_PAGE_SIZE)),page=Math.max(0,Math.min(Number(requestedPage)||0,pages-1)),start=page*ACCOUNT_PAGE_SIZE,kb=new InlineKeyboard();accounts.slice(start,start+ACCOUNT_PAGE_SIZE).forEach(a=>kb.text(`${selected.has(a.id)?"✅":"○"} ${accountDisplayLabel(a).slice(0,35)}`,`account_toggle:${a.id}:${page}`).row());if(pages>1){if(page>0)kb.text("◀ Prev",`account_select:${page-1}`);if(page<pages-1)kb.text("Next ▶",`account_select:${page+1}`);kb.row();}kb.text("⬅️ Senders","account");await ctx.editMessageText(`👤 CHOOSE SENDER ACCOUNTS
+
+Selected — ${selected.size}
+
+Toggle any accounts. Selected mode sends each routed post from every selected account.`,{reply_markup:kb});}
 function htmlPage(token) {
   const safeToken = JSON.stringify(String(token));
   return `<!doctype html>
@@ -1387,7 +1394,7 @@ function adminDashboardText() {
   const revoked = snapshots.filter(s => s.accessRevoked).length;
   const expired = snapshots.filter(s => !s.accessRevoked && !s.accessLifetime && s.accessUntil && s.accessUntil <= now).length;
   const running = [...states.values()].filter(s => s.posting && !isAdmin(s.uid)).length;
-  const connected = ids.filter(hasPersonalSession).length;
+  const connected = ids.reduce((sum,id)=>sum+listAccounts(id).length,0);
   const unusedKeys = keys.filter(k => !k.revokedAt && !k.redeemedAt).length;
   const redeemedKeys = keys.filter(k => k.redeemedAt && !k.revokedAt).length;
   const revokedKeys = keys.filter(k => k.revokedAt).length;
@@ -1444,8 +1451,8 @@ async function showAdminUser(ctx, uid, backPage = 0) {
   }
   const state = getAdminSnapshot(id);
   const live = states.get(id);
-  const connected = hasPersonalSession(id);
-  const sender = connected ? (state.personalUsername ? `@${state.personalUsername}` : "Personal account") : "TelePilot Bot";
+  const connected = listAccounts(id).length > 0;
+  const sender = accountLabel(state);
   const text = [
     `👤 ${formatAdminUserName(state)}`,
     "",
@@ -1477,36 +1484,26 @@ async function showAdminUser(ctx, uid, backPage = 0) {
   return adminRender(ctx, text, kb);
 }
 function extendUserAccess(state, duration) {
-  if (duration === "lifetime") {
-    state.accessLifetime = true;
-    state.accessUntil = null;
-    state.accessRevoked = false;
-  } else {
-    const days = Number(duration);
-    if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error("Days must be between 1 and 3650.");
-    if (!state.accessLifetime) {
-      const base = Math.max(Date.now(), Number(state.accessUntil || 0));
-      state.accessUntil = base + days * 86_400_000;
-    }
-    state.accessRevoked = false;
+  state.accessRevoked = false;
+  recomputeAccessState(state);
+  if (duration === "lifetime") addAccessGrant(state, { source:"admin", lifetime:true });
+  else {
+    const days=Number(duration); if(!Number.isInteger(days)||days<1||days>3650)throw new Error("Days must be between 1 and 3650.");
+    const base=Math.max(Date.now(),Number(state.accessUntil||0)); addAccessGrant(state,{source:"admin",expiresAt:base+days*86_400_000});
   }
   saveState(state);
 }
 async function disconnectPersonalAccount(state, actorUid = state.uid) {
   stopPostingLoop(state);
   cancelLoginAttempt(state.uid, "cancelled");
-  let client = state.personalClient;
-  if (!client && hasPersonalSession(state.uid)) {
-    try { client = await ensurePersonalClient(state); } catch {}
-  }
-  state.personalClient = null;
-  state.personalUsername = "";
-  try { await client?.logOut(); } catch {}
-  try { await client?.disconnect(); } catch {}
-  removePersonalSession(state.uid);
+  for (const [id,client] of state.personalClients || []) { try { await client.logOut(); } catch {} try { await client.disconnect(); } catch {} state.personalClients.delete(id); }
+  removeAllAccounts(state.uid);
+  state.selectedAccountIds=[]; state.senderMode="selected"; state.personalUsername="";
+  for(const group of state.groups){group.accountIds=[];group.accountMode="inherit";}
   saveState(state);
-  logAdminEvent("account_disconnected", { uid: String(state.uid), actorUid: String(actorUid) });
+  logAdminEvent("account_disconnected", { uid:String(state.uid), actorUid:String(actorUid), all:true });
 }
+
 async function showAdminExtend(ctx, uid, backPage = 0) {
   const id = String(uid);
   const state = getAdminSnapshot(id);
@@ -2244,16 +2241,13 @@ bot.command("addhere", async ctx => {
   let ownerMember;
   try { ownerMember = await bot.api.getChatMember(ctx.chat.id, ctx.from.id); }
   catch { return ctx.reply("I couldn't verify your group permissions."); }
-  if (hasPersonalSession(state.uid)) {
-    if (["left", "kicked"].includes(ownerMember.status)
-      || (ownerMember.status === "restricted" && ownerMember.can_send_messages !== true)) {
-      return ctx.reply("Your connected personal account does not currently have permission to post in this group.");
-    }
-  } else if (!["creator", "administrator"].includes(ownerMember.status)) {
+  const accounts = listAccounts(state.uid);
+  const botSender = usesBotSender(state, null, accounts);
+  if (botSender && !["creator", "administrator"].includes(ownerMember.status)) {
     return ctx.reply("Only a group admin can link this group when using TelePilot Bot as the sender.");
   }
 
-  if (!hasPersonalSession(state.uid)) {
+  if (botSender) {
     let botMember;
     try { botMember = await bot.api.getChatMember(ctx.chat.id, BOT_USER_ID); }
     catch { return ctx.reply("I couldn't verify TelePilot's permissions in this group."); }
@@ -2262,17 +2256,10 @@ bot.command("addhere", async ctx => {
     }
   }
 
-  const destination = {
-    id: String(ctx.chat.id),
-    label: String(ctx.chat.title || ctx.chat.id).slice(0, 120),
-    type: ctx.chat.type,
-    username: ctx.chat.username ? `@${ctx.chat.username}` : "",
-  };
-  if (!state.groups.some(g => g.id === destination.id)) {
-    state.groups.push(destination);
-    saveState(state);
-  }
-  await ctx.reply(`✅ ${destinationLabel(destination)} added to your TelePilot profile.`);
+  const destination = { id:String(ctx.chat.id), label:String(ctx.chat.title || ctx.chat.id).slice(0,120), type:ctx.chat.type, username:ctx.chat.username ? `@${ctx.chat.username}` : "", accountMode:"inherit", accountIds:[] };
+  const duplicate = state.groups.some(g => g.id === destination.id);
+  if (!duplicate) { state.groups.push(destination); saveState(state); }
+  await ctx.reply(duplicate ? `⚠️ ${destinationLabel(destination)} is already in your TelePilot destinations.` : `✅ ${destinationLabel(destination)} added to your TelePilot profile.`);
   const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
   if (tutorialScreen) {
     try { await bot.api.sendMessage(state.uid, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); } catch {}
@@ -2317,49 +2304,21 @@ bot.callbackQuery("home", async ctx => {
   await showHome(ctx, stateFromCtx(ctx));
 });
 
-bot.callbackQuery("account", async ctx => {
-  await ctx.answerCallbackQuery();
-  const state = stateFromCtx(ctx);
-  clearAwaiting(state);
-  if (hasPersonalSession(state.uid)) {
-    await ensurePersonalClient(state);
-    return ctx.editMessageText(
-      `👤 PERSONAL ACCOUNT\n\n✅ Connected${state.personalUsername ? ` as @${state.personalUsername}` : ""}\n\nTelePilot will post using this account while it is connected.`,
-      {
-        reply_markup: new InlineKeyboard()
-          .text("🔌 Disconnect account", "account_disconnect")
-          .row()
-          .text("⬅️ Back", "home"),
-      },
-    );
-  }
-  return ctx.editMessageText(
-    "👤 PERSONAL ACCOUNT\n\nConnect a personal Telegram account so scheduled posts are sent from that account instead of @TelePilottBot.\n\nYour phone number is deleted from the bot chat after use. Login code and 2FA are entered on the secure TelePilot page.",
-    {
-      reply_markup: new InlineKeyboard()
-        .text("📱 Connect personal account", "account_phone")
-        .row()
-        .text("⬅️ Back", "home"),
-    },
-  );
-});
+bot.callbackQuery("account", async ctx => { await ctx.answerCallbackQuery(); await showAccounts(ctx,stateFromCtx(ctx),0); });
+bot.callbackQuery(/^account:(\d+)$/, async ctx => { await ctx.answerCallbackQuery(); await showAccounts(ctx,stateFromCtx(ctx),Number(ctx.match[1])); });
 bot.callbackQuery("account_phone", async ctx => {
-  await ctx.answerCallbackQuery();
-  const state = stateFromCtx(ctx);
-  state.awaiting = "phone";
-  state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
-  state.awaitingPromptChatId = ctx.chat?.id || null;
-  await ctx.editMessageText(
-    "📱 CONNECT ACCOUNT\n\nSend the phone number for the Telegram account you want to connect, including country code.\n\nExample: +37120000000",
-    { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "account") },
-  );
+  await ctx.answerCallbackQuery(); const state=stateFromCtx(ctx); state.awaiting="phone"; state.awaitingPromptMessageId=ctx.callbackQuery.message?.message_id||null; state.awaitingPromptChatId=ctx.chat?.id||null;
+  await ctx.editMessageText("📱 CONNECT ACCOUNT\n\nSend the phone number for the Telegram account you want to add, including country code.\n\nYou can connect additional accounts the same way later.\n\nExample: +37120000000",{reply_markup:new InlineKeyboard().text("⬅️ Cancel","account")});
 });
-bot.callbackQuery("account_disconnect", async ctx => {
-  const state = stateFromCtx(ctx);
-  await ctx.answerCallbackQuery({ text: "Disconnecting…" });
-  await disconnectPersonalAccount(state, state.uid);
-  await showHome(ctx, state);
-});
+bot.callbackQuery("account_mode_bot", async ctx => { const state=stateFromCtx(ctx);state.senderMode="bot";saveState(state);await ctx.answerCallbackQuery({text:"Posting with TelePilot Bot"});await showAccounts(ctx,state,0); });
+bot.callbackQuery("account_mode_all", async ctx => { const state=stateFromCtx(ctx);state.senderMode="all";saveState(state);await ctx.answerCallbackQuery({text:"Posting from all connected accounts"});await showAccounts(ctx,state,0); });
+bot.callbackQuery(/^account_select:(\d+)$/, async ctx => {const state=stateFromCtx(ctx);state.senderMode="selected";saveState(state);await ctx.answerCallbackQuery();await showAccountSelection(ctx,state,Number(ctx.match[1]));});
+bot.callbackQuery(/^account_toggle:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),id=String(ctx.match[1]),set=new Set((state.selectedAccountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);state.senderMode="selected";state.selectedAccountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Selected":"Deselected"});await showAccountSelection(ctx,state,Number(ctx.match[2]));});
+bot.callbackQuery(/^account_detail:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {const state=stateFromCtx(ctx),account=listAccounts(state.uid).find(a=>a.id===ctx.match[1]);if(!account)return ctx.answerCallbackQuery({text:"Account not found."});await ctx.answerCallbackQuery();const selected=(state.selectedAccountIds||[]).map(String).includes(account.id);const kb=new InlineKeyboard().text(selected?"Selected globally":"Use only this account",`account_only:${account.id}`).row().text("🔌 Disconnect",`account_remove:${account.id}:${ctx.match[2]}`).row().text("⬅️ Senders",`account:${ctx.match[2]}`);await ctx.editMessageText(["👤 SENDER ACCOUNT",accountDisplayLabel(account),"",`Status — ${account.status}`,`Telegram ID — ${account.telegramId||"—"}`,`Global selection — ${selected?"Selected":"Not selected"}`,account.lastError?`Last issue — ${account.lastError}`:"","Disconnecting this sender does not remove your destinations, messages or schedules."].filter(Boolean).join("\n"),{reply_markup:kb});});
+bot.callbackQuery(/^account_only:([A-Za-z0-9_-]+)$/,async ctx=>{const state=stateFromCtx(ctx),id=String(ctx.match[1]);state.senderMode="selected";state.selectedAccountIds=[id];saveState(state);await ctx.answerCallbackQuery({text:"Using this account globally"});await showAccounts(ctx,state,0);});
+bot.callbackQuery(/^account_remove:([A-Za-z0-9_-]+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),id=String(ctx.match[1]);await ctx.answerCallbackQuery({text:"Disconnecting…"});await disconnectOneAccount(state,id,true);await showAccounts(ctx,state,Number(ctx.match[2]));});
+// Compatibility/admin deletion path: this deliberately disconnects every connected account.
+bot.callbackQuery("account_disconnect", async ctx => { const state=stateFromCtx(ctx);await ctx.answerCallbackQuery({text:"Disconnecting all accounts…"});await disconnectPersonalAccount(state,state.uid);await showHome(ctx,state); });
 
 bot.callbackQuery("message", async ctx => {
   await ctx.answerCallbackQuery();
@@ -2412,14 +2371,21 @@ bot.callbackQuery("add_group", async ctx => {
   state.awaiting = "group";
   state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
   state.awaitingPromptChatId = ctx.chat?.id || null;
-  const instructions = hasPersonalSession(state.uid)
-    ? "➕ ADD DESTINATION\n\n1. Make sure your connected personal account is already in the group/channel.\n2. For channels, that account needs permission to post.\n3. Send the public @username or t.me link here.\n\n@TelePilottBot does not need to be an admin for public destinations in personal-account mode. For private groups without a public username, /addhere can still be used."
-    : "➕ ADD DESTINATION\n\n1. Add @TelePilottBot as an admin in the group/channel.\n2. For channels, give it permission to post.\n3. Send the public @username or t.me link here.\n\nFor groups without a public username, send /addhere inside that group while you are an admin.";
+  const accounts = listAccounts(state.uid);
+  const instructions = usesBotSender(state, null, accounts)
+    ? "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\n@TelePilottBot must be an admin with posting permission in each destination. For private groups, use /addhere inside the group."
+    : "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\nAt least one selected connected account must already be joined and able to post. After adding, open Routing to choose exactly which account(s) post to each destination. Private groups without a username can use /addhere.";
   await ctx.editMessageText(
     instructions,
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "groups") },
   );
 });
+bot.callbackQuery(/^route_groups:(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRoutingPage(ctx,stateFromCtx(ctx),Number(ctx.match[1]));});
+bot.callbackQuery(/^route_dest:(\d+):(\d+)$/,async ctx=>{await ctx.answerCallbackQuery();await showRouteDestination(ctx,stateFromCtx(ctx),Number(ctx.match[1]),Number(ctx.match[2]));});
+bot.callbackQuery(/^route_mode:(\d+):(inherit|bot|all):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode=ctx.match[2];if(group.accountMode!=="selected")group.accountIds=[];saveState(state);const notice=group.accountMode==="all"?"Using all accounts":group.accountMode==="bot"?"Using TelePilot Bot":"Using global sender selection";await ctx.answerCallbackQuery({text:notice});await showRouteDestination(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]));});
+bot.callbackQuery(/^route_accounts:(\d+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});group.accountMode="selected";saveState(state);await ctx.answerCallbackQuery();await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[2]),Number(ctx.match[3]));});
+bot.callbackQuery(/^route_account_toggle:(\d+):([A-Za-z0-9_-]+):(\d+):(\d+)$/,async ctx=>{const state=stateFromCtx(ctx),group=state.groups[Number(ctx.match[1])];if(!group)return ctx.answerCallbackQuery({text:"Destination not found."});const id=String(ctx.match[2]),set=new Set((group.accountIds||[]).map(String));if(set.has(id))set.delete(id);else set.add(id);group.accountMode="selected";group.accountIds=[...set];saveState(state);await ctx.answerCallbackQuery({text:set.has(id)?"Added to route":"Removed from route"});await showRouteAccounts(ctx,state,Number(ctx.match[1]),Number(ctx.match[3]),Number(ctx.match[4]));});
+
 bot.callbackQuery("remove_group_menu", async ctx => {
   await ctx.answerCallbackQuery();
   await showRemoveGroupPage(ctx, stateFromCtx(ctx), 0);
@@ -2518,13 +2484,8 @@ bot.callbackQuery("start", async ctx => {
   if (state.posting) return ctx.answerCallbackQuery({ text: "TelePilot is already running." });
   if (!state.adMessage) return ctx.answerCallbackQuery({ text: "Set an ad message first.", show_alert: true });
   if (!state.groups.length) return ctx.answerCallbackQuery({ text: "Add at least one group/channel first.", show_alert: true });
-  if (hasPersonalSession(state.uid) && !(await ensurePersonalClient(state))) {
-    return ctx.answerCallbackQuery({ text: "Reconnect your personal Telegram account first.", show_alert: true });
-  }
   await ctx.answerCallbackQuery();
-  const sender = hasPersonalSession(state.uid)
-    ? (state.personalUsername ? `@${state.personalUsername}` : "your personal account")
-    : `@${botInfo.username}`;
+  const sender = accountLabel(state);
   authorizeSensitiveCallback(state.uid, "start_confirm");
   await ctx.editMessageText(
     `▶️ START TELEPILOT\n\nPosting as: ${sender}\nDestinations: ${state.groups.length}\nInterval: ${formatInterval(state.intervalMinutes)}\n\nTelePilot will post once immediately, then continue on your selected interval.`,
@@ -2536,7 +2497,6 @@ bot.callbackQuery("start_confirm", async ctx => {
   if (!consumeSensitiveCallback(state.uid, "start_confirm")) return ctx.answerCallbackQuery({ text: "This confirmation expired. Open Start again.", show_alert: true });
   await ctx.answerCallbackQuery({ text: "Starting…" });
   if (!hasAccess(state) || !state.adMessage || !state.groups.length) return showHome(ctx, state);
-  if (hasPersonalSession(state.uid) && !(await ensurePersonalClient(state))) return showHome(ctx, state);
   startPostingLoop(state);
   logAdminEvent("posting_started", { uid: String(state.uid) });
   await showHome(ctx, state);
@@ -2646,37 +2606,20 @@ bot.on("message:text", async ctx => {
   }
 
   if (state.awaiting === "group") {
-    const target = normalizeTarget(ctx.message.text);
-    if (!target) {
-      const personalHint = hasPersonalSession(state.uid)
-        ? "Send a public @username or t.me/username link. Private groups without a public username can still use /addhere."
-        : "Send a public @username or t.me/username link. For private groups, use /addhere inside the group.";
-      const n = await ctx.reply(`I couldn't read that. ${personalHint}`);
-      setTimeout(() => void safeDelete(ctx.chat.id, n.message_id), 8000);
-      return;
-    }
-    let destination;
-    try { destination = await resolveDestination(target, state.uid); }
-    catch (err) {
-      const n = await ctx.reply(`❌ ${err?.message || "TelePilot cannot post there yet."}`);
-      setTimeout(() => void safeDelete(ctx.chat.id, n.message_id), 10000);
-      return;
-    }
-    const pm = state.awaitingPromptMessageId;
-    const pc = state.awaitingPromptChatId || ctx.chat.id;
-    if (!state.groups.some(g => g.id === destination.id)) state.groups.push(destination);
-    clearAwaiting(state);
-    saveState(state);
-    await safeDelete(ctx.chat.id, ctx.message.message_id);
-    const tutorialScreen = advanceTutorialAfterAction(state.uid, 3, 4);
-    if (tutorialScreen) {
-      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
-      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
-      return;
-    }
-    if (!(await editDashboard(pc, pm, state))) {
-      await ctx.reply(dashboard(state), { reply_markup: mainKeyboard(state) });
-    }
+    const rawLines=String(ctx.message.text||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    const targets=[...new Set(rawLines.map(normalizeTarget).filter(Boolean))];
+    const invalid=rawLines.length-targets.length;
+    if(!targets.length){const n=await ctx.reply("❌ Send public @usernames or t.me links, one destination per line.");setTimeout(()=>void safeDelete(ctx.chat.id,n.message_id),8000);return;}
+    const pm=state.awaitingPromptMessageId,pc=state.awaitingPromptChatId||ctx.chat.id,added=[],duplicates=[],failures=[];
+    for(const target of targets){try{const destination=await resolveDestination(target,state.uid);if(state.groups.some(g=>g.id===destination.id))duplicates.push(destinationLabel(destination));else{state.groups.push(destination);added.push(destinationLabel(destination));}}catch(err){failures.push(`${target} — ${err?.message||"cannot add"}`);}}
+    clearAwaiting(state);saveState(state);await safeDelete(ctx.chat.id,ctx.message.message_id);
+    const tutorialScreen=(added.length||duplicates.length)?advanceTutorialAfterAction(state.uid,3,4):null;
+    if(tutorialScreen){try{await bot.api.editMessageText(pc,pm,tutorialScreen.text,{reply_markup:tutorialScreen.keyboard});}catch{await ctx.reply(tutorialScreen.text,{reply_markup:tutorialScreen.keyboard});}return;}
+    const summary=[`✅ Bulk destination setup complete`,`Added — ${added.length}`,`Already saved — ${duplicates.length}`,`Failed / invalid — ${failures.length+invalid}`];
+    if(failures.length)summary.push("",...failures.slice(0,8));
+    try{await bot.api.editMessageText(pc,pm,summary.join("\n"),{reply_markup:new InlineKeyboard().text("🎯 Routing","route_groups:0").row().text("⬅️ Destinations","groups")});}catch{await ctx.reply(summary.join("\n"));}
+    return;
+
   }
 });
 
@@ -2820,16 +2763,11 @@ const loginSweep = setInterval(() => {
 loginSweep.unref?.();
 
 const idleSweep = setInterval(() => {
-  const cutoff = Date.now() - IDLE_STATE_MS;
-  for (const [key, state] of states) {
-    if (state.posting || state.awaiting || state.cyclePromise || state.personalRestorePromise || state.lastTouchedAt > cutoff) continue;
-    const client = state.personalClient;
-    state.personalClient = null;
-    states.delete(key);
-    if (client) void client.disconnect().catch(() => {});
-  }
-}, 10 * 60_000);
+  const cutoff=Date.now()-IDLE_STATE_MS;
+  for(const [key,state] of states){if(state.posting||state.awaiting||state.cyclePromise||state.personalRestorePromises?.size||state.lastTouchedAt>cutoff)continue;for(const client of state.personalClients?.values?.()||[])void client.disconnect().catch(()=>{});states.delete(key);}
+},10*60_000);
 idleSweep.unref?.();
+restorePostingLoops();
 
 bot.catch(err => {
   const value = String(err?.error?.description || err?.error?.message || err?.error || "");
@@ -2838,22 +2776,14 @@ bot.catch(err => {
 });
 let shuttingDown = false;
 async function shutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`TelePilot shutting down (${signal})…`);
-  clearInterval(loginSweep);
-  clearInterval(idleSweep);
-  try { bot.stop(); } catch {}
-  for (const attempt of [...loginAttempts.values()]) cancelLoginAttempt(attempt.uid, "shutdown");
-  for (const state of states.values()) {
-    stopPostingLoop(state);
-    try { await state.cyclePromise; } catch {}
-    try { await state.personalClient?.disconnect(); } catch {}
-  }
-  await new Promise(resolve => healthServer.close(resolve));
+  if(shuttingDown)return;shuttingDown=true;console.log(`TelePilot shutting down (${signal})…`);clearInterval(loginSweep);clearInterval(idleSweep);try{bot.stop();}catch{}
+  for(const attempt of [...loginAttempts.values()])cancelLoginAttempt(attempt.uid,"shutdown");
+  for(const state of states.values()){suspendPostingLoop(state);try{await state.cyclePromise;}catch{}for(const client of state.personalClients?.values?.()||[])try{await client.disconnect();}catch{}}
+  await new Promise(resolve=>healthServer.close(resolve));
 }
+
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-console.log(`TelePilot v0.5 personal-account mode starting with ${ADMIN_IDS.size} admin profile(s)…`);
+console.log(`TelePilot 1.1 multi-account mode starting with ${ADMIN_IDS.size} admin profile(s)…`);
 await bot.start({ onStart: info => console.log(`Control bot running as @${info.username}`) });

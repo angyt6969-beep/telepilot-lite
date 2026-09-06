@@ -1,0 +1,43 @@
+name: TelePilot 1.1 Regression
+
+on:
+  push:
+    branches: [main, telepilot-v2-routing]
+    paths:
+      - ".github/workflows/telepilot-v11-regression.yml"
+      - "app.js"
+      - "account-store.js"
+      - "dispatch-context.js"
+      - "login-attempt-store.js"
+      - "onboarding.js"
+      - "posting-engine-enhancements.js"
+      - "pro-controls.js"
+      - "security-core.js"
+      - "sender-destination-ui.js"
+      - "support-center.js"
+      - "v1-controls.js"
+      - "v1-engine.js"
+      - "v1-extras.js"
+      - "v1-ui.js"
+      - "v1-worker.js"
+      - "teleproto-reliability-test.mjs"
+      - "telepilot-v11-regression-test.mjs"
+      - "package.json"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          for f in app.js account-store.js dispatch-context.js login-attempt-store.js runtime-hooks.js posting-engine-enhancements.js pro-controls.js security-core.js sender-destination-ui.js support-center.js v1-controls.js v1-engine.js v1-extras.js v1-ui.js v1-worker.js onboarding.js startup.js; do node --check "$f"; done
+      - name: Regression tests
+        env:
+          TELEPILOT_SECURITY_SECRET: test-only-regression-secret-012345678901234567890
+        run: npm test

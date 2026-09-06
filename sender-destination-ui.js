@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { listAccounts, senderSummary } from "./account-store.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 
@@ -11,26 +12,10 @@ function userIdFromChat(chatId) {
 function senderForChat(chatId) {
   const uid = userIdFromChat(chatId);
   if (!uid) return { mode: "bot", label: "TelePilot Bot" };
-
-  const dir = path.join(DATA_DIR, "users", uid);
-  const sessionFile = path.join(dir, "personal-session.enc");
-  let personal = false;
-  try {
-    personal = fs.existsSync(sessionFile) && fs.statSync(sessionFile).size > 20;
-  } catch {}
-
-  if (!personal) return { mode: "bot", label: "TelePilot Bot" };
-
-  let username = "";
-  try {
-    const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
-    username = typeof settings?.personalUsername === "string" ? settings.personalUsername.trim() : "";
-  } catch {}
-
-  return {
-    mode: "personal",
-    label: username ? `@${username.replace(/^@/, "")}` : "Personal account",
-  };
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "users", uid, "settings.json"), "utf8")); } catch {}
+  const label = senderSummary(settings, listAccounts(uid));
+  return { mode: label === "TelePilot Bot" ? "bot" : "personal", label };
 }
 
 function destinationsListFromUi(text) {

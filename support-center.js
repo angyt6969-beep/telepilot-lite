@@ -14,6 +14,7 @@ import {
   readAppSettings,
   readProSettings,
 } from "./posting-engine-enhancements.js";
+import { listAccounts } from "./account-store.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const CASE_FILE = path.join(DATA_DIR, "support-cases.json");
@@ -111,7 +112,7 @@ function safeDiagnostic(uid) {
       : Number(settings?.accessUntil || 0) > now ? "active" : "inactive";
   return {
     version: VERSION,
-    sender: hasPersonalSessionFile(uid) ? "personal" : "bot",
+    sender: listAccounts(uid).length ? `${listAccounts(uid).length} personal account(s)` : "bot",
     destinations: Array.isArray(settings?.groups) ? settings.groups.length : 0,
     intervalMinutes: Number(settings?.intervalMinutes || 0) || null,
     access,
@@ -395,46 +396,21 @@ function scrubKeyIdentity(uid) {
 }
 
 async function processDeletion(ctx, item) {
-  const adminUid = uidOf(ctx);
-  const targetUid = String(item?.uid || "");
-  if (!isAdmin(adminUid) || !/^\d+$/.test(targetUid)) throw new Error("Invalid deletion target");
-  if (isAdmin(targetUid)) throw new Error("Admin profiles cannot be deleted through support controls");
-
-  try {
-    if (typeof appStopHandler === "function") await appStopHandler(fakeTargetContext(ctx, targetUid, "stop"), async () => undefined);
-  } catch {}
-  try {
-    if (typeof appDisconnectHandler === "function") await appDisconnectHandler(fakeTargetContext(ctx, targetUid, "account_disconnect"), async () => undefined);
-  } catch {}
-
-  try {
-    await ctx.api.sendMessage(Number(targetUid), [
-      "✅ TelePilot data deletion completed",
-      "",
-      "Your stored TelePilot configuration and personal-account session have been removed. Limited security/audit records may remain where necessary for service integrity.",
-      "",
-      `Questions — @${SUPPORT_USERNAME}`,
-    ].join("\n"), { reply_markup: new InlineKeyboard().url(`@${SUPPORT_USERNAME}`, SUPPORT_URL) });
-  } catch {}
-
+  const adminUid=uidOf(ctx),targetUid=String(item?.uid||"");
+  if(!isAdmin(adminUid)||!/^\d+$/.test(targetUid))throw new Error("Invalid deletion target");
+  if(isAdmin(targetUid))throw new Error("Admin profiles cannot be deleted through support controls");
+  try { if(typeof appStopHandler==="function")await appStopHandler(fakeTargetContext(ctx,targetUid,"stop"),async()=>undefined); } catch {}
+  try { if(typeof appDisconnectHandler==="function")await appDisconnectHandler(fakeTargetContext(ctx,targetUid,"account_disconnect"),async()=>undefined); } catch {}
   scrubKeyIdentity(targetUid);
-  try { fs.rmSync(userDir(targetUid), { recursive: true, force: true }); } catch {}
-  markDeleted(targetUid, item.id);
-
-  const db = loadCases();
-  for (const current of db.cases) {
-    if (String(current.uid || "") !== targetUid) continue;
-    current.uid = "";
-    current.username = "";
-    current.message = current.id === item.id ? "User-requested data deletion completed." : "Support report content removed after user data deletion.";
-    current.diagnostic = {};
-    current.replies = [];
-    current.status = "resolved";
-    current.deletedAt = Date.now();
-    current.updatedAt = Date.now();
-  }
+  const dir=userDir(targetUid);
+  fs.rmSync(dir,{recursive:true,force:true});
+  if(fs.existsSync(dir))throw new Error("User directory still exists after deletion");
+  markDeleted(targetUid,item.id);
+  const db=loadCases();
+  for(const current of db.cases){if(String(current.uid||"")!==targetUid)continue;current.uid="";current.username="";current.message=current.id===item.id?"User-requested data deletion completed.":"Support report content removed after user data deletion.";current.diagnostic={};current.replies=[];current.status="resolved";current.deletedAt=Date.now();current.updatedAt=Date.now();}
   saveCases(db);
-  appendSecurityEvent("user_data_deleted", { actorUid: adminUid, caseId: item.id });
+  appendSecurityEvent("user_data_deleted",{actorUid:adminUid,caseId:item.id});
+  try { await ctx.api.sendMessage(Number(targetUid),["✅ TelePilot data deletion completed","","Your stored TelePilot configuration and connected personal-account sessions have been removed. Limited security/audit records may remain where necessary for service integrity.","",`Questions — @${SUPPORT_USERNAME}`].join("\n"),{reply_markup:new InlineKeyboard().url(`@${SUPPORT_USERNAME}`,SUPPORT_URL)}); } catch {}
 }
 
 function supportIntent(ctx) {
@@ -554,7 +530,7 @@ export function installSupportCenter(BotClass) {
         return editOrReply(ctx, [
           "🗑 Request TelePilot data deletion",
           "",
-          "This requests removal of your stored TelePilot configuration and encrypted personal-account session. Your posting will be stopped and the connected TelePilot session will be disconnected when the request is processed.",
+          "This requests removal of your stored TelePilot configuration and encrypted personal-account sessions. Your posting will be stopped and the connected TelePilot session will be disconnected when the request is processed.",
           "",
           "Limited security/audit records may remain where reasonably necessary for service integrity.",
           "",
@@ -588,6 +564,7 @@ export function installSupportCenter(BotClass) {
       });
       baseCallbackQuery.call(bot, /^support_admin_case:(TP-SUP-[A-Z2-9]+)$/, async ctx => {
         if (!ensurePrivate(ctx) || !isAdmin(uidOf(ctx))) return;
+        awaiting.delete(uidOf(ctx));
         try { await ctx.answerCallbackQuery(); } catch {}
         return showAdminCase(ctx, String(ctx.match?.[1] || ""));
       });
@@ -621,7 +598,7 @@ export function installSupportCenter(BotClass) {
           `Case — ${id}`,
           `User — ${item.username ? `@${item.username}` : item.uid}`,
           "",
-          "This stops posting, disconnects the stored personal-account session, removes the user's TelePilot directory, removes their ID from key ownership fields and removes report contents from support cases.",
+          "This stops posting, disconnects the stored personal-account sessions, removes the user's TelePilot directory, removes their ID from key ownership fields and removes report contents from support cases.",
           "",
           "This cannot be undone from TelePilot.",
         ].join("\n"), kb);

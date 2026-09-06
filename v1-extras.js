@@ -1,12 +1,15 @@
 import { InlineKeyboard } from "grammy";
+import { listAccounts, senderSummary } from "./account-store.js";
+import { advanceTutorialAfterAction } from "./onboarding.js";
 import { readAppSettings } from "./posting-engine-enhancements.js";
 import { queuePreview, readV1 } from "./v1-engine.js";
 
 function uidOf(ctx) { return ctx?.from?.id ? String(ctx.from.id) : ""; }
 function destinationId(group) { return String(group?.id || group?.username || ""); }
 
-function senderLabel(settings) {
-  return settings.personalUsername ? `@${settings.personalUsername}` : "TelePilot Bot";
+function senderLabel(settings, uid) {
+  const accounts = listAccounts(uid);
+  return accounts.length ? senderSummary(settings, accounts) : "TelePilot Bot";
 }
 
 function formatWhen(ms) {
@@ -31,12 +34,14 @@ async function showSmartPreview(ctx) {
   const messageText = String(settings.adMessage || "").replace(/\s+/g, " ").trim();
   const messagePreview = messageText ? `${messageText.slice(0, 220)}${messageText.length > 220 ? "…" : ""}` : "Not set";
   const kb = new InlineKeyboard();
+  const tutorialReady = advanceTutorialAfterAction(uid, 6, 7);
+  if (tutorialReady) kb.text("✅ Finish setup", "tutorial:7").row();
   if (settings.adMessage && active > 0) kb.text("▶ Start posting", "start").row();
   if (settings.adMessage) kb.text("Open message preview", "message_preview").row();
   kb.text("🧭 Posting queue", "v1_queue").text("⚡ Power Tools", "v1_tools").row().text("⬅️ Dashboard", "home");
   await ctx.editMessageText([
     "👁 Smart preview",
-    `Sender — ${senderLabel(settings)}`,
+    `Sender — ${senderLabel(settings, uid)}`,
     `Message — ${settings.adMessage ? `${settings.adMessage.length} chars${pro.media ? ` + ${pro.media.kind}` : ""}` : "Not set"}`,
     `Destinations — ${active} active / ${(settings.groups || []).length} saved`,
     `Interval — ${Number(settings.intervalMinutes || 30)} min`,

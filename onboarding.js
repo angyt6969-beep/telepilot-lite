@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { InlineKeyboard } from "grammy";
+import { hasAnyAccount, listAccounts, normalizeAccountSelection, senderSummary } from "./account-store.js";
+import { reloadUserState } from "./runtime-hooks.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 let appStartHandler = null;
@@ -9,7 +11,6 @@ function uidOf(ctx) { return ctx?.from?.id ? String(ctx.from.id) : ""; }
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function settingsPath(uid) { return path.join(userDir(uid), "settings.json"); }
 function onboardingPath(uid) { return path.join(userDir(uid), "onboarding.json"); }
-function personalSessionPath(uid) { return path.join(userDir(uid), "personal-session.enc"); }
 
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
@@ -45,16 +46,26 @@ function setTutorialStep(uid, step) { saveOnboarding(uid, { welcomeSeen: true, s
 function markTutorialSeen(uid) { saveOnboarding(uid, { welcomeSeen: true, completed: true, step: 7, completedAt: Date.now() }); }
 
 function settingsFor(uid) { return readJson(settingsPath(uid), {}); }
+function setTutorialSenderMode(uid, mode) {
+  const id = String(uid || "");
+  if (!id) return;
+  const saved = settingsFor(id);
+  const accounts = listAccounts(id);
+  if (mode === "bot") {
+    writeJson(settingsPath(id), { ...saved, senderMode: "bot", selectedAccountIds: [] });
+  } else {
+    const selection = normalizeAccountSelection({ ...saved, senderMode: "selected" }, accounts);
+    writeJson(settingsPath(id), { ...saved, senderMode: "selected", selectedAccountIds: selection.selected });
+  }
+  reloadUserState(id);
+}
 function accessActive(uid) {
   const saved = settingsFor(uid);
   if (saved.accessRevoked === true) return false;
   if (saved.accessLifetime === true) return true;
   return Number(saved.accessUntil || 0) > Date.now();
 }
-function hasPersonalSession(uid) {
-  try { return fs.existsSync(personalSessionPath(uid)) && fs.statSync(personalSessionPath(uid)).size > 20; }
-  catch { return false; }
-}
+function hasPersonalSession(uid) { return hasAnyAccount(uid); }
 function formatInterval(minutes) {
   const n = Number(minutes || 30);
   if (n === 60) return "1 hour";
@@ -72,7 +83,7 @@ function welcomePage() {
       "",
       "• Post to multiple groups and channels",
       "• Schedule and repeat posts",
-      "• Post from TelePilot Bot or your personal Telegram account",
+      "• Post from TelePilot Bot or one or more personal Telegram accounts",
       "• Preview, manage and monitor everything from the bot",
       "",
       "Continue to activate your TelePilot access.",
@@ -88,7 +99,7 @@ function featuresPage() {
     text: [
       "✨ What you get with TelePilot",
       "",
-      "📱 Personal-account or bot posting",
+      "📱 One or more personal-account senders, or bot posting",
       "👥 Multiple Telegram destinations",
       "📝 Saved messages, media and templates",
       "⏱ Repeating intervals and scheduling",
@@ -127,24 +138,32 @@ function setupPage1(uid) {
 }
 
 function setupPage2(uid) {
-  const connected = hasPersonalSession(uid);
+  const saved = settingsFor(uid);
+  const accounts = listAccounts(uid);
+  const connected = accounts.length > 0;
+  const currentSender = senderSummary(saved, accounts);
   return {
     text: [
       "📱 Step 1 of 5 — Choose your sender",
       "",
       connected
-        ? "✅ Your personal Telegram account is connected."
+        ? `✅ ${accounts.length} personal account${accounts.length === 1 ? " is" : "s are"} connected.`
         : "Choose who should send your posts.",
+      connected ? `Current sender: ${currentSender}` : "",
       "",
       "TelePilot Bot is the simplest option. A personal account lets posts appear from your own Telegram account.",
       "",
-      connected ? "You're ready for the next step." : "You can connect a personal account now, or use TelePilot Bot and continue.",
-    ].join("\n"),
+      connected ? "Choose the sender you want for this setup, or keep the current selection and continue." : "You can connect a personal account now, or use TelePilot Bot and continue.",
+    ].filter(Boolean).join("\n"),
     keyboard: connected
-      ? new InlineKeyboard().text("← Back", "tutorial:1").text("Next →", "tutorial:3").row().text("Skip tutorial", "tutorial:skip")
+      ? new InlineKeyboard()
+          .text("👤 Use Connected Account", "tutorial:personal").row()
+          .text("🤖 Use TelePilot Bot", "tutorial:bot").row()
+          .text("← Back", "tutorial:1").text("Next →", "tutorial:3").row()
+          .text("Skip tutorial", "tutorial:skip")
       : new InlineKeyboard()
           .text("👤 Connect Personal Account", "account").row()
-          .text("🤖 Use TelePilot Bot", "tutorial:3").row()
+          .text("🤖 Use TelePilot Bot", "tutorial:bot").row()
           .text("← Back", "tutorial:1").text("Skip tutorial", "tutorial:skip"),
   };
 }
@@ -228,7 +247,7 @@ function setupPage7(uid) {
   const groups = Array.isArray(saved.groups) ? saved.groups.length : 0;
   const messageReady = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
   const sender = hasPersonalSession(uid)
-    ? (saved.personalUsername ? `@${saved.personalUsername}` : "Personal account")
+    ? senderSummary(saved, listAccounts(uid))
     : "TelePilot Bot";
   return {
     text: [
@@ -324,6 +343,18 @@ function registerHandlers(bot) {
   bot.callbackQuery("tutorial:begin", async ctx => {
     await ctx.answerCallbackQuery();
     await showTutorial(ctx, 1, true);
+  });
+  bot.callbackQuery("tutorial:bot", async ctx => {
+    const uid = uidOf(ctx);
+    if (uid) setTutorialSenderMode(uid, "bot");
+    await ctx.answerCallbackQuery({ text: "TelePilot Bot selected" });
+    await showTutorial(ctx, 3, true);
+  });
+  bot.callbackQuery("tutorial:personal", async ctx => {
+    const uid = uidOf(ctx);
+    if (uid) setTutorialSenderMode(uid, "selected");
+    await ctx.answerCallbackQuery({ text: "Personal account selected" });
+    await showTutorial(ctx, 3, true);
   });
   bot.callbackQuery(/^tutorial:([1-7])$/, async ctx => {
     await ctx.answerCallbackQuery();
