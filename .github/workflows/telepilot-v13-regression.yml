@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - telepilot-v13-qol
+      - telepilot-v13-ui-polish
   pull_request:
     branches:
       - main
@@ -37,11 +38,13 @@ jobs:
           node --check qol-store.js
           node --check ux-v13.js
           node --check ux-v13-polish.js
+          node --check ux-v13-visual-polish.js
           node --check onboarding.js
           node --check runtime-hooks.js
           node --check v1-engine.js
           node --check v1-worker.js
           node --check telepilot-v13-regression-test.mjs
           node --check telepilot-v13-runtime-test.mjs
+          node --check telepilot-v13-visual-polish-test.mjs
       - name: Full regression suite
         run: npm test
