@@ -8,11 +8,11 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
-import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
-import { startArchiveMuteCoverageWorker } from "./archive-mute-coverage.js";
+import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue-v3.js";
 import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
 import { installAddlistJoinCompatibility } from "./addlist-join-compat.js";
 import { installAddlistPeerResolution } from "./addlist-peer-resolution.js";
+import { installAddlistSafety } from "./addlist-safety.js";
 import { installAddlistImportUi } from "./addlist-import-ui.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
@@ -73,8 +73,11 @@ installV1Engine(Api, TelegramClient);
 installPrivatePeerResolution(TelegramClient);
 installArchiveMuteQueue(TelegramClient);
 installAddlistReconciliation(TelegramClient);
-installAddlistJoinCompatibility(TelegramClient);
+// Peer resolution must sit inside the safety/compatibility wrappers so Telegram's
+// full Chat/access-hash responses are cached before the outer layers filter them.
 installAddlistPeerResolution(TelegramClient);
+installAddlistSafety(TelegramClient);
+installAddlistJoinCompatibility(TelegramClient);
 
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
@@ -125,7 +128,6 @@ startV1Worker();
 startDestinationAutomationWorker();
 startAddlistReconciliationWorker();
 startArchiveMuteWorker();
-startArchiveMuteCoverageWorker();
 startForumGeneralFallbackWorker();
 startQolV13Worker();
 await import("./app.js");

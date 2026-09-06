@@ -32,20 +32,22 @@ const original = [
   "Failed / invalid — 0",
 ].join("\n");
 const adjusted = await api.sendMessage("123456", original);
-assert.match(adjusted.text, /^⏳ Addlist import processing/, "A recent large Addlist must not claim completion with zero additions");
+assert.match(adjusted.text, /^⏳ Addlist import processing/, "A recent Addlist must not claim completion with zero additions while reconciliation is active");
 assert.match(adjusted.text, /still being reconciled with Telegram/, "Processing copy should explain background reconciliation");
 assert.match(adjusted.text, /duplicate detection remains active/, "Retry safety should be communicated");
 
 const unrelated = await api.sendMessage("999999", original);
 assert.equal(unrelated.text, original, "Non-Addlist import summaries must remain unchanged");
 
-const coverage = fs.readFileSync("archive-mute-coverage.js", "utf8");
-assert.match(coverage, /"ready", "verification", "read_only"/, "Cleanup coverage must include every confirmed joined state");
-assert.match(coverage, /archive-mute-queue\.json/, "Coverage worker must feed the persisted cleanup queue");
-assert.doesNotMatch(coverage, /"pending"/, "Pending join requests must not be treated as joined chats");
+const cleanup = fs.readFileSync("archive-mute-queue-v3.js", "utf8");
+assert.match(cleanup, /completed/, "Cleanup v3 must remember completed work");
+assert.doesNotMatch(cleanup, /FULL_SCAN_INTERVAL_MS|refillPending|scanAccounts/, "Cleanup v3 must not full-scan and requeue every destination");
 
 const startup = fs.readFileSync("startup.js", "utf8");
 assert.match(startup, /installAddlistImportUi\(Api\)/);
-assert.match(startup, /startArchiveMuteCoverageWorker\(\)/);
+assert.match(startup, /archive-mute-queue-v3\.js/);
+assert.match(startup, /startArchiveMuteWorker\(\)/);
+assert.doesNotMatch(startup, /startArchiveMuteCoverageWorker\(\)/, "The competing coverage worker must stay disabled");
+assert.match(startup, /installAddlistPeerResolution\(TelegramClient\)[\s\S]*installAddlistSafety\(TelegramClient\)[\s\S]*installAddlistJoinCompatibility\(TelegramClient\)/, "Addlist wrapper order must preserve access-hash caching and safety interception");
 
 console.log("TelePilot final Addlist reliability checks passed");
