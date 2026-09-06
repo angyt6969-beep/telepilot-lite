@@ -11,6 +11,7 @@ import {
   usesBotSender,
 } from "./account-store.js";
 import { withDispatchContext } from "./dispatch-context.js";
+import { destinationAccountReady, recordDestinationFailure } from "./destination-automation.js";
 import { isFatalSessionError, listUserIds, readAppSettings } from "./posting-engine-enhancements.js";
 import { readV1, v1Stats, writeV1 } from "./v1-engine.js";
 
@@ -36,7 +37,7 @@ function localDate(pro,now=Date.now()){return new Date(now+Number(pro.schedule?.
 function dateKey(date){return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}-${String(date.getUTCDate()).padStart(2,"0")}`;}
 function timeKey(date){return `${String(date.getUTCHours()).padStart(2,"0")}:${String(date.getUTCMinutes()).padStart(2,"0")}`;}
 function destinationId(d){return String(d?.id||d?.username||"");}
-function deliveryId(destination,accountId){return `${destinationId(destination)}|${accountId||"bot"}`;}
+function deliveryId(destination,accountId){return `${destinationId(destination)}:${Number(destination?.topicId||0)}|${accountId||"bot"}`;}
 function toMtEntities(entities=[]){const out=[];for(const entity of entities){const base={offset:Number(entity?.offset||0),length:Number(entity?.length||0)};try{if(entity?.type==="bold")out.push(new MtApi.MessageEntityBold(base));else if(entity?.type==="italic")out.push(new MtApi.MessageEntityItalic(base));else if(entity?.type==="underline")out.push(new MtApi.MessageEntityUnderline(base));else if(entity?.type==="strikethrough")out.push(new MtApi.MessageEntityStrike(base));else if(entity?.type==="spoiler")out.push(new MtApi.MessageEntitySpoiler(base));else if(entity?.type==="code")out.push(new MtApi.MessageEntityCode(base));else if(entity?.type==="pre")out.push(new MtApi.MessageEntityPre({...base,language:entity.language||""}));else if(entity?.type==="text_link")out.push(new MtApi.MessageEntityTextUrl({...base,url:entity.url||""}));else if(entity?.type==="custom_emoji"&&/^\d+$/.test(String(entity.custom_emoji_id||"")))out.push(new MtApi.MessageEntityCustomEmoji({...base,documentId:bigInt(entity.custom_emoji_id)}));}catch{}}return out;}
 async function openPersonalClient(uid,account){const client=new TelegramClient(new StringSession(loadAccountSession(uid,account.id)),API_ID,API_HASH,{connectionRetries:5,floodSleepThreshold:60});client.__telepilotOwnerUid=String(uid);client.__telepilotAccountId=String(account.id);await client.connect();if(!(await client.checkAuthorization()))throw new Error("Personal account session is no longer authorized.");const me=await client.getMe();updateAccountStatus(uid,account.id,{telegramId:me?.id,username:me?.username,firstName:me?.firstName,lastName:me?.lastName,status:"connected",lastError:"",lastVerifiedAt:Date.now()});return client;}
 async function personalTarget(client,destination,dialogCache){if(destination?.username)return destination.username;if(!dialogCache.value)dialogCache.value=await client.getDialogs({});const wanted=String(destination?.id||"").replace(/^-100/,"").replace(/^-/,"");for(const dialog of dialogCache.value){const ids=[dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v).replace(/\D/g,""));if(wanted&&ids.includes(wanted))return dialog;}throw new Error(`Could not resolve ${destination?.label||destination?.id||"destination"}.`);}
@@ -53,7 +54,8 @@ async function sendCycle(uid,settings,bot,options={}){
     for(const destination of groups){
       if(usesBotSender(settings,destination,accounts)){
         const key=deliveryId(destination,"");if(delivered.has(key))continue;
-        try{const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,settings.adEntities?.length?{entities:settings.adEntities}:{}));if(result?.__telepilotSkipped)skipped++;else sent++;newlyDelivered.push(key);}catch(err){failed++;errors.push(String(err?.description||err?.message||err).slice(0,180));}
+        if(destination.topicRequired===true&&!Number(destination.topicId||0)){skipped++;continue;}
+        try{const opts={...(settings.adEntities?.length?{entities:settings.adEntities}:{}),...(Number(destination.topicId||0)>1?{message_thread_id:Number(destination.topicId)}:{})};const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,opts));if(result?.__telepilotSkipped)skipped++;else sent++;newlyDelivered.push(key);}catch(err){failed++;errors.push(String(err?.description||err?.message||err).slice(0,180));}
         continue;
       }
       const accountIds=effectiveAccountIds(settings,destination,accounts);
@@ -61,13 +63,14 @@ async function sendCycle(uid,settings,bot,options={}){
       for(const accountId of accountIds){
         const key=deliveryId(destination,accountId);if(delivered.has(key))continue;
         const account=byId.get(String(accountId));if(!account){failed++;errors.push(`Missing sender ${accountId}`);continue;}
+        if(!destinationAccountReady(destination,account.id)){skipped++;continue;}
         try{
           let client=clients.get(account.id);
           if(!client){client=await openPersonalClient(uid,account);clients.set(account.id,client);dialogCaches.set(account.id,{value:null});}
           const entity=await personalTarget(client,destination,dialogCaches.get(account.id));
-          const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"personal",senderLabel:accountDisplayLabel(account),accountId:String(account.id),forcedTemplateId,autoDisableEligible:accountIds.length===1},()=>client.sendMessage(entity,{message:settings.adMessage,...(settings.adEntities?.length?{formattingEntities:toMtEntities(settings.adEntities)}:{})}));
+          const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"personal",senderLabel:accountDisplayLabel(account),accountId:String(account.id),forcedTemplateId,autoDisableEligible:accountIds.length===1},()=>client.sendMessage(entity,{message:settings.adMessage,...(settings.adEntities?.length?{formattingEntities:toMtEntities(settings.adEntities)}:{}),...(Number(destination.topicId||0)>1?{replyTo:Number(destination.topicId),topMsgId:Number(destination.topicId)}:{})}));
           if(result?.__telepilotSkipped)skipped++;else sent++;newlyDelivered.push(key);
-        }catch(err){failed++;const message=String(err?.errorMessage||err?.message||err).slice(0,180);errors.push(`${accountDisplayLabel(account)}: ${message}`);updateAccountStatus(uid,account.id,{status:isFatalSessionError(err)?"needs-reconnect":"unknown",lastError:message,lastVerifiedAt:Date.now()});}
+        }catch(err){failed++;const message=String(err?.errorMessage||err?.message||err).slice(0,180);errors.push(`${accountDisplayLabel(account)}: ${message}`);updateAccountStatus(uid,account.id,{status:isFatalSessionError(err)?"needs-reconnect":"unknown",lastError:message,lastVerifiedAt:Date.now()});if(!isFatalSessionError(err))recordDestinationFailure(uid,destination,account.id,err);}
       }
     }
     return{sent,failed,skipped,delivered:newlyDelivered,errors};

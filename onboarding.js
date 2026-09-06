@@ -27,7 +27,7 @@ function writeJson(file, value) {
 function onboardingState(uid) {
   const saved = readJson(onboardingPath(uid), {});
   return {
-    version: 2,
+    version: 3,
     welcomeSeen: saved.welcomeSeen === true,
     completed: saved.completed === true,
     step: Number.isInteger(Number(saved.step)) ? Math.max(1, Math.min(7, Number(saved.step))) : 1,
@@ -37,7 +37,7 @@ function onboardingState(uid) {
 
 function saveOnboarding(uid, patch) {
   const current = onboardingState(uid);
-  writeJson(onboardingPath(uid), { ...current, ...patch, version: 2 });
+  writeJson(onboardingPath(uid), { ...current, ...patch, version: 3 });
 }
 
 function tutorialSeen(uid) { return onboardingState(uid).completed === true; }
@@ -79,40 +79,31 @@ function welcomePage() {
     text: [
       "👋 Welcome to TelePilot",
       "",
-      "Automate your Telegram posting from one clean control panel.",
+      "Set up automated Telegram posting without digging through a crowded control panel.",
       "",
-      "• Post to multiple groups and channels",
-      "• Schedule and repeat posts",
-      "• Post from TelePilot Bot or one or more personal Telegram accounts",
-      "• Preview, manage and monitor everything from the bot",
+      "The main app is organized into Home, Posting Setup, Accounts, Destinations and Settings.",
       "",
-      "Continue to activate your TelePilot access.",
+      "Continue to activate your access and build your first posting setup."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("Continue →", "onboarding:access").row()
-      .text("✨ What do I get?", "onboarding:features"),
+    keyboard: new InlineKeyboard().text("Continue →", "onboarding:access").row().text("What can TelePilot do?", "onboarding:features"),
   };
 }
 
 function featuresPage() {
   return {
     text: [
-      "✨ What you get with TelePilot",
+      "✨ TelePilot",
       "",
-      "📱 One or more personal-account senders, or bot posting",
-      "👥 Multiple Telegram destinations",
-      "📝 Saved messages, media and templates",
-      "⏱ Repeating intervals and scheduling",
-      "👀 Smart Preview before you publish",
-      "📊 Activity and destination health",
-      "⚙️ Posting tools and safety controls",
-      "💬 Built-in support",
+      "• Personal-account or TelePilot Bot sending",
+      "• Automatic destination joining for selected personal accounts",
+      "• Telegram Addlist / shared-folder importing",
+      "• Forum topic selection",
+      "• Repeating and exact-time posting",
+      "• Multi-account routing, preview and activity history",
       "",
-      "When you're ready, continue to the access-key screen.",
+      "Advanced controls stay out of the way until you need them."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("← Back", "onboarding:welcome")
-      .text("Continue →", "onboarding:access"),
+    keyboard: new InlineKeyboard().text("← Back", "onboarding:welcome").text("Continue →", "onboarding:access"),
   };
 }
 
@@ -125,15 +116,11 @@ function setupPage1(uid) {
       "",
       `Access: ${plan}`,
       "",
-      "Now we'll set up TelePilot together.",
+      "This setup uses the same controls you will use every day. TelePilot saves your place if you leave and /start resumes the tutorial.",
       "",
-      "The tutorial is interactive: each step opens the real TelePilot control you need. TelePilot will continue the tutorial automatically after setup actions; if anything is interrupted, /start resumes your saved step.",
-      "",
-      "Setup takes just a few minutes.",
+      "We will configure Accounts → Destinations → Posting Setup → Preview."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("🚀 Start Setup", "tutorial:2").row()
-      .text("Skip tutorial", "tutorial:skip"),
+    keyboard: new InlineKeyboard().text("Start Setup →", "tutorial:2").row().text("Skip tutorial", "tutorial:skip"),
   };
 }
 
@@ -144,46 +131,35 @@ function setupPage2(uid) {
   const currentSender = senderSummary(saved, accounts);
   return {
     text: [
-      "📱 Step 1 of 5 — Choose your sender",
+      "👤 Step 1 of 5 — Accounts",
       "",
-      connected
-        ? `✅ ${accounts.length} personal account${accounts.length === 1 ? " is" : "s are"} connected.`
-        : "Choose who should send your posts.",
+      connected ? `Connected accounts: ${accounts.length}` : "Choose who should send your posts.",
       connected ? `Current sender: ${currentSender}` : "",
       "",
-      "TelePilot Bot is the simplest option. A personal account lets posts appear from your own Telegram account.",
-      "",
-      connected ? "Choose the sender you want for this setup, or keep the current selection and continue." : "You can connect a personal account now, or use TelePilot Bot and continue.",
+      "Personal accounts can automatically join pasted destinations and Addlists. TelePilot Bot works too, but you must add the bot to its destinations yourself."
     ].filter(Boolean).join("\n"),
     keyboard: connected
-      ? new InlineKeyboard()
-          .text("👤 Use Connected Account", "tutorial:personal").row()
-          .text("🤖 Use TelePilot Bot", "tutorial:bot").row()
-          .text("← Back", "tutorial:1").text("Next →", "tutorial:3").row()
-          .text("Skip tutorial", "tutorial:skip")
-      : new InlineKeyboard()
-          .text("👤 Connect Personal Account", "account").row()
-          .text("🤖 Use TelePilot Bot", "tutorial:bot").row()
-          .text("← Back", "tutorial:1").text("Skip tutorial", "tutorial:skip"),
+      ? new InlineKeyboard().text("👤 Use Connected Account", "tutorial:personal").row().text("🤖 Use TelePilot Bot", "tutorial:bot").row().text("Open Accounts", "account").row().text("Next →", "tutorial:3").text("Skip", "tutorial:skip")
+      : new InlineKeyboard().text("👤 Connect Personal Account", "account").row().text("🤖 Use TelePilot Bot", "tutorial:bot").row().text("Skip", "tutorial:skip"),
   };
 }
 
 function setupPage3(uid) {
   const saved = settingsFor(uid);
-  const count = Array.isArray(saved.groups) ? saved.groups.length : 0;
+  const groups = Array.isArray(saved.groups) ? saved.groups : [];
   return {
     text: [
-      "👥 Step 2 of 5 — Add a destination",
+      "📍 Step 2 of 5 — Destinations",
       "",
-      count > 0 ? `✅ ${count} destination${count === 1 ? "" : "s"} configured.` : "Add at least one group or channel where TelePilot should post.",
+      groups.length ? `Configured: ${groups.length}` : "Add where TelePilot should post.",
       "",
-      "Public destinations can be added by @username or t.me link. Private groups can also use /addhere from inside the group.",
+      "Paste public links, private invite links or a t.me/addlist/... shared folder. With a personal sender selected, TelePilot automatically joins missing groups.",
       "",
-      count > 0 ? "Destination setup is ready." : "Tap Add Destination, configure it, then send /start to continue the tutorial.",
+      "If a group uses forum topics, TelePilot asks you to choose the exact topic. Join requests and verification stay Pending instead of blocking the rest of your setup."
     ].join("\n"),
-    keyboard: count > 0
-      ? new InlineKeyboard().text("← Back", "tutorial:2").text("Next →", "tutorial:4").row().text("👥 Manage Destinations", "groups").row().text("Skip tutorial", "tutorial:skip")
-      : new InlineKeyboard().text("👥 Add Destination", "groups").row().text("← Back", "tutorial:2").text("Skip tutorial", "tutorial:skip"),
+    keyboard: groups.length
+      ? new InlineKeyboard().text("📍 Destinations", "groups").row().text("← Back", "tutorial:2").text("Next →", "tutorial:4").row().text("Skip", "tutorial:skip")
+      : new InlineKeyboard().text("＋ Add Destinations", "groups").row().text("← Back", "tutorial:2").text("Skip", "tutorial:skip"),
   };
 }
 
@@ -192,17 +168,15 @@ function setupPage4(uid) {
   const ready = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
   return {
     text: [
-      "📝 Step 3 of 5 — Create your message",
+      "📝 Step 3 of 5 — Posting Setup",
       "",
-      ready ? `✅ Your message is ready (${saved.adMessage.length} characters).` : "Create the message TelePilot should post.",
+      ready ? `Message ready · ${saved.adMessage.length} characters` : "Create the message TelePilot should send.",
       "",
-      "You can use text, formatting and media, then reuse the message later with Templates and other Tools.",
-      "",
-      ready ? "Message setup is complete." : "Tap Create Message, save it, then send /start to resume here.",
+      "Message and timing live together under Posting Setup. Advanced templates and exact schedules stay hidden under Advanced."
     ].join("\n"),
     keyboard: ready
-      ? new InlineKeyboard().text("← Back", "tutorial:3").text("Next →", "tutorial:5").row().text("📝 Edit Message", "message").row().text("Skip tutorial", "tutorial:skip")
-      : new InlineKeyboard().text("📝 Create Message", "message").row().text("← Back", "tutorial:3").text("Skip tutorial", "tutorial:skip"),
+      ? new InlineKeyboard().text("🧩 Posting Setup", "posting_setup").row().text("← Back", "tutorial:3").text("Next →", "tutorial:5").row().text("Skip", "tutorial:skip")
+      : new InlineKeyboard().text("📝 Create Message", "message").row().text("← Back", "tutorial:3").text("Skip", "tutorial:skip"),
   };
 }
 
@@ -211,34 +185,26 @@ function setupPage5(uid) {
   const interval = formatInterval(saved.intervalMinutes || 30);
   return {
     text: [
-      "⏱ Step 4 of 5 — Choose timing",
+      "⏱ Step 4 of 5 — Timing",
       "",
-      `Current repeating interval: ${interval}`,
+      `Current interval: ${interval}`,
       "",
-      "You can keep this interval, change it from 1 minute up to 2 hours, or use TelePilot's scheduling tools for exact times and future posts.",
-      "",
-      "You can always change timing later.",
+      "Choose a normal repeat interval now. Exact times, one-time posts and other advanced scheduling remain available from Posting Setup → Advanced."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("⏱ Choose Interval", "interval").row()
-      .text("← Back", "tutorial:4").text("Next →", "tutorial:6").row()
-      .text("Skip tutorial", "tutorial:skip"),
+    keyboard: new InlineKeyboard().text("⏱ Choose Timing", "interval").row().text("← Back", "tutorial:4").text("Next →", "tutorial:6").row().text("Skip", "tutorial:skip"),
   };
 }
 
 function setupPage6() {
   return {
     text: [
-      "👀 Step 5 of 5 — Preview before posting",
+      "👀 Step 5 of 5 — Preview",
       "",
-      "Smart Preview lets you check how your post will look before you start sending it to destinations.",
+      "Smart Preview shows the sender, message, active destinations and timing before you go live.",
       "",
-      "This step is optional, but it's a good habit before your first LIVE run.",
+      "Starting from Home is now one tap — there is no extra confirmation for normal posting actions."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("👀 Open Smart Preview", "v1_preview").row()
-      .text("← Back", "tutorial:5").text("Finish →", "tutorial:7").row()
-      .text("Skip tutorial", "tutorial:skip"),
+    keyboard: new InlineKeyboard().text("👀 Smart Preview", "v1_preview").row().text("← Back", "tutorial:5").text("Finish →", "tutorial:7").row().text("Skip", "tutorial:skip"),
   };
 }
 
@@ -246,28 +212,19 @@ function setupPage7(uid) {
   const saved = settingsFor(uid);
   const groups = Array.isArray(saved.groups) ? saved.groups.length : 0;
   const messageReady = typeof saved.adMessage === "string" && saved.adMessage.trim().length > 0;
-  const sender = hasPersonalSession(uid)
-    ? senderSummary(saved, listAccounts(uid))
-    : "TelePilot Bot";
+  const sender = hasPersonalSession(uid) ? senderSummary(saved, listAccounts(uid)) : "TelePilot Bot";
   return {
     text: [
       "🎉 TelePilot is ready",
       "",
-      `✅ Access active`,
-      `✅ Sender: ${sender}`,
-      `${groups > 0 ? "✅" : "⚠️"} Destinations: ${groups}`,
-      `${messageReady ? "✅" : "⚠️"} Message: ${messageReady ? "Ready" : "Not set yet"}`,
-      `✅ Interval: ${formatInterval(saved.intervalMinutes || 30)}`,
+      `Sender  ${sender}`,
+      `Message  ${messageReady ? "Ready" : "Not set"}`,
+      `Destinations  ${groups}`,
+      `Timing  ${formatInterval(saved.intervalMinutes || 30)}`,
       "",
-      groups > 0 && messageReady
-        ? "Everything needed for your first posting run is configured."
-        : "You can finish the missing items from the dashboard before starting a posting run.",
-      "",
-      "You can replay this tutorial from Tools whenever you want.",
+      "Home now stays simple: Start/Stop, Posting Setup, Accounts, Destinations and Settings. Advanced tools remain available without crowding the main screen."
     ].join("\n"),
-    keyboard: new InlineKeyboard()
-      .text("← Back", "tutorial:6").row()
-      .text("✅ Open TelePilot", "tutorial:finish"),
+    keyboard: new InlineKeyboard().text("← Back", "tutorial:6").row().text("✅ Open TelePilot", "tutorial:finish"),
   };
 }
 

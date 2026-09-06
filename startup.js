@@ -6,6 +6,8 @@ import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
+import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
+import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
@@ -49,6 +51,8 @@ installV1Extras(Bot);
 // registers Support callbacks before grammY starts polling, so inline buttons are always answered.
 installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
+installDestinationAutomation(Bot);
+installUxNavigation(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
 prepareV1Engine(Api, TelegramClient);
@@ -67,6 +71,9 @@ installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
+// v1.2 UX is installed immediately inside the legacy UI transformer so it receives
+// normalized screens and can collapse them into the new, simpler navigation.
+installUxV12(Api);
 installUiEnhancements(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
@@ -100,3 +107,5 @@ try {
 
 startV1Worker();
 await import("./app.js");
+// Start approval/verification rechecks only after app.js has registered its safe state-sync hook.
+startDestinationAutomationWorker();

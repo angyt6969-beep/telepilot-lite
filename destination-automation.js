@@ -11,7 +11,7 @@ import {
   updateAccountStatus,
 } from "./account-store.js";
 import { listUserIds, readAppSettings, writeAppSettings } from "./posting-engine-enhancements.js";
-import { reloadUserState } from "./runtime-hooks.js";
+import { syncUserGroups } from "./runtime-hooks.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
@@ -108,6 +108,32 @@ export function suggestTopic(topics) {
 function accountJoinEntry(status, reason = "") {
   return { status, reason: String(reason || "").slice(0, 180), checkedAt: Date.now() };
 }
+export function recordDestinationFailure(uid, destination, accountId, err) {
+  const id = String(uid || "");
+  const account = String(accountId || "");
+  const destinationId = String(destination?.id || "");
+  if (!id || !account || !destinationId) return false;
+  const code = errorCode(err);
+  const restricted = [
+    "CHAT_WRITE_FORBIDDEN", "CHAT_SEND_PLAIN_FORBIDDEN", "CHAT_SEND_MEDIA_FORBIDDEN",
+    "CHAT_SEND_PHOTOS_FORBIDDEN", "CHAT_SEND_VIDEOS_FORBIDDEN",
+  ].some(token => code.includes(token));
+  if (!restricted) return false;
+  const settings = readAppSettings(id);
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const group = groups.find(row => String(row?.id || "") === destinationId);
+  if (!group) return false;
+  group.accountJoin = { ...(group.accountJoin || {}) };
+  group.accountJoin[account] = accountJoinEntry(
+    "verification",
+    "Telegram currently blocks posting from this account. Open the group and complete any verification or rules step, then TelePilot will recheck it.",
+  );
+  group.joinStatus = overallStatus(group);
+  writeAppSettings(id, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+  syncUserGroups(id);
+  return true;
+}
+
 export function destinationAccountReady(destination, accountId = "") {
   if (!destination || typeof destination !== "object") return false;
   if (destination.topicRequired === true && !Number(destination.topicId || 0)) return false;
@@ -287,7 +313,7 @@ function saveDestination(uid, destination) {
   const saved = groups.find(group => String(group.id) === String(destination.id));
   saved.joinStatus = overallStatus(saved);
   writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-  reloadUserState(uid);
+  syncUserGroups(uid);
   return { destination: saved, duplicate: index >= 0, groups };
 }
 
@@ -599,7 +625,7 @@ function chooseTopic(uid, token, topicId) {
   writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
   store.topicQueue = store.topicQueue.filter(row => row.token !== token);
   writeAutomation(uid, store);
-  reloadUserState(uid);
+  syncUserGroups(uid);
   return { group, topic };
 }
 
@@ -700,7 +726,7 @@ export async function recheckDestinations(uid, maxItems = RECHECK_PER_TICK) {
       else changed += (await recheckUnresolved(id, item.item, account, client)) ? 1 : 0;
     }
   } finally { for (const client of clients.values()) try { await client.disconnect(); } catch {} }
-  if (changed) reloadUserState(id);
+  if (changed) syncUserGroups(id);
   return { checked, changed };
 }
 

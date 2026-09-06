@@ -24,7 +24,14 @@ import {
 } from "./account-store.js";
 import { withDispatchContext } from "./dispatch-context.js";
 import { isFatalSessionError, readProSettings } from "./posting-engine-enhancements.js";
-import { setReloadUserStateHandler } from "./runtime-hooks.js";
+import { setReloadUserStateHandler, setSyncUserGroupsHandler } from "./runtime-hooks.js";
+import {
+  destinationAccountReady,
+  destinationMenu,
+  handleDestinationText,
+  parseDestinationInput,
+  recordDestinationFailure,
+} from "./destination-automation.js";
 import { loadPersistedLogins, persistLoginAttempt, removePersistedLogin } from "./login-attempt-store.js";
 import {
   appendSecurityEvent,
@@ -167,6 +174,14 @@ function normalizeSavedGroups(value) {
       username: item.username ? String(item.username) : "",
       accountMode: ["inherit", "bot", "all", "selected"].includes(item.accountMode) ? item.accountMode : "inherit",
       accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String))],
+      topicId: Number.isInteger(Number(item.topicId)) && Number(item.topicId) > 0 ? Number(item.topicId) : null,
+      topicTitle: String(item.topicTitle || "").slice(0, 100),
+      topicRequired: item.topicRequired === true,
+      joinStatus: ["ready", "needs_topic", "partial", "pending", "verification", "read_only", "failed"].includes(item.joinStatus) ? item.joinStatus : "ready",
+      accountJoin: item.accountJoin && typeof item.accountJoin === "object" && !Array.isArray(item.accountJoin) ? item.accountJoin : {},
+      source: String(item.source || "").slice(0, 30),
+      sourceSlug: String(item.sourceSlug || "").slice(0, 160),
+      importedAt: Number(item.importedAt || 0) || null,
     });
   }
   return out;
@@ -254,11 +269,17 @@ function reloadState(uid) {
   return true;
 }
 setReloadUserStateHandler(reloadState);
+setSyncUserGroupsHandler(uid => {
+  const state = states.get(String(uid));
+  if (!state) return false;
+  state.groups = normalizeSavedGroups(loadUserSettings(uid).groups);
+  return true;
+});
 function saveState(state) {
   fs.mkdirSync(userDir(state.uid), { recursive: true, mode: 0o700 });
   recomputeAccessState(state);
   writeJsonAtomic(settingsFile(state.uid), {
-    version: 4,
+    version: 5,
     adMessage: state.adMessage,
     adEntities: state.adEntities,
     groups: state.groups,
@@ -851,7 +872,10 @@ function normalizeTarget(input) {
   v = v.replace(/^@/, "");
   return /^[A-Za-z0-9_]{5,32}$/.test(v) ? `@${v}` : null;
 }
-function destinationLabel(destination) { return destination.username || destination.label || destination.id; }
+function destinationLabel(destination) {
+  const base = destination.username || destination.label || destination.id;
+  return destination.topicTitle ? `${base} → ${destination.topicTitle}` : base;
+}
 function cleanDestinationError(err) {
   const code = telegramErrorCode(err);
   if (code.includes("BOT_WAS_KICKED") || code.includes("BOT WAS KICKED") || code.includes("KICKED FROM")) {
@@ -954,7 +978,12 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
     const ids = botSender ? [] : effectiveAccountIds(state, target, accounts);
     if (botSender) {
       try {
-        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"bot", senderLabel:"TelePilot Bot", autoDisableEligible:true }, () => bot.api.sendMessage(target.id, message, state.adEntities.length ? { entities:state.adEntities } : {}));
+        if (target.topicRequired === true && !Number(target.topicId || 0)) continue;
+        const botOptions = {
+          ...(state.adEntities.length ? { entities: state.adEntities } : {}),
+          ...(Number(target.topicId || 0) > 1 ? { message_thread_id: Number(target.topicId) } : {}),
+        };
+        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"bot", senderLabel:"TelePilot Bot", autoDisableEligible:true }, () => bot.api.sendMessage(target.id, message, botOptions));
         if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
       } catch (err) { failed++; console.error(`User ${state.uid} bot post failed ${target.id}:`, err?.description || err?.message || err); }
       continue;
@@ -963,11 +992,16 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
     for (const accountId of ids) {
       const account = accountById.get(String(accountId));
       if (!account) { failed++; continue; }
+      if (!destinationAccountReady(target, account.id)) continue;
       try {
         const client = await ensurePersonalClient(state, account.id);
         if (!client) throw new Error(account.status === "needs-reconnect" ? "Account needs reconnect" : "Telegram connection unavailable");
         const entity = await resolvePersonalTarget(client, target, state.uid, account.id);
-        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"personal", senderLabel:accountDisplayLabel(account), accountId:String(account.id), autoDisableEligible:ids.length === 1 }, () => client.sendMessage(entity, { message, ...(state.adEntities.length ? { formattingEntities:toMtprotoEntities(state.adEntities) } : {}) }));
+        const result = await withDispatchContext({ uid:String(state.uid), destinationId:String(target.id), cycleId, senderType:"personal", senderLabel:accountDisplayLabel(account), accountId:String(account.id), autoDisableEligible:ids.length === 1 }, () => client.sendMessage(entity, {
+          message,
+          ...(state.adEntities.length ? { formattingEntities:toMtprotoEntities(state.adEntities) } : {}),
+          ...(Number(target.topicId || 0) > 1 ? { replyTo:Number(target.topicId), topMsgId:Number(target.topicId) } : {}),
+        }));
         if (!result?.__telepilotSkipped) { success++; state.totalSent++; }
       } catch (err) {
         failed++;
@@ -975,6 +1009,7 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
         const code = telegramErrorCode(err);
         console.error(`User ${state.uid}/${account.id} failed to post to ${target.id}:`, err?.errorMessage || err?.message || err);
         if (isFatalPersonalSessionError(err)) updateAccountStatus(state.uid, account.id, { status:"needs-reconnect", lastError:code.slice(0,120), lastVerifiedAt:Date.now() });
+        else recordDestinationFailure(state.uid, target, account.id, err);
         const notice = takeRateLimit("destination-error-notice", `${state.uid}:${account.id}:${target.id}:${code.slice(0,40)}`, 1, 6*60*60_000);
         if (notice.ok) await autoDeleteNotice(state.uid, `⚠️ ${accountDisplayLabel(account)} → ${destinationLabel(target)} failed. ${isFatalPersonalSessionError(err) ? "Reconnect that sender account." : "Check sender membership/permissions or Destination routing."}`, 20000);
       }
@@ -1045,14 +1080,8 @@ function groupsKeyboard(state) {
   return kb.text("⬅️ Back", "home");
 }
 async function showGroups(ctx, state) {
-  const accounts = listAccounts(state.uid);
-  const hint = usesBotSender(state, null, accounts)
-    ? "Paste one or many public destinations (one per line). @TelePilottBot must have posting permissions; private groups can use /addhere."
-    : "Paste one or many public destinations (one per line). Use Routing to choose which accounts post to each destination and which message template it uses.";
-  await ctx.editMessageText(
-    `👥 GROUPS & CHANNELS\n\n${groupList(state)}\n\n${hint}`,
-    { reply_markup: groupsKeyboard(state) },
-  );
+  const menu = destinationMenu(state.uid);
+  await ctx.editMessageText(menu.text, { reply_markup: menu.keyboard });
 }
 async function showRemoveGroupPage(ctx, state, requestedPage = 0) {
   const pages = Math.max(1, Math.ceil(state.groups.length / REMOVE_PAGE_SIZE));
@@ -2372,9 +2401,10 @@ bot.callbackQuery("add_group", async ctx => {
   state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
   state.awaitingPromptChatId = ctx.chat?.id || null;
   const accounts = listAccounts(state.uid);
-  const instructions = usesBotSender(state, null, accounts)
-    ? "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\n@TelePilottBot must be an admin with posting permission in each destination. For private groups, use /addhere inside the group."
-    : "➕ ADD DESTINATIONS\n\nSend one or more public @usernames or t.me links. Put one destination on each line.\n\nAt least one selected connected account must already be joined and able to post. After adding, open Routing to choose exactly which account(s) post to each destination. Private groups without a username can use /addhere.";
+  const selectedPersonal = effectiveAccountIds(state, null, accounts);
+  const instructions = selectedPersonal.length
+    ? "➕ ADD DESTINATIONS\n\nPaste one or many Telegram destinations, one per line:\n• @username or t.me/group\n• private t.me/+ invite links\n• t.me/addlist/... shared folders\n\nTelePilot will join missing groups with your selected personal sender account(s). Forum groups will ask you to choose a posting topic. Join requests and verification-required groups stay Pending until they are ready."
+    : "➕ ADD DESTINATIONS\n\nPaste public @usernames or t.me links, one per line.\n\nAutomatic joining, private invite links and Addlists require a selected personal sender account. Open Accounts first if you want TelePilot to join destinations for you. TelePilot Bot destinations still require @TelePilottBot to be added with posting permission.";
   await ctx.editMessageText(
     instructions,
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "groups") },
@@ -2478,29 +2508,21 @@ bot.callbackQuery("activity", async ctx => {
     { reply_markup: new InlineKeyboard().text("🔄 Refresh", "activity").row().text("⬅️ Back", "home") },
   );
 });
-bot.callbackQuery("start", async ctx => {
+async function startPostingFromControl(ctx) {
   const state = stateFromCtx(ctx);
   if (!hasAccess(state)) return ctx.answerCallbackQuery({ text: "Your TelePilot access is inactive.", show_alert: true });
   if (state.posting) return ctx.answerCallbackQuery({ text: "TelePilot is already running." });
-  if (!state.adMessage) return ctx.answerCallbackQuery({ text: "Set an ad message first.", show_alert: true });
-  if (!state.groups.length) return ctx.answerCallbackQuery({ text: "Add at least one group/channel first.", show_alert: true });
-  await ctx.answerCallbackQuery();
-  const sender = accountLabel(state);
-  authorizeSensitiveCallback(state.uid, "start_confirm");
-  await ctx.editMessageText(
-    `▶️ START TELEPILOT\n\nPosting as: ${sender}\nDestinations: ${state.groups.length}\nInterval: ${formatInterval(state.intervalMinutes)}\n\nTelePilot will post once immediately, then continue on your selected interval.`,
-    { reply_markup: new InlineKeyboard().text("▶️ Confirm start", "start_confirm").row().text("⬅️ Cancel", "home") },
-  );
-});
-bot.callbackQuery("start_confirm", async ctx => {
-  const state = stateFromCtx(ctx);
-  if (!consumeSensitiveCallback(state.uid, "start_confirm")) return ctx.answerCallbackQuery({ text: "This confirmation expired. Open Start again.", show_alert: true });
+  if (!state.adMessage) return ctx.answerCallbackQuery({ text: "Set a message first.", show_alert: true });
+  if (!state.groups.length) return ctx.answerCallbackQuery({ text: "Add at least one destination first.", show_alert: true });
+  const readyDestinations = state.groups.filter(group => !(group.topicRequired === true && !Number(group.topicId || 0)));
+  if (!readyDestinations.length) return ctx.answerCallbackQuery({ text: "Choose a posting topic for your forum destinations first.", show_alert: true });
   await ctx.answerCallbackQuery({ text: "Starting…" });
-  if (!hasAccess(state) || !state.adMessage || !state.groups.length) return showHome(ctx, state);
   startPostingLoop(state);
   logAdminEvent("posting_started", { uid: String(state.uid) });
   await showHome(ctx, state);
-});
+}
+bot.callbackQuery("start", startPostingFromControl);
+bot.callbackQuery("start_confirm", startPostingFromControl);
 bot.callbackQuery("stop", async ctx => {
   const state = stateFromCtx(ctx);
   const was = state.posting;
@@ -2606,19 +2628,64 @@ bot.on("message:text", async ctx => {
   }
 
   if (state.awaiting === "group") {
-    const rawLines=String(ctx.message.text||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-    const targets=[...new Set(rawLines.map(normalizeTarget).filter(Boolean))];
-    const invalid=rawLines.length-targets.length;
-    if(!targets.length){const n=await ctx.reply("❌ Send public @usernames or t.me links, one destination per line.");setTimeout(()=>void safeDelete(ctx.chat.id,n.message_id),8000);return;}
-    const pm=state.awaitingPromptMessageId,pc=state.awaitingPromptChatId||ctx.chat.id,added=[],duplicates=[],failures=[];
-    for(const target of targets){try{const destination=await resolveDestination(target,state.uid);if(state.groups.some(g=>g.id===destination.id))duplicates.push(destinationLabel(destination));else{state.groups.push(destination);added.push(destinationLabel(destination));}}catch(err){failures.push(`${target} — ${err?.message||"cannot add"}`);}}
-    clearAwaiting(state);saveState(state);await safeDelete(ctx.chat.id,ctx.message.message_id);
-    const tutorialScreen=(added.length||duplicates.length)?advanceTutorialAfterAction(state.uid,3,4):null;
-    if(tutorialScreen){try{await bot.api.editMessageText(pc,pm,tutorialScreen.text,{reply_markup:tutorialScreen.keyboard});}catch{await ctx.reply(tutorialScreen.text,{reply_markup:tutorialScreen.keyboard});}return;}
-    const summary=[`✅ Bulk destination setup complete`,`Added — ${added.length}`,`Already saved — ${duplicates.length}`,`Failed / invalid — ${failures.length+invalid}`];
-    if(failures.length)summary.push("",...failures.slice(0,8));
-    try{await bot.api.editMessageText(pc,pm,summary.join("\n"),{reply_markup:new InlineKeyboard().text("🎯 Routing","route_groups:0").row().text("⬅️ Destinations","groups")});}catch{await ctx.reply(summary.join("\n"));}
+    const pm = state.awaitingPromptMessageId;
+    const pc = state.awaitingPromptChatId || ctx.chat.id;
+    const rawText = String(ctx.message.text || "");
+    const accounts = listAccounts(state.uid);
+    const selectedPersonal = effectiveAccountIds(state, null, accounts);
+    clearAwaiting(state);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+
+    let result;
+    if (selectedPersonal.length) {
+      result = await handleDestinationText(state.uid, rawText);
+      state.groups = normalizeSavedGroups(loadUserSettings(state.uid).groups);
+    } else {
+      const rawLines = rawText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const parsed = rawLines.map(parseDestinationInput);
+      const added = [], duplicates = [], failures = [];
+      let invalid = 0;
+      for (let index = 0; index < rawLines.length; index++) {
+        const item = parsed[index];
+        if (!item) { invalid++; continue; }
+        if (item.kind !== "public") {
+          failures.push(`${rawLines[index]} — automatic joining and Addlists require a selected personal account.`);
+          continue;
+        }
+        try {
+          const destination = await resolveDestination(`@${item.username}`, state.uid);
+          if (state.groups.some(group => group.id === destination.id)) duplicates.push(destinationLabel(destination));
+          else { state.groups.push(destination); added.push(destinationLabel(destination)); }
+        } catch (err) { failures.push(`${rawLines[index]} — ${err?.message || "cannot add"}`); }
+      }
+      saveState(state);
+      result = {
+        added: added.length, duplicates: duplicates.length, failed: failures.length + invalid, attention: 0,
+        text: [
+          "✅ Destination import complete",
+          `Added — ${added.length}`,
+          `Already saved — ${duplicates.length}`,
+          `Failed / invalid — ${failures.length + invalid}`,
+          ...(failures.length ? ["", ...failures.slice(0, 8)] : []),
+        ].join("\n"),
+      };
+    }
+
+    const tutorialScreen = (result.added || result.duplicates || result.attention)
+      ? advanceTutorialAfterAction(state.uid, 3, 4)
+      : null;
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(pc, pm, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
+    const kb = new InlineKeyboard();
+    if (state.groups.some(group => group.topicRequired === true && !Number(group.topicId || 0))) kb.text("💬 Choose topics", "dest_topics").row();
+    kb.text("📍 Destinations", "groups");
+    try { await bot.api.editMessageText(pc, pm, result.text, { reply_markup: kb }); }
+    catch { await ctx.reply(result.text, { reply_markup: kb }); }
     return;
+
 
   }
 });
