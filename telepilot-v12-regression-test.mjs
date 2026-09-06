@@ -10,7 +10,6 @@ process.env.TELEPILOT_SESSION_KEY_B64 ||= Buffer.alloc(32, 9).toString("base64")
 
 const {
   parseDestinationInput,
-  suggestTopic,
   destinationAccountReady,
   queueRoutingSync,
   processRoutingQueue,
@@ -23,15 +22,6 @@ assert.equal(parseDestinationInput("https://t.me/joinchat/AbCd_123")?.kind, "inv
 assert.equal(parseDestinationInput("@telepilot_test")?.kind, "public");
 assert.equal(parseDestinationInput("https://t.me/telepilot_test")?.username, "telepilot_test");
 assert.equal(parseDestinationInput("not a telegram destination"), null);
-
-const suggested = suggestTopic([
-  { id: 1, title: "General" },
-  { id: 2, title: "Rules" },
-  { id: 9, title: "Advertising" },
-  { id: 10, title: "Support" },
-]);
-assert.equal(suggested?.id, 9);
-assert.equal(suggestTopic([{ id: 2, title: "Rules" }, { id: 3, title: "Support" }]), null);
 
 assert.equal(destinationAccountReady({ id: "-1001" }, "a"), true, "legacy destinations stay compatible");
 assert.equal(destinationAccountReady({ id: "-1001", topicRequired: true, topicId: null, joinStatus: "needs_topic" }, "a"), false);
@@ -46,6 +36,7 @@ const startup = fs.readFileSync("startup.js", "utf8");
 const worker = fs.readFileSync("v1-worker.js", "utf8");
 const onboarding = fs.readFileSync("onboarding.js", "utf8");
 const ux = fs.readFileSync("ux-v12.js", "utf8");
+const importer = fs.readFileSync("destination-automation.js", "utf8");
 
 for (const marker of ["parseDestinationInput", "handleDestinationText", "destinationAccountReady"]) {
   assert.ok(app.includes(marker), `app.js missing ${marker}`);
@@ -58,7 +49,7 @@ assert.ok(worker.includes("destinationAccountReady"), "scheduled worker must res
 assert.ok(!app.includes('text("▶️ Confirm start", "start_confirm")'), "normal Start still requires a second confirmation");
 assert.ok(app.includes("topicId") && app.includes("accountJoin"), "destination v1.2 fields are not preserved");
 assert.ok(startup.includes("installUxNavigation") && startup.includes("installDestinationAutomation"), "v1.2 bot modules not installed");
-assert.ok(startup.includes("startDestinationAutomationWorker"), "destination approval worker not started");
+assert.ok(startup.includes("startDestinationAutomationWorker"), "destination cleanup worker not started");
 const workerStartAt = startup.indexOf("startDestinationAutomationWorker();");
 const appImportAt = startup.indexOf('await import("./app.js")');
 assert.ok(workerStartAt >= 0 && appImportAt >= 0 && workerStartAt < appImportAt, "destination worker must start before app.js enters awaited long polling");
@@ -68,8 +59,10 @@ for (const label of ["▶ Start", "⏹ Stop", "⌂ Home", "🧩 Posting Setup", 
 assert.ok(onboarding.includes("Addlist") || onboarding.includes("addlist"), "tutorial does not explain Addlist destination setup");
 assert.ok(onboarding.includes("Posting Setup"), "tutorial does not use the simplified Posting Setup navigation");
 assert.ok(app.includes("readyDestinationCount"), "Home/start readiness must use ready destinations, not just saved destinations");
-assert.ok(app.includes("scheduleRoutingSync"), "sender routing changes must queue destination membership preparation");
+assert.ok(app.includes("scheduleRoutingSync"), "sender routing changes must keep the routing compatibility hook");
 assert.ok(ux.includes("private t.me/+ invites") && ux.includes("t.me/addlist/..."), "normalized Add Destination screen lost v1.2 import guidance");
 assert.ok(onboarding.includes("needsTopic") && onboarding.includes("Choose Topics"), "tutorial must wait for forum-topic selection");
+assert.ok(importer.includes("getForumTopics"), "fresh importer must load real forum topics for explicit user selection");
+assert.ok(!importer.includes("suggestTopic"), "fresh importer must not auto-pick or suggest a posting topic");
 
 console.log("TelePilot v1.2 regression checks passed");
