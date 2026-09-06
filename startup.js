@@ -6,8 +6,9 @@ import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
-import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
-import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
+import { installDestinationsV2 } from "./destinations-v2.js";
+import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
+import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
@@ -40,6 +41,7 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
+retireLegacyDestinationState();
 installLegalPages();
 installConnectUi();
 
@@ -50,13 +52,13 @@ installProControls(Bot);
 installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
-installDestinationDeleteControls(Bot);
 installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
-installDestinationAutomation(Bot);
 installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
+// Installed last so the new Destination Hub owns all destination callbacks.
+installDestinationsV2(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
@@ -64,7 +66,6 @@ installV1Engine(Api, TelegramClient);
 installPrivatePeerResolution(TelegramClient);
 
 installOwnerControlsUi(Api);
-installDestinationDeleteUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
@@ -74,6 +75,9 @@ installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
 installUxV13Polish(Api);
+// This guard sits underneath the v1.3 transformer so any old destination copy
+// emitted by legacy screens is replaced after v1.3 finishes transforming it.
+installDestinationsV2Copy(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
@@ -92,7 +96,7 @@ try {
 const description = [
   "✈️ TelePilot",
   "",
-  "Schedule Telegram posts from one clean control panel. Connect personal accounts, import destinations and Addlists, choose forum topics and go live.",
+  "Schedule Telegram posts from one clean control panel. Connect personal accounts, organize destinations you already have access to, choose forum topics and go live.",
   "",
   "Open the bot to get started.",
 ].join("\n");
@@ -108,6 +112,5 @@ try {
 }
 
 startV1Worker();
-startDestinationAutomationWorker();
 startQolV13Worker();
 await import("./app.js");
