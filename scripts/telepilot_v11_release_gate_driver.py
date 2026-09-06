@@ -9,14 +9,13 @@ end = source.find(end_marker, start)
 if start < 0 or end < 0:
     raise RuntimeError("Could not locate the Smart Preview patch section")
 
-# The onboarding migration already converted v1-extras.js to listAccounts +
-# senderSummary. Skip that historical patch section and apply the remaining
-# release-gate changes against the current branch state.
+# Smart Preview was already migrated to listAccounts + senderSummary by the
+# onboarding integration. Skip that historical patch block and apply the rest.
 source = source[:start] + "# Smart Preview is already multi-account-aware on this branch.\n\n" + source[end:]
 exec(compile(source, str(script), "exec"), {"__name__": "__main__", "__file__": str(script)})
 
-# Python triple-quoted patch bodies interpret \\n. Repair the two generated
-# JavaScript Array.join string literals so the output contains a literal \\n# escape instead of an illegal raw newline inside double quotes.
+# Repair generated JavaScript Array.join literals: the patch template turns a
+# backslash-n escape into a raw newline, which is illegal inside JS quotes.
 app_path = script.parent.parent / "app.js"
 app = app_path.read_text(encoding="utf-8")
 app = app.replace('.join("\n")', '.join("\\n")')
