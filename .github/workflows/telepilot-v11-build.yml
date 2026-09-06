@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/telepilot-v11-build.yml"
       - "scripts/telepilot_v11_release_gate_fix.py"
+      - "scripts/telepilot_v11_release_gate_driver.py"
 
 permissions:
   contents: write
@@ -22,7 +23,7 @@ jobs:
         with:
           node-version: "22"
       - name: Apply release-gate fixes
-        run: python3 scripts/telepilot_v11_release_gate_fix.py
+        run: python3 scripts/telepilot_v11_release_gate_driver.py
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Syntax checks
