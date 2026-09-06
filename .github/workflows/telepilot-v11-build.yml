@@ -43,3 +43,12 @@ jobs:
           grep -q "permanentCount" v1-engine.js
           grep -q "EXACT_CATCHUP_MS" v1-worker.js
           ! grep -R "getDialogs({ limit: 500 })" app.js pro-controls.js v1-worker.js
+      - name: Package migrated sources
+        run: |
+          mkdir -p /tmp/v11-src
+          cp app.js pro-controls.js v1-controls.js support-center.js security-core.js /tmp/v11-src/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telepilot-v11-migrated-sources
+          path: /tmp/v11-src
+          if-no-files-found: error
