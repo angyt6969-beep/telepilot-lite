@@ -7,6 +7,7 @@ import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationsV2 } from "./destinations-v2.js";
+import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
@@ -74,6 +75,9 @@ installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
 installUxV13Polish(Api);
+// This guard sits underneath the v1.3 transformer so any old destination copy
+// emitted by legacy screens is replaced after v1.3 finishes transforming it.
+installDestinationsV2Copy(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
