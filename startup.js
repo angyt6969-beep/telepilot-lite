@@ -11,6 +11,7 @@ import { installDestinationDeleteControls, installDestinationDeleteUi } from "./
 import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
 import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
 import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
+import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
@@ -76,6 +77,9 @@ installUxV13Navigation(Bot);
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
+// Private Addlist destinations often have no username. Resolve their -100 IDs from the
+// connected account's dialog list so Telegram supplies the access hash before cleanup/posting.
+installPrivatePeerResolution(TelegramClient);
 installArchiveMuteQueue(TelegramClient);
 installAddlistReconciliation(TelegramClient);
 
