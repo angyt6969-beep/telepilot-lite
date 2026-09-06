@@ -7,6 +7,7 @@ import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationsV2 } from "./destinations-v2.js";
+import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
@@ -39,6 +40,7 @@ import {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
+retireLegacyDestinationState();
 installLegalPages();
 installConnectUi();
 
@@ -54,9 +56,7 @@ installOnboarding(Bot);
 installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
-// Install this last so its start-wrapper registers the new destination callbacks
-// before legacy navigation handlers. The legacy callbacks remain unreachable and
-// are retained only as compatibility code for other v1.3 screens.
+// Installed last so the new Destination Hub owns all destination callbacks.
 installDestinationsV2(Bot);
 
 prepareV1Engine(Api, TelegramClient);
