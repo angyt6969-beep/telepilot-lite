@@ -4,10 +4,10 @@ script = Path(__file__).with_name("telepilot_v11_release_gate_fix.py")
 source = script.read_text(encoding="utf-8")
 
 # The original release-gate patch used a broad first-match brace cleanup after
-# replacing the final senderSummary function. Restrict that cleanup to EOF so
-# it cannot remove a brace from an earlier function.
+# replacing the final senderSummary function. Restrict cleanup to the exact EOF
+# shape produced by section(), so an earlier function brace can never be lost.
 bad_cleanup = 'text = text.replace("}\\n}\\n", "}\\n", 1) if "export function senderSummary" in text else text'
-good_cleanup = 'text = text[:-2] if text.endswith("}\\n}\\n") else text'
+good_cleanup = 'text = text[:-3] if text.endswith("}\\n\\n}\\n") else text'
 if bad_cleanup not in source:
     raise RuntimeError("Could not locate account-store cleanup in release-gate patch")
 source = source.replace(bad_cleanup, good_cleanup, 1)
