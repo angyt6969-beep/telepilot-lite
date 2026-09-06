@@ -9,6 +9,7 @@ import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
+import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
 import { installProControls } from "./pro-controls.js";
 import { installPostingEngineEnhancements } from "./posting-engine-enhancements.js";
 import { installProTypography } from "./pro-typography.js";
@@ -54,6 +55,7 @@ installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
 installDestinationAutomation(Bot);
 installUxNavigation(Bot);
+installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
 
 // Keep raw Telegram send methods so v1 can safely take over only scheduled sends.
@@ -63,8 +65,10 @@ installV1Engine(Api, TelegramClient);
 
 // Wrapper order is intentional. v1.3 is placed immediately inside v1.2 so it sees the
 // normalized v1.2 screens, then replaces them with the current Dashboard/Activity layout.
-// Deep premium emoji processing remains downstream so v1_* controls receive Telegram
-// custom-emoji button icons whenever a semantic icon is available.
+// The v1.3 polish wrapper sits immediately inside v1.3 so it receives the finished v1.3
+// screen and can update tutorial copy / add recovery controls. Deep premium emoji processing
+// remains downstream so v1_* controls receive Telegram custom-emoji button icons whenever
+// a semantic icon is available.
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
 installV1Ui(Api);
@@ -72,6 +76,7 @@ installPremiumEmojiEnhancements(Api);
 installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
+installUxV13Polish(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
