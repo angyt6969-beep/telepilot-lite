@@ -14,13 +14,21 @@ assert.equal(typeof worker.startV1Worker, "function");
 // Keep app.js and the compatibility bridge contract synchronized without importing
 // app.js itself (which intentionally starts the live bot/server as a side effect).
 const appSource = fs.readFileSync("app.js", "utf8");
-const importMatch = appSource.match(/import\s*\{([\s\S]*?)\}\s*from\s*["']\.\/destination-automation\.js["'];/);
+const importMatch = appSource.match(/import\s*\{([^{}]*)\}\s*from\s*["']\.\/destination-automation\.js["'];/s);
 assert.ok(importMatch, "app.js destination bridge import block was not found");
 const importedNames = importMatch[1]
   .split(",")
   .map(value => value.trim().split(/\s+as\s+/)[0])
   .filter(Boolean);
-assert.ok(importedNames.length > 0);
+assert.deepEqual(importedNames.sort(), [
+  "destinationAccountReady",
+  "destinationMenu",
+  "handleDestinationText",
+  "parseDestinationInput",
+  "processRoutingQueue",
+  "queueRoutingSync",
+  "recordDestinationFailure",
+].sort());
 for (const name of importedNames) {
   assert.ok(name in bridge, `destination-automation.js is missing app.js import: ${name}`);
 }
