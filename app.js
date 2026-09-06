@@ -875,8 +875,12 @@ async function resolveDestination(target, ownerUid) {
   if (ownerState && accounts.length && !botSender) {
     if (!String(target).startsWith("@")) throw new Error("Personal-account setup needs a public @username or t.me link. Private groups can be added with /addhere.");
     const wanted = String(target).slice(1).toLowerCase();
+    const selectedAccountIds = effectiveAccountIds(ownerState, null, accounts);
+    const accountById = new Map(accounts.map(account => [String(account.id), account]));
     let matched = null;
-    for (const account of accounts) {
+    for (const accountId of selectedAccountIds) {
+      const account = accountById.get(String(accountId));
+      if (!account) continue;
       const client = await ensurePersonalClient(ownerState, account.id);
       if (!client) continue;
       let dialogs;
