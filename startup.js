@@ -75,8 +75,10 @@ installArchiveMuteQueue(TelegramClient);
 
 // Owner controls are the innermost UI layer so role restrictions, the single Start/Stop
 // control and explicitly selected premium button icons are enforced immediately before
-// the raw Bot API request. The existing visual-polish layer still formats the v1.3 UI.
+// the raw Bot API request. Delete Groups sits immediately outside that layer so it sees
+// the fully transformed v1.3 Destinations screen instead of the pre-v1.3 payload.
 installOwnerControlsUi(Api);
+installDestinationDeleteUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
@@ -89,7 +91,6 @@ installUxV13Polish(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
-installDestinationDeleteUi(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
 
