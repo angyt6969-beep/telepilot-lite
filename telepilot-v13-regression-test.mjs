@@ -1,0 +1,86 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-v13-"));
+process.env.DATA_DIR = temp;
+process.env.TELEPILOT_SECURITY_SECRET ||= "v13-regression-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz";
+process.env.TELEPILOT_SESSION_KEY_B64 ||= Buffer.alloc(32, 11).toString("base64");
+
+const {
+  appendImportHistory,
+  defaultQolState,
+  makePresetId,
+  nextPresetName,
+  patchQolState,
+  readQolState,
+  setDestinationNote,
+  setPendingInput,
+} = await import("./qol-store.js");
+
+const uid = "123456";
+assert.equal(defaultQolState().topicPreference.mode, "suggest");
+assert.match(makePresetId("setup"), /^setup_[a-f0-9]{10}$/);
+assert.equal(nextPresetName([{ name: "Posting Setup 1" }], "Posting Setup"), "Posting Setup 2");
+setPendingInput(uid, { type: "destination_search", createdAt: Date.now() });
+assert.equal(readQolState(uid).pendingInput.type, "destination_search");
+setDestinationNote(uid, "-1001", "Advertising topic only");
+assert.equal(readQolState(uid).destinationNotes["-1001"], "Advertising topic only");
+appendImportHistory(uid, { source: "Addlist TEST", added: 5, duplicates: 2, attention: 1, failed: 0, destinationIds: ["-1001"] });
+assert.equal(readQolState(uid).importHistory.length, 1);
+patchQolState(uid, { topicPreference: { mode: "auto_exact", words: ["Advertising", "Marketplace"] } });
+assert.equal(readQolState(uid).topicPreference.mode, "auto_exact");
+assert.deepEqual(readQolState(uid).topicPreference.words, ["advertising", "marketplace"]);
+
+const ux = fs.readFileSync("ux-v13.js", "utf8");
+const startup = fs.readFileSync("startup.js", "utf8");
+const accountStore = fs.readFileSync("account-store.js", "utf8");
+const destinationAutomation = fs.readFileSync("destination-automation.js", "utf8");
+const v1Engine = fs.readFileSync("v1-engine.js", "utf8");
+
+for (const marker of [
+  "📝 Posting Setup",
+  "📊 Activity",
+  "👤 Accounts",
+  "📁 Destinations",
+  "⚙️ Settings",
+  "v1_make_ready_v13",
+  "v1_dest_add_v13",
+  "v1_topic_preferences_v13",
+  "v1_account_presets_v13",
+  "v1_destination_presets_v13",
+  "v1_setups_v13",
+  "v1_pause_menu_v13",
+  "v1_import_history_v13",
+  "v1_dest_search_v13",
+  "v1_dest_note_v13",
+  "v1_alias_v13",
+]) assert.ok(ux.includes(marker), `v1.3 UX missing ${marker}`);
+
+assert.ok(!ux.includes('inline("⌂ Home"'), "Dashboard still contains a redundant Home control");
+assert.ok(ux.includes('inline("📝 Posting Setup", "v1_posting_setup_v13")'), "Posting Setup main button is not on a premium-aware v1 callback");
+assert.ok(ux.includes('inline("📊 Activity", "v1_activity_v13")'), "Activity main button is not on a premium-aware v1 callback");
+assert.ok(ux.includes("t.me/addlist/..."), "Destination copy does not advertise Addlist importing");
+assert.ok(ux.includes("automatically join supported destinations"), "Destination copy does not explain personal-account auto joining");
+assert.ok(ux.includes("verification/captcha"), "Destination copy does not explain manual verification");
+assert.ok(ux.includes("ready /" ) || ux.includes("ready / ${summary.total}"), "Destination readiness summary missing");
+assert.ok(ux.includes("Automatic retry  On") && ux.includes("Broken-destination auto-skip  On"), "Activity does not surface automatic handling");
+assert.ok(ux.includes("Auto-pick exact matches"), "Safe topic preference mode missing");
+assert.ok(ux.includes("Applying a saved setup is blocked while interval posting is running"), "Saved setup safety guard copy missing");
+assert.ok(ux.includes("__telepilotUxV13TextPatched"), "v1.3 restart-safe text-input interception is not installed");
+
+assert.ok(accountStore.includes("alias: cleanAlias"), "Account aliases are not persisted");
+assert.ok(accountStore.includes("export function setAccountAlias"), "Account alias setter missing");
+assert.ok(accountStore.includes("if (cleanAlias(account.alias))"), "Account aliases are not used in display labels");
+
+assert.ok(startup.includes("installUxV13Navigation(Bot)"), "v1.3 bot navigation not installed");
+assert.ok(startup.includes("installUxV13(Api);\ninstallUxV12(Api);"), "v1.3 API wrapper must sit immediately inside v1.2");
+assert.ok(startup.includes("startQolV13Worker()"), "v1.3 QOL worker not started before app import");
+
+assert.ok(destinationAutomation.includes("chatlists.checkChatlistInvite"), "Addlist inspection support regressed");
+assert.ok(destinationAutomation.includes("chatlists.joinChatlistInvite"), "Addlist joining support regressed");
+assert.ok(v1Engine.includes("withRetry"), "Smart retry support regressed");
+assert.ok(v1Engine.includes("disabledDestinationIds"), "Inactive/auto-disabled destination support regressed");
+
+console.log("TelePilot v1.3 regression checks passed");
