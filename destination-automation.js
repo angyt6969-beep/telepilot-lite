@@ -18,10 +18,14 @@ const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
-const WORKER_INTERVAL_MS = 60_000;
-const JOIN_GAP_MS = 1400;
+const WORKER_INTERVAL_MS = 5_000;
+const SLOW_RECHECK_INTERVAL_MS = 60_000;
 const TOPIC_PAGE_SIZE = 8;
 const RECHECK_PER_TICK = 12;
+const MAX_JOIN_QUEUE = 1000;
+const MAX_FAST_JOIN_BATCH = 80;
+const TELEGRAM_ARCHIVE_FOLDER_ID = 1;
+const MUTE_FOREVER_UNIX = 2147483647;
 
 function userDir(uid) { return path.join(USERS_DIR, String(uid)); }
 function automationPath(uid) { return path.join(userDir(uid), "destination-automation.json"); }
@@ -35,22 +39,56 @@ function writeJsonAtomic(file, value) {
   fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
+function cleanQueuedParsed(value) {
+  if (!value || typeof value !== "object") return null;
+  const original = String(value.original || "").slice(0, 500);
+  if (value.kind === "public" && /^[A-Za-z0-9_]{5,32}$/.test(String(value.username || ""))) {
+    return { kind: "public", username: String(value.username), original };
+  }
+  if (value.kind === "invite" && /^[A-Za-z0-9_-]+$/.test(String(value.hash || ""))) {
+    return { kind: "invite", hash: String(value.hash), original };
+  }
+  if (value.kind === "addlist" && /^[A-Za-z0-9_-]+$/.test(String(value.slug || ""))) {
+    return { kind: "addlist", slug: String(value.slug), original };
+  }
+  return null;
+}
 function readAutomation(uid) {
   const raw = readJson(automationPath(uid), {});
+  const joinQueue = Array.isArray(raw.joinQueue)
+    ? raw.joinQueue.map(item => {
+      const parsed = cleanQueuedParsed(item?.parsed);
+      const accountId = String(item?.accountId || "");
+      if (!parsed || !accountId) return null;
+      return {
+        accountId,
+        parsed,
+        queuedAt: Number(item?.queuedAt || 0) || Date.now(),
+        attempts: Math.max(0, Number(item?.attempts || 0) || 0),
+      };
+    }).filter(Boolean).slice(-MAX_JOIN_QUEUE)
+    : [];
+  const joinCooldowns = raw?.joinCooldowns && typeof raw.joinCooldowns === "object" && !Array.isArray(raw.joinCooldowns)
+    ? Object.fromEntries(Object.entries(raw.joinCooldowns).filter(([id, until]) => id && Number(until) > 0).map(([id, until]) => [String(id), Number(until)]))
+    : {};
   return {
-    version: 1,
+    version: 2,
     topicQueue: Array.isArray(raw.topicQueue) ? raw.topicQueue : [],
     unresolvedInvites: Array.isArray(raw.unresolvedInvites) ? raw.unresolvedInvites : [],
     routingQueue: Array.isArray(raw.routingQueue) ? raw.routingQueue : [],
+    joinQueue,
+    joinCooldowns,
     lastWorkerAt: Number(raw.lastWorkerAt || 0) || 0,
   };
 }
 function writeAutomation(uid, value) {
   const normalized = {
-    version: 1,
+    version: 2,
     topicQueue: Array.isArray(value?.topicQueue) ? value.topicQueue.slice(-500) : [],
     unresolvedInvites: Array.isArray(value?.unresolvedInvites) ? value.unresolvedInvites.slice(-500) : [],
     routingQueue: Array.isArray(value?.routingQueue) ? value.routingQueue.slice(-1000) : [],
+    joinQueue: Array.isArray(value?.joinQueue) ? value.joinQueue.slice(-MAX_JOIN_QUEUE) : [],
+    joinCooldowns: value?.joinCooldowns && typeof value.joinCooldowns === "object" && !Array.isArray(value.joinCooldowns) ? value.joinCooldowns : {},
     lastWorkerAt: Number(value?.lastWorkerAt || 0) || 0,
   };
   writeJsonAtomic(automationPath(uid), normalized);
@@ -59,7 +97,14 @@ function writeAutomation(uid, value) {
 function errorCode(err) {
   return String(err?.errorMessage || err?.description || err?.message || err || "").toUpperCase();
 }
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+export function floodWaitSeconds(err) {
+  for (const value of [err?.seconds, err?.value]) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return Math.ceil(number);
+  }
+  const match = errorCode(err).match(/FLOOD_WAIT(?:_|\s|\(|:|-)*(\d+)/);
+  return match ? Math.max(1, Number(match[1])) : 0;
+}
 function idString(value) {
   try { return String(value?.toString?.() ?? value ?? ""); } catch { return String(value || ""); }
 }
@@ -84,6 +129,13 @@ export function parseDestinationInput(raw) {
     return { kind: "public", username: publicLink[1], original: input };
   }
   return null;
+}
+export function parsedIdentity(parsed) {
+  if (!parsed) return "";
+  if (parsed.kind === "public") return `public:${String(parsed.username || "").toLowerCase()}`;
+  if (parsed.kind === "invite") return `invite:${String(parsed.hash || "")}`;
+  if (parsed.kind === "addlist") return `addlist:${String(parsed.slug || "")}`;
+  return "";
 }
 
 const AD_TOPIC_WORDS = [
@@ -142,7 +194,7 @@ export function destinationAccountReady(destination, accountId = "") {
   if (destination.topicRequired === true && !Number(destination.topicId || 0)) return false;
   if (String(destination.joinStatus || "") === "needs_topic") return false;
   const map = destination.accountJoin && typeof destination.accountJoin === "object" ? destination.accountJoin : null;
-  if (!map) return true; // Legacy/manual destinations remain compatible.
+  if (!map) return true;
   const row = map[String(accountId || "")];
   if (!row) return true;
   return String(row.status || "") === "ready";
@@ -169,9 +221,7 @@ async function openAccountClient(uid, account) {
   });
   return client;
 }
-async function inputPeer(client, peer) {
-  return client.getInputEntity(peer);
-}
+async function inputPeer(client, peer) { return client.getInputEntity(peer); }
 async function entityPeerId(client, entity) {
   const id = idString(await client.getPeerId(entity));
   if (/^-\d+$/.test(id)) return id;
@@ -192,6 +242,27 @@ function entityUsername(entity) {
   const username = normalizeUsername(entity?.username || "");
   return username ? `@${username}` : "";
 }
+
+async function archiveAndMuteEntity(client, entity) {
+  try {
+    const peer = await client.getInputEntity(entity);
+    await client.invoke(new Api.folders.EditPeerFolders({
+      folderPeers: [new Api.InputFolderPeer({ peer, folderId: TELEGRAM_ARCHIVE_FOLDER_ID })],
+    }));
+    await client.invoke(new Api.account.UpdateNotifySettings({
+      peer: new Api.InputNotifyPeer({ peer }),
+      settings: new Api.InputPeerNotifySettings({
+        silent: true,
+        muteUntil: MUTE_FOREVER_UNIX,
+      }),
+    }));
+    return true;
+  } catch (err) {
+    console.warn(`Could not archive/mute auto-joined destination: ${String(err?.message || err).slice(0, 140)}`);
+    return false;
+  }
+}
+
 function restrictionFlags(participant) {
   const rights = participant?.bannedRights || participant?.banned_rights || participant?.participant?.bannedRights || participant?.participant?.banned_rights;
   if (!rights) return [];
@@ -206,9 +277,7 @@ async function topicRows(client, entity) {
     return topics
       .map(topic => ({ id: Number(topic?.id || 0), title: String(topic?.title || `Topic ${topic?.id || ""}`).slice(0, 100) }))
       .filter(topic => Number.isInteger(topic.id) && topic.id > 0);
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 async function assessEntity(client, entity) {
   if (!entity) return { status: "failed", reason: "Telegram did not return this chat.", topics: [] };
@@ -222,8 +291,7 @@ async function assessEntity(client, entity) {
       return { status: "verification", reason: "Joined, but Telegram still blocks posting. Complete the group verification in Telegram.", topics: [] };
     }
   } catch (err) {
-    const code = errorCode(err);
-    if (code.includes("USER_NOT_PARTICIPANT")) return { status: "pending", reason: "Waiting to join this group.", topics: [] };
+    if (errorCode(err).includes("USER_NOT_PARTICIPANT")) return { status: "pending", reason: "Waiting to join this group.", topics: [] };
   }
   const topics = await topicRows(client, entity);
   if (entity?.forum === true) {
@@ -339,8 +407,7 @@ async function joinPublic(client, parsed) {
       if (joinState === "ready") entity = await client.getEntity(target);
     }
   } catch (err) {
-    const code = errorCode(err);
-    if (code.includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
+    if (errorCode(err).includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
     throw err;
   }
   return { entity, status: joinState, reason };
@@ -350,9 +417,8 @@ async function joinPrivateInvite(client, parsed) {
   try { checked = await client.checkChatInvite(parsed.hash); } catch {}
   const already = checked?.chat || checked?.className === "ChatInviteAlready" ? checked?.chat : null;
   if (already) return { entity: already, status: "ready", reason: "" };
-  try {
-    await client.importChatInvite(parsed.hash);
-  } catch (err) {
+  try { await client.importChatInvite(parsed.hash); }
+  catch (err) {
     const code = errorCode(err);
     if (code.includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
     if (!code.includes("USER_ALREADY_PARTICIPANT")) throw err;
@@ -406,9 +472,9 @@ async function processEntityForAccount(uid, account, client, entity, source) {
   if (assessment.status === "needs_topic") upsertTopicQueue(uid, base, assessment.topics);
   const saved = saveDestination(uid, base);
   if (assessment.status === "needs_topic") saved.destination.joinStatus = "needs_topic";
+  await archiveAndMuteEntity(client, entity);
   return { ...saved, assessment };
 }
-
 async function processParsedForAccount(uid, account, client, parsed) {
   if (parsed.kind === "addlist") {
     const { chats } = await importAddlist(client, parsed);
@@ -416,7 +482,10 @@ async function processParsedForAccount(uid, account, client, parsed) {
     for (const entity of chats) {
       if (!entity || entity?.className === "ChannelForbidden") continue;
       try { rows.push(await processEntityForAccount(uid, account, client, entity, parsed)); }
-      catch (err) { rows.push({ error: String(err?.message || err), source: entityLabel(entity) }); }
+      catch (err) {
+        if (errorCode(err).includes("FLOOD_WAIT")) throw err;
+        rows.push({ error: String(err?.message || err), source: entityLabel(entity) });
+      }
     }
     return rows;
   }
@@ -436,6 +505,85 @@ async function processParsedForAccount(uid, account, client, parsed) {
   return [await processEntityForAccount(uid, account, client, joined.entity, parsed)];
 }
 
+function setJoinCooldown(uid, accountId, err) {
+  const seconds = floodWaitSeconds(err);
+  const retrySeconds = seconds || 60;
+  const store = readAutomation(uid);
+  store.joinCooldowns[String(accountId)] = Math.max(Number(store.joinCooldowns[String(accountId)] || 0), Date.now() + retrySeconds * 1000 + 1000);
+  writeAutomation(uid, store);
+  return { seconds, until: store.joinCooldowns[String(accountId)] };
+}
+function queueJoinItems(uid, accountId, parsedItems) {
+  const store = readAutomation(uid);
+  const existing = new Set((store.joinQueue || []).map(item => `${item.accountId}|${parsedIdentity(item.parsed)}`));
+  let added = 0;
+  for (const parsed of parsedItems) {
+    const clean = cleanQueuedParsed(parsed);
+    if (!clean) continue;
+    const key = `${accountId}|${parsedIdentity(clean)}`;
+    if (existing.has(key)) continue;
+    if (store.joinQueue.length >= MAX_JOIN_QUEUE) break;
+    store.joinQueue.push({ accountId: String(accountId), parsed: clean, queuedAt: Date.now(), attempts: 0 });
+    existing.add(key);
+    added++;
+  }
+  writeAutomation(uid, store);
+  return added;
+}
+function clearExpiredCooldowns(store) {
+  const now = Date.now();
+  for (const [accountId, until] of Object.entries(store.joinCooldowns || {})) {
+    if (Number(until) <= now) delete store.joinCooldowns[accountId];
+  }
+  return store;
+}
+async function processJoinQueue(uid, maxItems = MAX_FAST_JOIN_BATCH) {
+  const id = String(uid || "");
+  const accounts = listAccounts(id);
+  const byId = new Map(accounts.map(account => [String(account.id), account]));
+  let store = clearExpiredCooldowns(readAutomation(id));
+  if (!store.joinQueue.length) { writeAutomation(id, store); return { processed: 0, remaining: 0 }; }
+  const clients = new Map();
+  const removeKeys = new Set();
+  const blockedAccounts = new Set();
+  let processed = 0;
+  try {
+    for (const item of store.joinQueue.slice(0, Math.max(1, Number(maxItems) || MAX_FAST_JOIN_BATCH))) {
+      const accountId = String(item.accountId);
+      const key = `${accountId}|${item.queuedAt}|${parsedIdentity(item.parsed)}`;
+      if (blockedAccounts.has(accountId)) continue;
+      if (Number(store.joinCooldowns[accountId] || 0) > Date.now()) { blockedAccounts.add(accountId); continue; }
+      const account = byId.get(accountId);
+      if (!account) { removeKeys.add(key); continue; }
+      let client = clients.get(accountId);
+      if (!client) {
+        try { client = await openAccountClient(id, account); clients.set(accountId, client); }
+        catch { blockedAccounts.add(accountId); continue; }
+      }
+      try {
+        await processParsedForAccount(id, account, client, item.parsed);
+        removeKeys.add(key);
+        processed++;
+      } catch (err) {
+        if (errorCode(err).includes("FLOOD_WAIT")) {
+          setJoinCooldown(id, accountId, err);
+          blockedAccounts.add(accountId);
+          continue;
+        }
+        console.warn(`Queued destination join failed for ${id}/${accountId}: ${String(err?.message || err).slice(0, 160)}`);
+        removeKeys.add(key);
+        processed++;
+      }
+    }
+  } finally {
+    for (const client of clients.values()) try { await client.disconnect(); } catch {}
+  }
+  store = clearExpiredCooldowns(readAutomation(id));
+  store.joinQueue = (store.joinQueue || []).filter(item => !removeKeys.has(`${item.accountId}|${item.queuedAt}|${parsedIdentity(item.parsed)}`));
+  writeAutomation(id, store);
+  return { processed, remaining: store.joinQueue.length };
+}
+
 function summaryCounts(groups) {
   const counts = { ready: 0, needs_topic: 0, pending: 0, verification: 0, partial: 0, read_only: 0, failed: 0 };
   for (const group of groups || []) {
@@ -453,8 +601,9 @@ export function destinationMenu(uid) {
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups : [];
   const counts = summaryCounts(groups);
-  const store = readAutomation(uid);
+  const store = clearExpiredCooldowns(readAutomation(uid));
   const unresolved = store.unresolvedInvites.length;
+  const cooldownCount = Object.values(store.joinCooldowns || {}).filter(until => Number(until) > Date.now()).length;
   const lines = groups.slice(0, 12).map(group => {
     const status = overallStatus(group);
     const icon = status === "ready" ? "✅" : status === "needs_topic" ? "💬" : status === "pending" ? "⏳" : status === "verification" ? "🛡" : status === "partial" ? "◐" : "⚠️";
@@ -466,6 +615,8 @@ export function destinationMenu(uid) {
     "",
     `Saved  ${groups.length}`,
     `Ready  ${counts.ready}`,
+    store.joinQueue.length ? `⚡ Auto-join queued  ${store.joinQueue.length}` : null,
+    cooldownCount ? `⏳ Telegram cooldown  ${cooldownCount} sender${cooldownCount === 1 ? "" : "s"}` : null,
     counts.needs_topic ? `Choose topic  ${counts.needs_topic}` : null,
     counts.pending || unresolved ? `Pending approval  ${counts.pending + unresolved}` : null,
     counts.verification ? `Verification needed  ${counts.verification}` : null,
@@ -475,7 +626,7 @@ export function destinationMenu(uid) {
   ].filter(Boolean).join("\n");
   const kb = new InlineKeyboard().text("＋ Add destinations", "add_group").row();
   if (counts.needs_topic) kb.text(`💬 Choose topics (${counts.needs_topic})`, "dest_topics").row();
-  if (counts.pending || counts.verification || counts.partial || unresolved) kb.text("⏳ Pending & verification", "dest_pending").row();
+  if (counts.pending || counts.verification || counts.partial || unresolved || store.joinQueue.length) kb.text("⏳ Pending & verification", "dest_pending").row();
   if (groups.length) kb.text("Manage", "remove_group_menu").text("Advanced routing", "route_groups:0").row();
   kb.text("← Home", "home");
   return { text, keyboard: kb };
@@ -485,27 +636,40 @@ export async function handleDestinationText(uid, text) {
   const id = String(uid || "");
   const settings = readAppSettings(id);
   const accounts = listAccounts(id);
-  const selectedIds = effectiveAccountIds(settings, null, accounts);
+  const selectedIds = effectiveAccountIds(settings, null, accounts).map(String);
   const byId = new Map(accounts.map(account => [String(account.id), account]));
   const rawLines = String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const parsed = [];
+  const inputKeys = new Set();
   let invalid = 0;
+  let duplicates = 0;
   for (const line of rawLines) {
     const item = parseDestinationInput(line);
-    if (!item) invalid++;
-    else if (!parsed.some(existing => JSON.stringify(existing) === JSON.stringify(item))) parsed.push(item);
+    if (!item) { invalid++; continue; }
+    const identity = parsedIdentity(item);
+    if (inputKeys.has(identity)) { duplicates++; continue; }
+    inputKeys.add(identity);
+    parsed.push(item);
   }
-  if (!parsed.length) return { added: 0, duplicates: 0, failed: invalid || 1, attention: 0, text: "No valid Telegram destinations were found." };
-  if (!selectedIds.length) {
-    return { requiresPersonal: true, parsed, invalid, added: 0, duplicates: 0, failed: 0, attention: 0 };
-  }
+  if (!parsed.length) return { added: 0, duplicates, failed: invalid || 1, attention: 0, text: "No valid Telegram destinations were found." };
+  if (!selectedIds.length) return { requiresPersonal: true, parsed, invalid, added: 0, duplicates, failed: 0, attention: 0 };
+
   const before = new Set((settings.groups || []).map(group => String(group.id)));
+  const seenResolvedIds = new Set();
+  const countedExistingIds = new Set();
   const failures = [];
   let pendingOnly = 0;
-  const touched = new Set();
-  for (const accountId of selectedIds) {
-    const account = byId.get(String(accountId));
+  let deferred = 0;
+
+  for (let accountIndex = 0; accountIndex < selectedIds.length; accountIndex++) {
+    const accountId = selectedIds[accountIndex];
+    const account = byId.get(accountId);
     if (!account) continue;
+    const store = clearExpiredCooldowns(readAutomation(id));
+    if (Number(store.joinCooldowns[accountId] || 0) > Date.now()) {
+      deferred += queueJoinItems(id, accountId, parsed);
+      continue;
+    }
     let client;
     try {
       client = await openAccountClient(id, account);
@@ -514,7 +678,16 @@ export async function handleDestinationText(uid, text) {
         try {
           const rows = await processParsedForAccount(id, account, client, item);
           for (const row of rows) {
-            if (row?.destination?.id) touched.add(String(row.destination.id));
+            const resolvedId = row?.destination?.id ? String(row.destination.id) : "";
+            if (accountIndex === 0 && resolvedId) {
+              if (before.has(resolvedId)) {
+                if (!countedExistingIds.has(resolvedId)) { duplicates++; countedExistingIds.add(resolvedId); }
+              } else if (seenResolvedIds.has(resolvedId)) {
+                duplicates++;
+              } else {
+                seenResolvedIds.add(resolvedId);
+              }
+            }
             if (row?.pendingOnly) pendingOnly++;
             if (row?.error) failures.push(`${row.source || item.original} — ${row.error}`);
           }
@@ -522,7 +695,8 @@ export async function handleDestinationText(uid, text) {
           const code = errorCode(err);
           const label = item.original;
           if (code.includes("FLOOD_WAIT")) {
-            failures.push(`${label} — Telegram rate-limited joining. Try again later.`);
+            setJoinCooldown(id, accountId, err);
+            deferred += queueJoinItems(id, accountId, parsed.slice(index));
             break;
           }
           if (code.includes("INVITE_SLUG_EXPIRED") || code.includes("INVITE_HASH_EXPIRED")) failures.push(`${label} — invite expired.`);
@@ -530,7 +704,6 @@ export async function handleDestinationText(uid, text) {
           else if (code.includes("USER_BANNED_IN_CHANNEL")) failures.push(`${label} — this account is banned from that destination.`);
           else failures.push(`${label} — ${String(err?.message || err).slice(0, 160)}`);
         }
-        if (index < parsed.length - 1) await sleep(JOIN_GAP_MS);
       }
     } catch (err) {
       failures.push(`${accountDisplayLabel(account)} — ${String(err?.message || err).slice(0, 160)}`);
@@ -539,24 +712,27 @@ export async function handleDestinationText(uid, text) {
       try { await client?.disconnect(); } catch {}
     }
   }
+
   const afterSettings = readAppSettings(id);
   const afterGroups = Array.isArray(afterSettings.groups) ? afterSettings.groups : [];
   const added = afterGroups.filter(group => !before.has(String(group.id))).length;
-  const duplicates = [...touched].filter(value => before.has(value)).length;
   const counts = summaryCounts(afterGroups);
-  const attention = counts.needs_topic + counts.pending + counts.verification + counts.partial + pendingOnly;
+  const queueRemaining = readAutomation(id).joinQueue.length;
+  const attention = counts.needs_topic + counts.pending + counts.verification + counts.partial + pendingOnly + queueRemaining;
   const summary = [
     "✅ Destination import complete",
     `Added — ${added}`,
-    `Already saved — ${duplicates}`,
+    `Duplicates skipped — ${duplicates}`,
+    queueRemaining ? `⚡ Auto-join queued — ${queueRemaining}` : null,
     `Needs attention — ${attention}`,
     `Failed / invalid — ${failures.length + invalid}`,
-  ];
+  ].filter(Boolean);
   if (counts.needs_topic) summary.push(`Topics to choose — ${counts.needs_topic}`);
   if (pendingOnly || counts.pending) summary.push(`Awaiting approval — ${pendingOnly + counts.pending}`);
   if (counts.verification) summary.push(`Verification required — ${counts.verification}`);
+  if (deferred) summary.push("Telegram asked this sender to slow down. Remaining joins are queued and will resume automatically.");
   if (failures.length) summary.push("", ...failures.slice(0, 8));
-  return { added, duplicates, failed: failures.length + invalid, attention, text: summary.join("\n") };
+  return { added, duplicates, failed: failures.length + invalid, attention, queued: queueRemaining, text: summary.join("\n") };
 }
 
 function topicQueueForGroups(uid) {
@@ -636,8 +812,15 @@ async function showPending(ctx) {
   const uid = String(ctx.from?.id || "");
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups : [];
-  const store = readAutomation(uid);
+  const store = clearExpiredCooldowns(readAutomation(uid));
   const lines = [];
+  if (store.joinQueue.length) lines.push(`⚡ ${store.joinQueue.length} destination${store.joinQueue.length === 1 ? " is" : "s are"} queued for automatic joining.`);
+  const activeCooldowns = Object.entries(store.joinCooldowns || {}).filter(([, until]) => Number(until) > Date.now());
+  for (const [accountId, until] of activeCooldowns.slice(0, 10)) {
+    const account = listAccounts(uid).find(item => String(item.id) === String(accountId));
+    const seconds = Math.max(1, Math.ceil((Number(until) - Date.now()) / 1000));
+    lines.push(`⏳ ${account ? accountDisplayLabel(account) : "Sender"} · Telegram cooldown ${seconds}s`);
+  }
   for (const group of groups) {
     const rows = Object.entries(group.accountJoin || {}).filter(([, row]) => row?.status && row.status !== "ready");
     for (const [accountId, row] of rows.slice(0, 30)) {
@@ -654,7 +837,7 @@ async function showPending(ctx) {
     "",
     lines.length ? lines.join("\n\n") : "Nothing currently needs attention.",
     "",
-    "TelePilot does not bypass captchas or verification bots. Complete those steps in Telegram; TelePilot will recheck automatically.",
+    "Fast Auto Join runs automatically. Telegram-requested cooldowns resume on their own. Captchas or verification steps still need to be completed in Telegram.",
   ].join("\n"), { reply_markup: kb });
 }
 
@@ -718,18 +901,13 @@ async function joinOneAddlistDestination(client, group) {
   const wanted = String(group.id || "").replace(/^-100/, "").replace(/^-/, "").replace(/\D/g, "");
   let entity = chats.find(chat => idString(chat?.id || "").replace(/\D/g, "") === wanted) || null;
   const isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
-  const peers = isAlready
-    ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : [])
-    : (Array.isArray(invite?.peers) ? invite.peers : []);
+  const peers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
   const peer = peers.find(row => peerKey(row) === wanted) || null;
   if (peer) {
     const input = await inputPeer(client, entity || peer);
     try {
       if (isAlready) {
-        await client.api.chatlists.joinChatlistUpdates({
-          chatlist: new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) }),
-          peers: [input],
-        });
+        await client.api.chatlists.joinChatlistUpdates({ chatlist: new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) }), peers: [input] });
       } else {
         await client.api.chatlists.joinChatlistInvite({ slug, peers: [input] });
       }
@@ -738,28 +916,18 @@ async function joinOneAddlistDestination(client, group) {
       throw err;
     }
   }
-  if (!entity) {
-    try { entity = await client.getEntity(group.id); } catch {}
-  }
-  return entity
-    ? { entity, status: "ready", reason: "" }
-    : { entity: null, status: "failed", reason: "Telegram could not resolve this Addlist destination for the selected account." };
+  if (!entity) { try { entity = await client.getEntity(group.id); } catch {} }
+  return entity ? { entity, status: "ready", reason: "" } : { entity: null, status: "failed", reason: "Telegram could not resolve this Addlist destination for the selected account." };
 }
-
 async function prepareExistingDestination(uid, group, account, client) {
   let joined;
-  if (group.username) {
-    joined = await joinPublic(client, { kind: "public", username: normalizeUsername(group.username), original: group.username });
-  } else if (group.source === "invite" && group.sourceSlug) {
-    joined = await joinPrivateInvite(client, { kind: "invite", hash: group.sourceSlug, original: "Private invite" });
-  } else if (group.source === "addlist" && group.sourceSlug) {
-    joined = await joinOneAddlistDestination(client, group);
-  } else {
+  if (group.username) joined = await joinPublic(client, { kind: "public", username: normalizeUsername(group.username), original: group.username });
+  else if (group.source === "invite" && group.sourceSlug) joined = await joinPrivateInvite(client, { kind: "invite", hash: group.sourceSlug, original: "Private invite" });
+  else if (group.source === "addlist" && group.sourceSlug) joined = await joinOneAddlistDestination(client, group);
+  else {
     let entity = null;
     try { entity = await client.getEntity(group.id); } catch {}
-    joined = entity
-      ? { entity, status: "ready", reason: "" }
-      : { entity: null, status: "failed", reason: "This private destination has no reusable invite. Add it again with its invite or Addlist link." };
+    joined = entity ? { entity, status: "ready", reason: "" } : { entity: null, status: "failed", reason: "This private destination has no reusable invite. Add it again with its invite or Addlist link." };
   }
   if (!joined.entity) {
     setGroupAccountStatus(uid, group.id, account.id, joined.status || "failed", joined.reason || "Destination is not ready.");
@@ -781,25 +949,25 @@ export async function processRoutingQueue(uid, maxItems = 4) {
   const id = String(uid || "");
   const accounts = listAccounts(id);
   const byId = new Map(accounts.map(account => [String(account.id), account]));
-  const initial = readAutomation(id);
+  let initial = clearExpiredCooldowns(readAutomation(id));
   const work = (initial.routingQueue || []).slice(0, Math.max(1, Number(maxItems) || 4));
   if (!work.length) return { checked: 0, changed: 0 };
   const processed = new Set();
   const clients = new Map();
+  const blockedAccounts = new Set();
   let checked = 0, changed = 0;
   try {
     for (const item of work) {
       const key = `${item.destinationId}|${item.accountId}`;
+      const accountId = String(item.accountId);
+      if (blockedAccounts.has(accountId) || Number(initial.joinCooldowns[accountId] || 0) > Date.now()) continue;
       const settings = readAppSettings(id);
       const group = (settings.groups || []).find(row => String(row.id) === String(item.destinationId));
-      const account = byId.get(String(item.accountId));
-      if (!group || !account || !effectiveAccountIds(settings, group, accounts).map(String).includes(String(account.id))) {
-        processed.add(key);
-        continue;
-      }
-      let client = clients.get(account.id);
+      const account = byId.get(accountId);
+      if (!group || !account || !effectiveAccountIds(settings, group, accounts).map(String).includes(accountId)) { processed.add(key); continue; }
+      let client = clients.get(accountId);
       if (!client) {
-        try { client = await openAccountClient(id, account); clients.set(account.id, client); }
+        try { client = await openAccountClient(id, account); clients.set(accountId, client); }
         catch (err) {
           setGroupAccountStatus(id, group.id, account.id, "failed", `Sender connection failed: ${String(err?.message || err).slice(0, 120)}`);
           processed.add(key);
@@ -812,7 +980,11 @@ export async function processRoutingQueue(uid, maxItems = 4) {
         processed.add(key);
       } catch (err) {
         const code = errorCode(err);
-        if (code.includes("FLOOD_WAIT")) break;
+        if (code.includes("FLOOD_WAIT")) {
+          setJoinCooldown(id, accountId, err);
+          blockedAccounts.add(accountId);
+          continue;
+        }
         const reason = code.includes("CHANNELS_TOO_MUCH")
           ? "This account has reached Telegram's joined-channel limit."
           : code.includes("INVITE_SLUG_EXPIRED") || code.includes("INVITE_HASH_EXPIRED")
@@ -821,11 +993,8 @@ export async function processRoutingQueue(uid, maxItems = 4) {
         setGroupAccountStatus(id, group.id, account.id, "failed", reason);
         processed.add(key);
       }
-      await sleep(JOIN_GAP_MS);
     }
-  } finally {
-    for (const client of clients.values()) try { await client.disconnect(); } catch {}
-  }
+  } finally { for (const client of clients.values()) try { await client.disconnect(); } catch {} }
   if (processed.size) {
     const latest = readAutomation(id);
     latest.routingQueue = (latest.routingQueue || []).filter(row => !processed.has(`${row.destinationId}|${row.accountId}`));
@@ -841,8 +1010,7 @@ async function resolveForRecheck(client, group) {
 }
 async function recheckGroupAccount(uid, group, account, client) {
   let entity;
-  try { entity = await resolveForRecheck(client, group); }
-  catch { return false; }
+  try { entity = await resolveForRecheck(client, group); } catch { return false; }
   const assessment = await assessEntity(client, entity);
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
@@ -854,6 +1022,7 @@ async function recheckGroupAccount(uid, group, account, client) {
   if (assessment.status === "needs_topic" && !Number(current.topicId || 0)) upsertTopicQueue(uid, current, assessment.topics);
   current.joinStatus = overallStatus(current);
   writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+  if (assessment.status !== "pending") await archiveAndMuteEntity(client, entity);
   return true;
 }
 async function recheckUnresolved(uid, item, account, client) {
@@ -899,11 +1068,16 @@ export async function recheckDestinations(uid, maxItems = RECHECK_PER_TICK) {
     for (const item of work.slice(0, Math.max(1, Number(maxItems) || RECHECK_PER_TICK))) {
       const account = byId.get(String(item.accountId));
       if (!account) continue;
+      if (Number(store.joinCooldowns[String(account.id)] || 0) > Date.now()) continue;
       let client = clients.get(account.id);
       if (!client) { try { client = await openAccountClient(id, account); clients.set(account.id, client); } catch { continue; } }
       checked++;
-      if (item.type === "group") changed += (await recheckGroupAccount(id, item.group, account, client)) ? 1 : 0;
-      else changed += (await recheckUnresolved(id, item.item, account, client)) ? 1 : 0;
+      try {
+        if (item.type === "group") changed += (await recheckGroupAccount(id, item.group, account, client)) ? 1 : 0;
+        else changed += (await recheckUnresolved(id, item.item, account, client)) ? 1 : 0;
+      } catch (err) {
+        if (errorCode(err).includes("FLOOD_WAIT")) setJoinCooldown(id, account.id, err);
+      }
     }
   } finally { for (const client of clients.values()) try { await client.disconnect(); } catch {} }
   if (changed) syncUserGroups(id);
@@ -928,6 +1102,7 @@ function installHandlers(bot) {
   bot.callbackQuery("dest_pending", async ctx => { await ctx.answerCallbackQuery(); await showPending(ctx); });
   bot.callbackQuery("dest_recheck", async ctx => {
     await ctx.answerCallbackQuery({ text: "Checking…" });
+    await processJoinQueue(String(ctx.from?.id || ""), MAX_FAST_JOIN_BATCH);
     await recheckDestinations(String(ctx.from?.id || ""), 30);
     await showPending(ctx);
   });
@@ -955,18 +1130,27 @@ export function startDestinationAutomationWorker() {
     workerBusy = true;
     try {
       for (const uid of listUserIds()) {
-        const store = readAutomation(uid);
+        let store = clearExpiredCooldowns(readAutomation(uid));
+        if (store.joinQueue.length) {
+          try { await processJoinQueue(uid, MAX_FAST_JOIN_BATCH); } catch (err) { console.warn(`Fast auto-join failed for ${uid}:`, err?.message || err); }
+          store = readAutomation(uid);
+        }
+        const now = Date.now();
+        const shouldSlowCheck = now - Number(store.lastWorkerAt || 0) >= SLOW_RECHECK_INTERVAL_MS;
+        if (!shouldSlowCheck) continue;
+        store.lastWorkerAt = now;
+        writeAutomation(uid, store);
         const settings = readAppSettings(uid);
         const hasAttention = store.routingQueue.length || store.unresolvedInvites.length || (settings.groups || []).some(group => Object.values(group.accountJoin || {}).some(row => ["pending", "verification"].includes(String(row?.status || ""))));
         if (!hasAttention) continue;
-        try { if (store.routingQueue.length) await processRoutingQueue(uid, 4); } catch (err) { console.warn(`Destination routing sync failed for ${uid}:`, err?.message || err); }
+        try { if (store.routingQueue.length) await processRoutingQueue(uid, 20); } catch (err) { console.warn(`Destination routing sync failed for ${uid}:`, err?.message || err); }
         try { await recheckDestinations(uid, RECHECK_PER_TICK); } catch (err) { console.warn(`Destination recheck failed for ${uid}:`, err?.message || err); }
       }
     } finally { workerBusy = false; }
   };
   workerTimer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
   workerTimer.unref?.();
-  setTimeout(() => void tick(), 60_000).unref?.();
-  console.log("TelePilot destination approval/verification worker enabled");
+  setTimeout(() => void tick(), 2_000).unref?.();
+  console.log("TelePilot Fast Auto Join worker enabled (duplicate detection + archive/mute)");
   return workerTimer;
 }
