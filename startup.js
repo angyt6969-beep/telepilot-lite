@@ -7,6 +7,7 @@ import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
+import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
@@ -54,6 +55,7 @@ installProControls(Bot);
 installMediaClearControl(Bot);
 installV1Controls(Bot);
 installV1Extras(Bot);
+installDestinationDeleteControls(Bot);
 // Support wraps app routes before onboarding so a previously deleted account cannot
 // fall through to the new-user tutorial with stale in-memory access. The early adapter
 // registers Support callbacks before grammY starts polling, so inline buttons are always answered.
@@ -85,6 +87,7 @@ installUxV13Polish(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
+installDestinationDeleteUi(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
 
