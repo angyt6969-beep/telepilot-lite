@@ -2,7 +2,7 @@ name: TelePilot 1.1 Regression
 
 on:
   push:
-    branches: [telepilot-v2-routing]
+    branches: [main, telepilot-v2-routing]
     paths:
       - ".github/workflows/telepilot-v11-regression.yml"
       - "app.js"
@@ -29,8 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: telepilot-v2-routing
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
