@@ -6,6 +6,7 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATUS_TTL_MS = 10 * 60_000;
 const POLL_MS = 4_000;
 const MAX_POLL_MS = 3 * 60_000;
+const MESSAGE_MATCH_WINDOW_MS = 10_000;
 
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function statusPath(uid) { return path.join(userDir(uid), "addlist-live-progress.json"); }
@@ -27,10 +28,6 @@ function requestClassName(request) { return String(request?.className || request
 function valueString(value) {
   try { return String(value?.toString?.() ?? value ?? ""); }
   catch { return String(value || ""); }
-}
-function peerKey(peer) {
-  const raw = peer?.channelId ?? peer?.chatId ?? peer?.userId ?? peer?.id ?? "";
-  return valueString(raw).replace(/\D/g, "");
 }
 function isAlreadyInvite(result) {
   return result?.className === "ChatlistInviteAlready" || Number.isInteger(Number(result?.filterId));
@@ -127,6 +124,7 @@ export function installAddlistLiveStatus(TelegramClientClass) {
       throw err;
     }
   };
+  console.log("TelePilot Addlist live progress tracking enabled");
 }
 
 function targetCount(chatId, status) {
@@ -195,7 +193,7 @@ export function installAddlistLiveProgressUi(ApiClass) {
     const result = await originalSendMessage.call(this, chatId, text, other, ...rest);
     if (!isImportSummary(text)) return result;
     const initial = recentAddlistLiveStatus(String(chatId || ""));
-    if (!initial) return result;
+    if (!initial || Date.now() - Number(initial.updatedAt || 0) > MESSAGE_MATCH_WINDOW_MS) return result;
     const messageId = Number(result?.message_id || result?.messageId || 0);
     if (!messageId) return result;
     const key = initial.key;
