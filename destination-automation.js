@@ -10,25 +10,30 @@ import {
   loadAccountSession,
   updateAccountStatus,
 } from "./account-store.js";
-import { listUserIds, readAppSettings, writeAppSettings } from "./posting-engine-enhancements.js";
+import {
+  listUserIds,
+  readAppSettings,
+  writeAppSettings,
+} from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
 import { advanceTutorialAfterAction } from "./onboarding.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
-const USERS_DIR = path.join(DATA_DIR, "users");
-const WORKER_INTERVAL_MS = 5_000;
-const SLOW_RECHECK_INTERVAL_MS = 60_000;
-const TOPIC_PAGE_SIZE = 8;
-const RECHECK_PER_TICK = 12;
-const MAX_JOIN_QUEUE = 1000;
-const MAX_FAST_JOIN_BATCH = 80;
-const TELEGRAM_ARCHIVE_FOLDER_ID = 1;
+const WORKER_INTERVAL_MS = 2_000;
 const MUTE_FOREVER_UNIX = 2147483647;
+const ARCHIVE_BATCH_SIZE = 50;
+const TOPIC_PAGE_SIZE = 8;
+const COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
-function userDir(uid) { return path.join(USERS_DIR, String(uid)); }
-function automationPath(uid) { return path.join(userDir(uid), "destination-automation.json"); }
+function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
+function importerStatePath(uid) { return path.join(userDir(uid), "destination-import-v1.json"); }
+// ux-v13 already owns this small UI-state file. The fresh importer only writes
+// topicQueue into it so the existing v1.3 Topics screen can render newly joined
+// forum destinations. No legacy join/reconciliation worker reads this file.
+function topicUiStatePath(uid) { return path.join(userDir(uid), "destination-automation.json"); }
+
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
   catch { return fallback; }
@@ -39,165 +44,114 @@ function writeJsonAtomic(file, value) {
   fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
-function cleanQueuedParsed(value) {
-  if (!value || typeof value !== "object") return null;
-  const original = String(value.original || "").slice(0, 500);
-  if (value.kind === "public" && /^[A-Za-z0-9_]{5,32}$/.test(String(value.username || ""))) {
-    return { kind: "public", username: String(value.username), original };
-  }
-  if (value.kind === "invite" && /^[A-Za-z0-9_-]+$/.test(String(value.hash || ""))) {
-    return { kind: "invite", hash: String(value.hash), original };
-  }
-  if (value.kind === "addlist" && /^[A-Za-z0-9_-]+$/.test(String(value.slug || ""))) {
-    return { kind: "addlist", slug: String(value.slug), original };
-  }
-  return null;
+function errorText(err) {
+  return String(err?.errorMessage || err?.description || err?.message || err || "Unknown Telegram error").slice(0, 220);
 }
-function readAutomation(uid) {
-  const raw = readJson(automationPath(uid), {});
-  const joinQueue = Array.isArray(raw.joinQueue)
-    ? raw.joinQueue.map(item => {
-      const parsed = cleanQueuedParsed(item?.parsed);
-      const accountId = String(item?.accountId || "");
-      if (!parsed || !accountId) return null;
-      return {
-        accountId,
-        parsed,
-        queuedAt: Number(item?.queuedAt || 0) || Date.now(),
-        attempts: Math.max(0, Number(item?.attempts || 0) || 0),
-      };
-    }).filter(Boolean).slice(-MAX_JOIN_QUEUE)
-    : [];
-  const joinCooldowns = raw?.joinCooldowns && typeof raw.joinCooldowns === "object" && !Array.isArray(raw.joinCooldowns)
-    ? Object.fromEntries(Object.entries(raw.joinCooldowns).filter(([id, until]) => id && Number(until) > 0).map(([id, until]) => [String(id), Number(until)]))
-    : {};
-  return {
-    version: 2,
-    topicQueue: Array.isArray(raw.topicQueue) ? raw.topicQueue : [],
-    unresolvedInvites: Array.isArray(raw.unresolvedInvites) ? raw.unresolvedInvites : [],
-    routingQueue: Array.isArray(raw.routingQueue) ? raw.routingQueue : [],
-    joinQueue,
-    joinCooldowns,
-    lastWorkerAt: Number(raw.lastWorkerAt || 0) || 0,
-  };
-}
-function writeAutomation(uid, value) {
-  const normalized = {
-    version: 2,
-    topicQueue: Array.isArray(value?.topicQueue) ? value.topicQueue.slice(-500) : [],
-    unresolvedInvites: Array.isArray(value?.unresolvedInvites) ? value.unresolvedInvites.slice(-500) : [],
-    routingQueue: Array.isArray(value?.routingQueue) ? value.routingQueue.slice(-1000) : [],
-    joinQueue: Array.isArray(value?.joinQueue) ? value.joinQueue.slice(-MAX_JOIN_QUEUE) : [],
-    joinCooldowns: value?.joinCooldowns && typeof value.joinCooldowns === "object" && !Array.isArray(value.joinCooldowns) ? value.joinCooldowns : {},
-    lastWorkerAt: Number(value?.lastWorkerAt || 0) || 0,
-  };
-  writeJsonAtomic(automationPath(uid), normalized);
-  return normalized;
-}
-function errorCode(err) {
-  return String(err?.errorMessage || err?.description || err?.message || err || "").toUpperCase();
-}
+function errorCode(err) { return errorText(err).toUpperCase(); }
 export function floodWaitSeconds(err) {
-  for (const value of [err?.seconds, err?.value]) {
+  for (const value of [err?.seconds, err?.value, err?.retryAfter, err?.parameters?.retry_after]) {
     const number = Number(value);
     if (Number.isFinite(number) && number > 0) return Math.ceil(number);
   }
-  const match = errorCode(err).match(/FLOOD_WAIT(?:_|\s|\(|:|-)*(\d+)/);
+  const match = errorCode(err).match(/(?:FLOOD_WAIT|PLEASE WAIT|WAIT)(?:_|\s|\(|:|-)*(\d+)/);
   return match ? Math.max(1, Number(match[1])) : 0;
 }
-function idString(value) {
-  try { return String(value?.toString?.() ?? value ?? ""); } catch { return String(value || ""); }
+function retryAt(err, attempts, baseMs = 10_000) {
+  const flood = floodWaitSeconds(err);
+  if (flood) return Date.now() + (flood + 2) * 1000;
+  return Date.now() + Math.min(30 * 60_000, baseMs * (2 ** Math.min(7, Math.max(0, attempts))));
 }
-function normalizeUsername(value) {
-  const v = String(value || "").replace(/^@/, "").trim();
-  return /^[A-Za-z0-9_]{5,32}$/.test(v) ? v : "";
+function idString(value) {
+  try { return String(value?.toString?.() ?? value ?? ""); }
+  catch { return String(value || ""); }
+}
+function digits(value) { return idString(value).replace(/\D/g, ""); }
+function peerKey(peer) { return digits(peer?.channelId ?? peer?.chatId ?? peer?.userId ?? peer?.id ?? peer); }
+function chatKey(chat) { return digits(chat?.id); }
+function findChat(chats, peer) {
+  const wanted = peerKey(peer);
+  return wanted ? (Array.isArray(chats) ? chats : []).find(chat => chatKey(chat) === wanted) || null : null;
+}
+function uniqueChats(chats) {
+  const out = [], seen = new Set();
+  for (const chat of Array.isArray(chats) ? chats : []) {
+    const key = chatKey(chat);
+    if (!key || seen.has(key) || chat?.className === "ChannelForbidden") continue;
+    seen.add(key);
+    out.push(chat);
+  }
+  return out;
 }
 
+function readCleanup(uid) {
+  const raw = readJson(importerStatePath(uid), {});
+  const now = Date.now();
+  return (Array.isArray(raw.cleanup) ? raw.cleanup : []).map(row => ({
+    accountId: String(row?.accountId || ""),
+    destinationId: String(row?.destinationId || ""),
+    muteDone: row?.muteDone === true,
+    archiveDone: row?.archiveDone === true,
+    nextMuteAt: Math.max(0, Number(row?.nextMuteAt || 0) || 0),
+    nextArchiveAt: Math.max(0, Number(row?.nextArchiveAt || 0) || 0),
+    muteAttempts: Math.max(0, Number(row?.muteAttempts || 0) || 0),
+    archiveAttempts: Math.max(0, Number(row?.archiveAttempts || 0) || 0),
+    lastMuteError: String(row?.lastMuteError || "").slice(0, 180),
+    lastArchiveError: String(row?.lastArchiveError || "").slice(0, 180),
+    completedAt: Math.max(0, Number(row?.completedAt || 0) || 0),
+  })).filter(row => row.accountId && /^-\d+$/.test(row.destinationId))
+    .filter(row => !(row.muteDone && row.archiveDone && row.completedAt && now - row.completedAt > COMPLETED_RETENTION_MS));
+}
+function writeCleanup(uid, cleanup) {
+  writeJsonAtomic(importerStatePath(uid), { version: 1, cleanup: cleanup.slice(-5000) });
+}
+function enqueueCleanup(uid, accountId, destinationIds) {
+  const cleanup = readCleanup(uid);
+  let added = 0;
+  for (const destinationId of new Set((destinationIds || []).map(String))) {
+    if (!/^-\d+$/.test(destinationId)) continue;
+    const existing = cleanup.find(row => row.accountId === String(accountId) && row.destinationId === destinationId);
+    if (existing) continue;
+    cleanup.push({
+      accountId: String(accountId), destinationId,
+      muteDone: false, archiveDone: false,
+      nextMuteAt: Date.now(), nextArchiveAt: Date.now(),
+      muteAttempts: 0, archiveAttempts: 0,
+      lastMuteError: "", lastArchiveError: "", completedAt: 0,
+    });
+    added++;
+  }
+  if (added) writeCleanup(uid, cleanup);
+  return added;
+}
+function markCompleted(row) {
+  if (row.muteDone && row.archiveDone && !row.completedAt) row.completedAt = Date.now();
+}
+
+function unwrapTelegramInput(raw) {
+  const text = String(raw || "").trim();
+  const markdown = text.match(/^\[[^\]]*\]\((https?:\/\/[^)]+)\)$/i);
+  return (markdown ? markdown[1] : text).replace(/^<|>$/g, "").trim();
+}
 export function parseDestinationInput(raw) {
-  const input = String(raw || "").trim();
+  const input = unwrapTelegramInput(raw);
   if (!input) return null;
-  const addlist = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/addlist\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
-  if (addlist) return { kind: "addlist", slug: addlist[1], original: input };
-  const plus = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/\+([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
-  if (plus) return { kind: "invite", hash: plus[1], original: input };
-  const joinchat = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/joinchat\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
-  if (joinchat) return { kind: "invite", hash: joinchat[1], original: input };
-  const at = input.match(/^@([A-Za-z0-9_]{5,32})$/);
-  if (at) return { kind: "public", username: at[1], original: input };
-  const publicLink = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/([A-Za-z0-9_]{5,32})(?:[/?#].*)?$/i);
-  if (publicLink && !["addlist", "joinchat", "c", "s"].includes(publicLink[1].toLowerCase())) {
-    return { kind: "public", username: publicLink[1], original: input };
+  let match = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/addlist\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
+  if (match) return { kind: "addlist", slug: match[1], original: input };
+  match = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/(?:\+|joinchat\/)([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
+  if (match) return { kind: "invite", hash: match[1], original: input };
+  match = input.match(/^@([A-Za-z0-9_]{5,32})$/);
+  if (match) return { kind: "public", username: match[1], original: input };
+  match = input.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/([A-Za-z0-9_]{5,32})(?:[/?#].*)?$/i);
+  if (match && !["addlist", "joinchat", "c", "s"].includes(match[1].toLowerCase())) {
+    return { kind: "public", username: match[1], original: input };
   }
   return null;
 }
 export function parsedIdentity(parsed) {
-  if (!parsed) return "";
-  if (parsed.kind === "public") return `public:${String(parsed.username || "").toLowerCase()}`;
-  if (parsed.kind === "invite") return `invite:${String(parsed.hash || "")}`;
-  if (parsed.kind === "addlist") return `addlist:${String(parsed.slug || "")}`;
+  if (parsed?.kind === "public") return `public:${String(parsed.username || "").toLowerCase()}`;
+  if (parsed?.kind === "invite") return `invite:${String(parsed.hash || "")}`;
+  if (parsed?.kind === "addlist") return `addlist:${String(parsed.slug || "")}`;
   return "";
-}
-
-const AD_TOPIC_WORDS = [
-  "advertising", "advertisement", "advertisements", "advertise", "ads", "adverts", "promo", "promotion",
-  "marketplace", "market", "buy sell", "buy/sell", "selling", "sales", "services", "offers", "deals",
-];
-export function suggestTopic(topics) {
-  const rows = Array.isArray(topics) ? topics : [];
-  let best = null;
-  let bestScore = 0;
-  for (const topic of rows) {
-    const title = String(topic?.title || "").toLowerCase().replace(/[_-]+/g, " ");
-    if (!title) continue;
-    let score = 0;
-    for (const word of AD_TOPIC_WORDS) {
-      if (title === word) score = Math.max(score, 100);
-      else if (title.includes(word)) score = Math.max(score, word.length >= 8 ? 80 : 60);
-    }
-    if (/rules?|support|help|welcome|verification|verify|announcements?|general chat/.test(title)) score = 0;
-    if (score > bestScore) { best = topic; bestScore = score; }
-  }
-  return bestScore > 0 ? { ...best, score: bestScore } : null;
-}
-
-function accountJoinEntry(status, reason = "") {
-  return { status, reason: String(reason || "").slice(0, 180), checkedAt: Date.now() };
-}
-export function recordDestinationFailure(uid, destination, accountId, err) {
-  const id = String(uid || "");
-  const account = String(accountId || "");
-  const destinationId = String(destination?.id || "");
-  if (!id || !account || !destinationId) return false;
-  const code = errorCode(err);
-  const restricted = [
-    "CHAT_WRITE_FORBIDDEN", "CHAT_SEND_PLAIN_FORBIDDEN", "CHAT_SEND_MEDIA_FORBIDDEN",
-    "CHAT_SEND_PHOTOS_FORBIDDEN", "CHAT_SEND_VIDEOS_FORBIDDEN",
-  ].some(token => code.includes(token));
-  if (!restricted) return false;
-  const settings = readAppSettings(id);
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const group = groups.find(row => String(row?.id || "") === destinationId);
-  if (!group) return false;
-  group.accountJoin = { ...(group.accountJoin || {}) };
-  group.accountJoin[account] = accountJoinEntry(
-    "verification",
-    "Telegram currently blocks posting from this account. Open the group and complete any verification or rules step, then TelePilot will recheck it.",
-  );
-  group.joinStatus = overallStatus(group);
-  writeAppSettings(id, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-  syncUserGroups(id);
-  return true;
-}
-
-export function destinationAccountReady(destination, accountId = "") {
-  if (!destination || typeof destination !== "object") return false;
-  if (destination.topicRequired === true && !Number(destination.topicId || 0)) return false;
-  if (String(destination.joinStatus || "") === "needs_topic") return false;
-  const map = destination.accountJoin && typeof destination.accountJoin === "object" ? destination.accountJoin : null;
-  if (!map) return true;
-  const row = map[String(accountId || "")];
-  if (!row) return true;
-  return String(row.status || "") === "ready";
 }
 
 async function openAccountClient(uid, account) {
@@ -209,902 +163,681 @@ async function openAccountClient(uid, account) {
   client.__telepilotAccountId = String(account.id);
   await client.connect();
   if (!(await client.checkAuthorization())) throw new Error("Saved Telegram session is no longer authorized");
-  const me = await client.getMe();
-  updateAccountStatus(uid, account.id, {
-    telegramId: me?.id,
-    username: me?.username,
-    firstName: me?.firstName,
-    lastName: me?.lastName,
-    status: "connected",
-    lastError: "",
-    lastVerifiedAt: Date.now(),
-  });
+  try {
+    const me = await client.getMe();
+    updateAccountStatus(uid, account.id, {
+      telegramId: me?.id,
+      username: me?.username,
+      firstName: me?.firstName,
+      lastName: me?.lastName,
+      status: "connected",
+      lastError: "",
+      lastVerifiedAt: Date.now(),
+    });
+  } catch {}
   return client;
-}
-async function inputPeer(client, peer) { return client.getInputEntity(peer); }
-async function entityPeerId(client, entity) {
-  const id = idString(await client.getPeerId(entity));
-  if (/^-\d+$/.test(id)) return id;
-  const raw = id.replace(/\D/g, "");
-  if (!raw) throw new Error("Could not identify Telegram destination");
-  if (entity?.broadcast === true || entity?.megagroup === true || entity?.className === "Channel") return `-100${raw}`;
-  return `-${raw}`;
 }
 function entityType(entity) {
   if (entity?.broadcast === true) return "channel";
   if (entity?.megagroup === true || entity?.forum === true || entity?.className === "Channel") return "supergroup";
   return "group";
 }
-function entityLabel(entity, fallback = "Destination") {
-  return String(entity?.title || entity?.username || fallback).slice(0, 120);
-}
+function entityLabel(entity) { return String(entity?.title || entity?.username || entity?.id || "Destination").slice(0, 120); }
 function entityUsername(entity) {
-  const username = normalizeUsername(entity?.username || "");
-  return username ? `@${username}` : "";
+  const username = String(entity?.username || "").replace(/^@/, "");
+  return /^[A-Za-z0-9_]{5,32}$/.test(username) ? `@${username}` : "";
 }
-
-async function archiveAndMuteEntity(client, entity) {
-  try {
-    const peer = await client.getInputEntity(entity);
-    await client.invoke(new Api.folders.EditPeerFolders({
-      folderPeers: [new Api.InputFolderPeer({ peer, folderId: TELEGRAM_ARCHIVE_FOLDER_ID })],
-    }));
-    await client.invoke(new Api.account.UpdateNotifySettings({
-      peer: new Api.InputNotifyPeer({ peer }),
-      settings: new Api.InputPeerNotifySettings({
-        silent: true,
-        muteUntil: MUTE_FOREVER_UNIX,
-      }),
-    }));
-    return true;
-  } catch (err) {
-    console.warn(`Could not archive/mute auto-joined destination: ${String(err?.message || err).slice(0, 140)}`);
-    return false;
+async function entityPeerId(client, entity) {
+  const direct = idString(await client.getPeerId(entity));
+  if (/^-\d+$/.test(direct)) return direct;
+  const raw = digits(direct || entity?.id);
+  if (!raw) throw new Error("Could not identify Telegram destination");
+  return entity?.broadcast === true || entity?.megagroup === true || entity?.forum === true || entity?.className === "Channel"
+    ? `-100${raw}` : `-${raw}`;
+}
+function joinedAccountState(entity) {
+  if (entity?.broadcast === true && entity?.creator !== true && entity?.adminRights?.postMessages !== true && entity?.admin_rights?.post_messages !== true) {
+    return { status: "read_only", reason: "Joined, but this account cannot post in this channel." };
   }
+  return { status: "ready", reason: "" };
 }
-
-function restrictionFlags(participant) {
-  const rights = participant?.bannedRights || participant?.banned_rights || participant?.participant?.bannedRights || participant?.participant?.banned_rights;
-  if (!rights) return [];
-  const keys = ["sendMessages", "sendPlain", "sendMedia", "sendPhotos", "sendVideos"];
-  return keys.filter(key => rights[key] === true || rights[key.replace(/[A-Z]/g, m => `_${m.toLowerCase()}`)] === true);
-}
-async function topicRows(client, entity) {
-  if (entity?.forum !== true) return [];
-  try {
-    const result = await client.getForumTopics(entity, { limit: 100 });
-    const topics = Array.isArray(result?.topics) ? result.topics : [];
-    return topics
-      .map(topic => ({ id: Number(topic?.id || 0), title: String(topic?.title || `Topic ${topic?.id || ""}`).slice(0, 100) }))
-      .filter(topic => Number.isInteger(topic.id) && topic.id > 0);
-  } catch { return []; }
-}
-async function assessEntity(client, entity) {
-  if (!entity) return { status: "failed", reason: "Telegram did not return this chat.", topics: [] };
-  if (entity?.broadcast === true && entity?.creator !== true && entity?.adminRights?.postMessages !== true) {
-    return { status: "read_only", reason: "This sender can join the channel but cannot publish there.", topics: [] };
+function overallStatus(group) {
+  if (group?.topicRequired === true && !Number(group?.topicId || 0)) return "needs_topic";
+  const rows = Object.values(group?.accountJoin || {});
+  if (!rows.length) return "ready";
+  if (rows.every(row => row?.status === "ready")) return "ready";
+  if (rows.some(row => row?.status === "ready")) return "partial";
+  for (const status of ["pending", "verification", "read_only", "failed"]) {
+    if (rows.some(row => row?.status === status)) return status;
   }
-  try {
-    const participant = await client.getParticipant(entity, "me");
-    const restricted = restrictionFlags(participant);
-    if (restricted.length) {
-      return { status: "verification", reason: "Joined, but Telegram still blocks posting. Complete the group verification in Telegram.", topics: [] };
-    }
-  } catch (err) {
-    if (errorCode(err).includes("USER_NOT_PARTICIPANT")) return { status: "pending", reason: "Waiting to join this group.", topics: [] };
-  }
-  const topics = await topicRows(client, entity);
-  if (entity?.forum === true) {
-    if (!topics.length) return { status: "verification", reason: "Forum joined, but topics are not available yet. Open the group in Telegram and complete any verification.", topics: [] };
-    return { status: "needs_topic", reason: "Choose which topic TelePilot should post in.", topics };
-  }
-  return { status: "ready", reason: "", topics: [] };
-}
-function destinationFromEntity(entity, id, source = {}) {
-  return {
-    id: String(id),
-    label: entityLabel(entity, source.original || id),
-    type: entityType(entity),
-    username: entityUsername(entity),
-    accountMode: "inherit",
-    accountIds: [],
-    topicId: null,
-    topicTitle: "",
-    topicRequired: entity?.forum === true,
-    joinStatus: entity?.forum === true ? "needs_topic" : "ready",
-    accountJoin: {},
-    source: String(source.kind || "auto"),
-    sourceSlug: String(source.slug || source.hash || ""),
-    importedAt: Date.now(),
-  };
-}
-function mergeDestination(existing, incoming) {
-  if (!existing) return incoming;
-  return {
-    ...existing,
-    label: incoming.label || existing.label,
-    type: incoming.type || existing.type,
-    username: incoming.username || existing.username,
-    topicRequired: incoming.topicRequired === true || existing.topicRequired === true,
-    accountJoin: { ...(existing.accountJoin || {}), ...(incoming.accountJoin || {}) },
-    source: existing.source || incoming.source,
-    sourceSlug: existing.sourceSlug || incoming.sourceSlug,
-    importedAt: Number(existing.importedAt || incoming.importedAt || Date.now()),
-  };
-}
-function overallStatus(destination) {
-  if (destination.topicRequired === true && !Number(destination.topicId || 0)) return "needs_topic";
-  const rows = Object.values(destination.accountJoin || {});
-  if (!rows.length) return destination.joinStatus || "ready";
-  if (rows.every(row => row.status === "ready")) return "ready";
-  if (rows.some(row => row.status === "ready")) return "partial";
-  if (rows.some(row => row.status === "pending")) return "pending";
-  if (rows.some(row => row.status === "verification")) return "verification";
-  if (rows.some(row => row.status === "read_only")) return "read_only";
   return "failed";
 }
-function upsertTopicQueue(uid, destination, topics) {
-  if (!destination?.id || !Array.isArray(topics) || !topics.length) return;
-  const store = readAutomation(uid);
-  const token = Buffer.from(String(destination.id)).toString("base64url").slice(0, 54);
-  const suggestion = suggestTopic(topics);
-  const row = {
+async function forumTopics(client, entity) {
+  if (entity?.forum !== true) return [];
+  const result = await client.getForumTopics(entity, { limit: 100 });
+  return (Array.isArray(result?.topics) ? result.topics : [])
+    .map(topic => ({ id: Number(topic?.id || 0), title: String(topic?.title || `Topic ${topic?.id || ""}`).slice(0, 100) }))
+    .filter(topic => Number.isInteger(topic.id) && topic.id > 0);
+}
+function writeTopicUiItem(uid, destinationId, label, topics) {
+  const file = topicUiStatePath(uid);
+  const state = readJson(file, {});
+  const queue = Array.isArray(state.topicQueue) ? state.topicQueue.slice() : [];
+  const token = `fresh_${digits(destinationId)}`;
+  const item = {
     token,
-    destinationId: String(destination.id),
-    label: String(destination.label || destination.id),
-    topics: topics.slice(0, 100),
-    suggestedId: Number(suggestion?.id || 0) || null,
+    destinationId: String(destinationId),
+    label: String(label || destinationId).slice(0, 120),
+    topics: Array.isArray(topics) ? topics.slice(0, 100) : [],
     createdAt: Date.now(),
   };
-  const index = store.topicQueue.findIndex(item => String(item.destinationId) === String(destination.id));
-  if (index >= 0) store.topicQueue[index] = row;
-  else store.topicQueue.push(row);
-  writeAutomation(uid, store);
+  const index = queue.findIndex(row => String(row?.destinationId) === String(destinationId));
+  if (index >= 0) queue[index] = item;
+  else queue.push(item);
+  writeJsonAtomic(file, {
+    ...state,
+    version: Math.max(1, Number(state.version || 1)),
+    topicQueue: queue.slice(-500),
+    unresolvedInvites: Array.isArray(state.unresolvedInvites) ? state.unresolvedInvites : [],
+    routingQueue: Array.isArray(state.routingQueue) ? state.routingQueue : [],
+    lastWorkerAt: Number(state.lastWorkerAt || 0) || 0,
+  });
+  return item;
 }
-function addUnresolvedInvite(uid, item) {
-  const store = readAutomation(uid);
-  const key = `${item.accountId}|${item.kind}|${item.hash || item.slug || item.username || ""}`;
-  const row = { ...item, key, checkedAt: Date.now() };
-  const index = store.unresolvedInvites.findIndex(value => value.key === key);
-  if (index >= 0) store.unresolvedInvites[index] = row;
-  else store.unresolvedInvites.push(row);
-  writeAutomation(uid, store);
+function removeTopicUiItem(uid, destinationId) {
+  const file = topicUiStatePath(uid);
+  const state = readJson(file, {});
+  if (!Array.isArray(state.topicQueue)) return;
+  const next = state.topicQueue.filter(row => String(row?.destinationId) !== String(destinationId));
+  if (next.length === state.topicQueue.length) return;
+  writeJsonAtomic(file, { ...state, topicQueue: next });
 }
-function removeUnresolvedInvite(uid, key) {
-  const store = readAutomation(uid);
-  store.unresolvedInvites = store.unresolvedInvites.filter(item => item.key !== key);
-  writeAutomation(uid, store);
-}
-function saveDestination(uid, destination) {
+
+async function saveJoinedChats(uid, accountId, client, chats, source, sourceSlug) {
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const index = groups.findIndex(group => String(group?.id || "") === String(destination.id));
-  if (index >= 0) groups[index] = mergeDestination(groups[index], destination);
-  else groups.push(destination);
-  const saved = groups.find(group => String(group.id) === String(destination.id));
-  saved.joinStatus = overallStatus(saved);
-  writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-  syncUserGroups(uid);
-  return { destination: saved, duplicate: index >= 0, groups };
+  const byId = new Map(groups.map((group, index) => [String(group.id), index]));
+  const result = { addedIds: [], duplicateIds: [], joinedIds: [], topicIds: [] };
+
+  for (const entity of uniqueChats(chats)) {
+    const id = await entityPeerId(client, entity);
+    const accountState = joinedAccountState(entity);
+    const forum = entity?.forum === true;
+    let topics = [];
+    if (forum) {
+      try { topics = await forumTopics(client, entity); }
+      catch (err) { console.warn(`Could not load forum topics for ${id}: ${errorText(err)}`); }
+    }
+
+    const index = byId.get(id);
+    if (index === undefined) {
+      groups.push({
+        id,
+        label: entityLabel(entity),
+        type: entityType(entity),
+        username: entityUsername(entity),
+        accountMode: "inherit",
+        accountIds: [],
+        topicId: null,
+        topicTitle: "",
+        topicRequired: forum,
+        joinStatus: forum ? "needs_topic" : accountState.status,
+        accountJoin: {
+          [String(accountId)]: { status: accountState.status, reason: accountState.reason, checkedAt: Date.now() },
+        },
+        source,
+        sourceSlug,
+        importedAt: Date.now(),
+      });
+      byId.set(id, groups.length - 1);
+      result.addedIds.push(id);
+    } else {
+      const existing = groups[index];
+      const group = { ...existing, accountJoin: { ...(existing.accountJoin || {}) } };
+      group.label = entityLabel(entity) || group.label;
+      group.type = entityType(entity) || group.type;
+      group.username = entityUsername(entity) || group.username || "";
+      group.topicRequired = group.topicRequired === true || forum;
+      group.accountJoin[String(accountId)] = { status: accountState.status, reason: accountState.reason, checkedAt: Date.now() };
+      group.source ||= source;
+      group.sourceSlug ||= sourceSlug;
+      group.joinStatus = overallStatus(group);
+      groups[index] = group;
+      result.duplicateIds.push(id);
+    }
+
+    const saved = groups[byId.get(id)];
+    if (saved.topicRequired === true && !Number(saved.topicId || 0)) {
+      writeTopicUiItem(uid, id, saved.label || saved.username || id, topics);
+      result.topicIds.push(id);
+    } else {
+      removeTopicUiItem(uid, id);
+    }
+    result.joinedIds.push(id);
+  }
+
+  if (result.joinedIds.length) {
+    writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+    syncUserGroups(uid);
+  }
+  return result;
 }
 
 async function joinPublic(client, parsed) {
   const target = `@${parsed.username}`;
-  let entity;
-  let joinState = "ready";
-  let reason = "";
+  let entity = await client.getEntity(target);
   try {
-    entity = await client.getEntity(target);
-    try { await client.getParticipant(entity, "me"); }
-    catch (err) {
-      if (!errorCode(err).includes("USER_NOT_PARTICIPANT")) throw err;
-      try { await client.joinChannel(target); }
-      catch (joinErr) {
-        const code = errorCode(joinErr);
-        if (code.includes("INVITE_REQUEST_SENT")) { joinState = "pending"; reason = "Join request sent; waiting for admin approval."; }
-        else if (!code.includes("USER_ALREADY_PARTICIPANT")) throw joinErr;
-      }
-      if (joinState === "ready") entity = await client.getEntity(target);
-    }
+    await client.getParticipant(entity, "me");
   } catch (err) {
-    if (errorCode(err).includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
-    throw err;
+    if (!errorCode(err).includes("USER_NOT_PARTICIPANT")) throw err;
+    try {
+      await client.joinChannel(target);
+    } catch (joinErr) {
+      const code = errorCode(joinErr);
+      if (code.includes("INVITE_REQUEST_SENT")) return { pending: true, chats: [] };
+      if (!code.includes("USER_ALREADY_PARTICIPANT")) throw joinErr;
+    }
   }
-  return { entity, status: joinState, reason };
+  entity = await client.getEntity(target);
+  return { pending: false, chats: [entity] };
 }
 async function joinPrivateInvite(client, parsed) {
-  let checked;
-  try { checked = await client.checkChatInvite(parsed.hash); } catch {}
-  const already = checked?.chat || checked?.className === "ChatInviteAlready" ? checked?.chat : null;
-  if (already) return { entity: already, status: "ready", reason: "" };
-  try { await client.importChatInvite(parsed.hash); }
-  catch (err) {
+  let checked = await client.checkChatInvite(parsed.hash);
+  if (checked?.chat) return { pending: false, chats: [checked.chat] };
+
+  let updates;
+  try {
+    updates = await client.importChatInvite(parsed.hash);
+  } catch (err) {
     const code = errorCode(err);
-    if (code.includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
+    if (code.includes("INVITE_REQUEST_SENT")) return { pending: true, chats: [] };
     if (!code.includes("USER_ALREADY_PARTICIPANT")) throw err;
   }
+  const updateChats = uniqueChats(updates?.chats || []);
+  if (updateChats.length) return { pending: false, chats: updateChats };
+
   checked = await client.checkChatInvite(parsed.hash);
-  if (checked?.chat) return { entity: checked.chat, status: "ready", reason: "" };
-  return { entity: null, status: "pending", reason: "Waiting for Telegram to confirm membership." };
+  if (checked?.chat) return { pending: false, chats: [checked.chat] };
+  throw new Error("Telegram accepted the invite but did not return the joined chat.");
 }
-function peerKey(peer) {
-  return idString(peer?.channelId || peer?.chatId || peer?.userId || peer?.id || "").replace(/\D/g, "");
-}
-function findChatForPeer(chats, peer) {
-  const wanted = peerKey(peer);
-  if (!wanted) return null;
-  return (chats || []).find(chat => idString(chat?.id || "").replace(/\D/g, "") === wanted) || null;
-}
-async function importAddlist(client, parsed) {
-  const invite = await client.api.chatlists.checkChatlistInvite({ slug: parsed.slug });
-  const chats = Array.isArray(invite?.chats) ? invite.chats : [];
-  const isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
-  const peers = isAlready
-    ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : [])
-    : (Array.isArray(invite?.peers) ? invite.peers : []);
-  if (peers.length) {
-    const inputs = [];
-    for (const peer of peers) {
-      const chat = findChatForPeer(chats, peer);
-      if (chat?.className === "ChannelForbidden") continue;
-      try { inputs.push(await inputPeer(client, peer)); } catch {}
-    }
-    if (inputs.length) {
-      if (isAlready) {
-        await client.api.chatlists.joinChatlistUpdates({
-          chatlist: new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) }),
-          peers: inputs,
-        });
-      } else {
-        await client.api.chatlists.joinChatlistInvite({ slug: parsed.slug, peers: inputs });
-      }
-    }
+async function inputPeersFromFullChats(client, peers, chats) {
+  const inputs = [], acceptedChats = [];
+  for (const peer of Array.isArray(peers) ? peers : []) {
+    const chat = findChat(chats, peer);
+    if (!chat || chat?.className === "ChannelForbidden") continue;
+    try {
+      // Resolve through the full Chat object, not the lightweight PeerChannel.
+      // The full object carries the access hash required for private chats.
+      inputs.push(await client.getInputEntity(chat));
+      acceptedChats.push(chat);
+    } catch {}
   }
-  return { invite, chats };
+  return { inputs, acceptedChats };
+}
+export async function importAddlistWithClient(client, slug) {
+  const invite = await client.api.chatlists.checkChatlistInvite({ slug });
+  const inviteChats = Array.isArray(invite?.chats) ? invite.chats : [];
+  const alreadyImported = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
+
+  if (!alreadyImported) {
+    const { inputs, acceptedChats } = await inputPeersFromFullChats(client, invite?.peers || [], inviteChats);
+    if (inputs.length) await client.api.chatlists.joinChatlistInvite({ slug, peers: inputs });
+    return { chats: uniqueChats(acceptedChats), joinedNow: acceptedChats.length, already: 0 };
+  }
+
+  const alreadyChats = uniqueChats((invite?.alreadyPeers || []).map(peer => findChat(inviteChats, peer)).filter(Boolean));
+  const missingPreview = Array.isArray(invite?.missingPeers) ? invite.missingPeers : [];
+  if (!missingPreview.length) {
+    return { chats: alreadyChats, joinedNow: 0, already: alreadyChats.length };
+  }
+
+  const chatlist = new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) });
+  const updates = await client.api.chatlists.getChatlistUpdates({ chatlist });
+  const { inputs, acceptedChats } = await inputPeersFromFullChats(client, updates?.missingPeers || [], updates?.chats || []);
+  if (inputs.length) await client.api.chatlists.joinChatlistUpdates({ chatlist, peers: inputs });
+  return {
+    chats: uniqueChats([...alreadyChats, ...acceptedChats]),
+    joinedNow: acceptedChats.length,
+    already: alreadyChats.length,
+  };
 }
 
-async function processEntityForAccount(uid, account, client, entity, source) {
-  const id = await entityPeerId(client, entity);
-  const base = destinationFromEntity(entity, id, source);
-  const assessment = await assessEntity(client, entity);
-  base.accountJoin[account.id] = accountJoinEntry(assessment.status === "needs_topic" ? "ready" : assessment.status, assessment.reason);
-  base.joinStatus = assessment.status;
-  if (assessment.status === "needs_topic") upsertTopicQueue(uid, base, assessment.topics);
-  const saved = saveDestination(uid, base);
-  if (assessment.status === "needs_topic") saved.destination.joinStatus = "needs_topic";
-  await archiveAndMuteEntity(client, entity);
-  return { ...saved, assessment };
-}
-async function processParsedForAccount(uid, account, client, parsed) {
-  if (parsed.kind === "addlist") {
-    const { chats } = await importAddlist(client, parsed);
-    const rows = [];
-    for (const entity of chats) {
-      if (!entity || entity?.className === "ChannelForbidden") continue;
-      try { rows.push(await processEntityForAccount(uid, account, client, entity, parsed)); }
-      catch (err) {
-        if (errorCode(err).includes("FLOOD_WAIT")) throw err;
-        rows.push({ error: String(err?.message || err), source: entityLabel(entity) });
-      }
-    }
-    return rows;
-  }
-  const joined = parsed.kind === "invite" ? await joinPrivateInvite(client, parsed) : await joinPublic(client, parsed);
-  if (!joined.entity) {
-    addUnresolvedInvite(uid, {
-      accountId: account.id,
-      kind: parsed.kind,
-      hash: parsed.hash || "",
-      username: parsed.username || "",
-      original: parsed.original,
-      status: joined.status,
-      reason: joined.reason,
-    });
-    return [{ pendingOnly: true, label: parsed.original, status: joined.status, reason: joined.reason }];
-  }
-  return [await processEntityForAccount(uid, account, client, joined.entity, parsed)];
-}
-
-function setJoinCooldown(uid, accountId, err) {
-  const seconds = floodWaitSeconds(err);
-  const retrySeconds = seconds || 60;
-  const store = readAutomation(uid);
-  store.joinCooldowns[String(accountId)] = Math.max(Number(store.joinCooldowns[String(accountId)] || 0), Date.now() + retrySeconds * 1000 + 1000);
-  writeAutomation(uid, store);
-  return { seconds, until: store.joinCooldowns[String(accountId)] };
-}
-function queueJoinItems(uid, accountId, parsedItems) {
-  const store = readAutomation(uid);
-  const existing = new Set((store.joinQueue || []).map(item => `${item.accountId}|${parsedIdentity(item.parsed)}`));
-  let added = 0;
-  for (const parsed of parsedItems) {
-    const clean = cleanQueuedParsed(parsed);
-    if (!clean) continue;
-    const key = `${accountId}|${parsedIdentity(clean)}`;
-    if (existing.has(key)) continue;
-    if (store.joinQueue.length >= MAX_JOIN_QUEUE) break;
-    store.joinQueue.push({ accountId: String(accountId), parsed: clean, queuedAt: Date.now(), attempts: 0 });
-    existing.add(key);
-    added++;
-  }
-  writeAutomation(uid, store);
-  return added;
-}
-function clearExpiredCooldowns(store) {
-  const now = Date.now();
-  for (const [accountId, until] of Object.entries(store.joinCooldowns || {})) {
-    if (Number(until) <= now) delete store.joinCooldowns[accountId];
-  }
-  return store;
-}
-async function processJoinQueue(uid, maxItems = MAX_FAST_JOIN_BATCH) {
-  const id = String(uid || "");
-  const accounts = listAccounts(id);
-  const byId = new Map(accounts.map(account => [String(account.id), account]));
-  let store = clearExpiredCooldowns(readAutomation(id));
-  if (!store.joinQueue.length) { writeAutomation(id, store); return { processed: 0, remaining: 0 }; }
-  const clients = new Map();
-  const removeKeys = new Set();
-  const blockedAccounts = new Set();
-  let processed = 0;
+async function processParsedForAccount(uid, account, parsed) {
+  let client;
   try {
-    for (const item of store.joinQueue.slice(0, Math.max(1, Number(maxItems) || MAX_FAST_JOIN_BATCH))) {
-      const accountId = String(item.accountId);
-      const key = `${accountId}|${item.queuedAt}|${parsedIdentity(item.parsed)}`;
-      if (blockedAccounts.has(accountId)) continue;
-      if (Number(store.joinCooldowns[accountId] || 0) > Date.now()) { blockedAccounts.add(accountId); continue; }
-      const account = byId.get(accountId);
-      if (!account) { removeKeys.add(key); continue; }
-      let client = clients.get(accountId);
-      if (!client) {
-        try { client = await openAccountClient(id, account); clients.set(accountId, client); }
-        catch { blockedAccounts.add(accountId); continue; }
-      }
-      try {
-        await processParsedForAccount(id, account, client, item.parsed);
-        removeKeys.add(key);
-        processed++;
-      } catch (err) {
-        if (errorCode(err).includes("FLOOD_WAIT")) {
-          setJoinCooldown(id, accountId, err);
-          blockedAccounts.add(accountId);
-          continue;
-        }
-        console.warn(`Queued destination join failed for ${id}/${accountId}: ${String(err?.message || err).slice(0, 160)}`);
-        removeKeys.add(key);
-        processed++;
-      }
-    }
+    client = await openAccountClient(uid, account);
+    let joined;
+    if (parsed.kind === "public") joined = await joinPublic(client, parsed);
+    else if (parsed.kind === "invite") joined = await joinPrivateInvite(client, parsed);
+    else joined = await importAddlistWithClient(client, parsed.slug);
+
+    if (joined.pending) return { pending: true, joinedIds: [], addedIds: [], duplicateIds: [], topicIds: [] };
+    const sourceSlug = parsed.kind === "public" ? parsed.username : parsed.kind === "invite" ? parsed.hash : parsed.slug;
+    const saved = await saveJoinedChats(uid, account.id, client, joined.chats, parsed.kind, sourceSlug);
+    enqueueCleanup(uid, account.id, saved.joinedIds);
+    return { pending: false, ...saved };
   } finally {
-    for (const client of clients.values()) try { await client.disconnect(); } catch {}
+    try { await client?.disconnect(); } catch {}
   }
-  store = clearExpiredCooldowns(readAutomation(id));
-  store.joinQueue = (store.joinQueue || []).filter(item => !removeKeys.has(`${item.accountId}|${item.queuedAt}|${parsedIdentity(item.parsed)}`));
-  writeAutomation(id, store);
-  return { processed, remaining: store.joinQueue.length };
 }
 
-function summaryCounts(groups) {
-  const counts = { ready: 0, needs_topic: 0, pending: 0, verification: 0, partial: 0, read_only: 0, failed: 0 };
-  for (const group of groups || []) {
-    const status = overallStatus(group);
-    if (counts[status] === undefined) counts.failed++;
-    else counts[status]++;
+async function resolveSavedEntity(client, group) {
+  const username = String(group?.username || "").replace(/^@/, "");
+  if (username) {
+    try { return await client.getEntity(`@${username}`); } catch {}
   }
-  return counts;
+  try { return await client.getEntity(String(group?.id || "")); } catch {}
+  const dialogs = await client.getDialogs({});
+  for (const dialog of dialogs || []) {
+    const entity = dialog?.entity || dialog;
+    try {
+      if (await entityPeerId(client, entity) === String(group?.id || "")) return entity;
+    } catch {}
+  }
+  throw new Error("Could not resolve joined Telegram destination");
 }
-function groupDisplay(group) {
-  const base = String(group?.username || group?.label || group?.id || "Destination");
-  return group?.topicTitle ? `${base} → ${group.topicTitle}` : base;
+async function inputForSavedGroup(client, group) {
+  return client.getInputEntity(await resolveSavedEntity(client, group));
 }
-export function destinationMenu(uid) {
+
+async function processCleanupForUser(uid) {
+  const cleanup = readCleanup(uid);
+  if (!cleanup.length) return 0;
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups : [];
-  const counts = summaryCounts(groups);
-  const store = clearExpiredCooldowns(readAutomation(uid));
-  const unresolved = store.unresolvedInvites.length;
-  const cooldownCount = Object.values(store.joinCooldowns || {}).filter(until => Number(until) > Date.now()).length;
-  const lines = groups.slice(0, 12).map(group => {
-    const status = overallStatus(group);
-    const icon = status === "ready" ? "✅" : status === "needs_topic" ? "💬" : status === "pending" ? "⏳" : status === "verification" ? "🛡" : status === "partial" ? "◐" : "⚠️";
-    return `${icon} ${groupDisplay(group)}`;
-  });
-  if (groups.length > 12) lines.push(`… and ${groups.length - 12} more`);
-  const text = [
-    "📍 Destinations",
-    "",
-    `Saved  ${groups.length}`,
-    `Ready  ${counts.ready}`,
-    store.joinQueue.length ? `⚡ Auto-join queued  ${store.joinQueue.length}` : null,
-    cooldownCount ? `⏳ Telegram cooldown  ${cooldownCount} sender${cooldownCount === 1 ? "" : "s"}` : null,
-    counts.needs_topic ? `Choose topic  ${counts.needs_topic}` : null,
-    counts.pending || unresolved ? `Pending approval  ${counts.pending + unresolved}` : null,
-    counts.verification ? `Verification needed  ${counts.verification}` : null,
-    counts.partial ? `Partially ready  ${counts.partial}` : null,
-    "",
-    lines.length ? lines.join("\n") : "No destinations yet.",
-  ].filter(Boolean).join("\n");
-  const kb = new InlineKeyboard().text("＋ Add destinations", "add_group").row();
-  if (counts.needs_topic) kb.text(`💬 Choose topics (${counts.needs_topic})`, "dest_topics").row();
-  if (counts.pending || counts.verification || counts.partial || unresolved || store.joinQueue.length) kb.text("⏳ Pending & verification", "dest_pending").row();
-  if (groups.length) kb.text("Manage", "remove_group_menu").text("Advanced routing", "route_groups:0").row();
-  kb.text("← Home", "home");
-  return { text, keyboard: kb };
+  const byGroup = new Map(groups.map(group => [String(group.id), group]));
+  const byAccount = new Map(listAccounts(uid).map(account => [String(account.id), account]));
+  const now = Date.now();
+  const runnable = cleanup.find(row => (!row.archiveDone && row.nextArchiveAt <= now) || (!row.muteDone && row.nextMuteAt <= now));
+  if (!runnable) return 0;
+  const account = byAccount.get(String(runnable.accountId));
+  if (!account) return 0;
+
+  let client;
+  let worked = 0;
+  try {
+    client = await openAccountClient(uid, account);
+
+    const archiveRows = cleanup
+      .filter(row => row.accountId === String(account.id) && !row.archiveDone && row.nextArchiveAt <= Date.now())
+      .slice(0, ARCHIVE_BATCH_SIZE);
+    const archiveResolved = [];
+    for (const row of archiveRows) {
+      const group = byGroup.get(row.destinationId);
+      if (!group) {
+        row.archiveDone = true;
+        markCompleted(row);
+        continue;
+      }
+      try {
+        archiveResolved.push({ row, peer: await inputForSavedGroup(client, group) });
+      } catch (err) {
+        row.archiveAttempts++;
+        row.lastArchiveError = errorText(err);
+        row.nextArchiveAt = retryAt(err, row.archiveAttempts, 15_000);
+      }
+    }
+    if (archiveResolved.length) {
+      try {
+        await client.invoke(new Api.folders.EditPeerFolders({
+          folderPeers: archiveResolved.map(({ peer }) => new Api.InputFolderPeer({ peer, folderId: 1 })),
+        }));
+        for (const { row } of archiveResolved) {
+          row.archiveDone = true;
+          row.lastArchiveError = "";
+          row.nextArchiveAt = 0;
+          markCompleted(row);
+        }
+        worked += archiveResolved.length;
+      } catch (err) {
+        const attempt = Math.max(1, ...archiveResolved.map(({ row }) => Number(row.archiveAttempts || 0) + 1));
+        const next = retryAt(err, attempt, 15_000);
+        for (const { row } of archiveResolved) {
+          row.archiveAttempts++;
+          row.lastArchiveError = errorText(err);
+          row.nextArchiveAt = next;
+        }
+        const wait = floodWaitSeconds(err);
+        if (wait) console.log(`Archive cooldown for sender ${account.id}: ${wait}s`);
+        else console.warn(`Archive batch failed for ${account.id}: ${errorText(err)}`);
+      }
+    }
+
+    // Notification settings are one peer per RPC. Pace these deliberately rather
+    // than blasting a large Addlist and immediately creating a Telegram flood wait.
+    const muteRow = cleanup.find(row => row.accountId === String(account.id) && !row.muteDone && row.nextMuteAt <= Date.now());
+    if (muteRow) {
+      const group = byGroup.get(muteRow.destinationId);
+      if (!group) {
+        muteRow.muteDone = true;
+        markCompleted(muteRow);
+      } else {
+        try {
+          const peer = await inputForSavedGroup(client, group);
+          await client.invoke(new Api.account.UpdateNotifySettings({
+            peer: new Api.InputNotifyPeer({ peer }),
+            settings: new Api.InputPeerNotifySettings({ silent: true, muteUntil: MUTE_FOREVER_UNIX }),
+          }));
+          muteRow.muteDone = true;
+          muteRow.lastMuteError = "";
+          muteRow.nextMuteAt = 0;
+          markCompleted(muteRow);
+          worked++;
+        } catch (err) {
+          muteRow.muteAttempts++;
+          muteRow.lastMuteError = errorText(err);
+          muteRow.nextMuteAt = retryAt(err, muteRow.muteAttempts);
+          const wait = floodWaitSeconds(err);
+          if (wait) console.log(`Mute cooldown for sender ${account.id}: ${wait}s`);
+          else console.warn(`Mute failed for ${muteRow.destinationId}: ${errorText(err)}`);
+        }
+      }
+    }
+
+    writeCleanup(uid, cleanup);
+    return worked;
+  } finally {
+    try { await client?.disconnect(); } catch {}
+  }
+}
+
+export function destinationAccountReady(destination, accountId = "") {
+  if (!destination || typeof destination !== "object") return false;
+  if (destination.topicRequired === true && !Number(destination.topicId || 0)) return false;
+  const map = destination.accountJoin && typeof destination.accountJoin === "object" && !Array.isArray(destination.accountJoin)
+    ? destination.accountJoin : null;
+  if (!map) return String(destination.joinStatus || "ready") === "ready";
+  if (accountId) return map[String(accountId)]?.status === "ready";
+  return Object.values(map).some(row => row?.status === "ready");
+}
+export function recordDestinationFailure(uid, destination, accountId, err) {
+  const code = errorCode(err);
+  if (!["CHAT_WRITE_FORBIDDEN", "CHAT_SEND_PLAIN_FORBIDDEN", "CHAT_SEND_MEDIA_FORBIDDEN", "USER_NOT_PARTICIPANT"].some(token => code.includes(token))) return false;
+  const settings = readAppSettings(uid);
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const index = groups.findIndex(group => String(group.id) === String(destination?.id));
+  if (index < 0) return false;
+  const group = { ...groups[index], accountJoin: { ...(groups[index].accountJoin || {}) } };
+  const pending = code.includes("USER_NOT_PARTICIPANT");
+  group.accountJoin[String(accountId)] = {
+    status: pending ? "pending" : "verification",
+    reason: pending ? "This account is no longer a member of the destination." : "Telegram currently blocks posting from this account.",
+    checkedAt: Date.now(),
+  };
+  group.joinStatus = overallStatus(group);
+  groups[index] = group;
+  writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+  syncUserGroups(uid);
+  return true;
+}
+
+// Existing sender-routing UI still calls these hooks. The fresh importer does not
+// maintain a second hidden join queue; membership changes are rechecked explicitly.
+export function queueRoutingSync() { return 0; }
+export async function processRoutingQueue() { return { processed: 0, changed: 0 }; }
+
+export async function recheckDestinations(uid, limit = 24) {
+  const id = String(uid || "");
+  const settings = readAppSettings(id);
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const accounts = listAccounts(id);
+  if (!groups.length || !accounts.length) return { checked: 0, changed: 0 };
+
+  let checked = 0, changed = 0;
+  for (const account of accounts) {
+    const relevant = groups.filter(group => effectiveAccountIds(settings, group, accounts).map(String).includes(String(account.id)));
+    if (!relevant.length) continue;
+    let client;
+    try {
+      client = await openAccountClient(id, account);
+      for (const original of relevant) {
+        if (checked >= Math.max(1, Number(limit) || 24)) break;
+        checked++;
+        const index = groups.findIndex(group => String(group.id) === String(original.id));
+        if (index < 0) continue;
+        const group = { ...groups[index], accountJoin: { ...(groups[index].accountJoin || {}) } };
+        const before = JSON.stringify(group.accountJoin[String(account.id)] || {});
+        try {
+          const entity = await resolveSavedEntity(client, group);
+          let isMember = true;
+          try { await client.getParticipant(entity, "me"); }
+          catch (err) { if (errorCode(err).includes("USER_NOT_PARTICIPANT")) isMember = false; else throw err; }
+          if (!isMember) {
+            group.accountJoin[String(account.id)] = { status: "pending", reason: "This account is not currently a member.", checkedAt: Date.now() };
+          } else {
+            const state = joinedAccountState(entity);
+            group.accountJoin[String(account.id)] = { status: state.status, reason: state.reason, checkedAt: Date.now() };
+            enqueueCleanup(id, account.id, [group.id]);
+            if (entity?.forum === true && !Number(group.topicId || 0)) {
+              group.topicRequired = true;
+              try { writeTopicUiItem(id, group.id, group.label || group.username || group.id, await forumTopics(client, entity)); }
+              catch (err) { console.warn(`Could not refresh topics for ${group.id}: ${errorText(err)}`); }
+            }
+          }
+        } catch (err) {
+          group.accountJoin[String(account.id)] = { status: "verification", reason: errorText(err), checkedAt: Date.now() };
+        }
+        group.joinStatus = overallStatus(group);
+        if (JSON.stringify(group.accountJoin[String(account.id)] || {}) !== before) changed++;
+        groups[index] = group;
+      }
+    } finally {
+      try { await client?.disconnect(); } catch {}
+    }
+    if (checked >= Math.max(1, Number(limit) || 24)) break;
+  }
+
+  if (checked) {
+    writeAppSettings(id, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+    syncUserGroups(id);
+  }
+  return { checked, changed };
 }
 
 export async function handleDestinationText(uid, text) {
   const id = String(uid || "");
-  const settings = readAppSettings(id);
+  const initialSettings = readAppSettings(id);
   const accounts = listAccounts(id);
-  const selectedIds = effectiveAccountIds(settings, null, accounts).map(String);
-  const byId = new Map(accounts.map(account => [String(account.id), account]));
-  const rawLines = String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const parsed = [];
-  const inputKeys = new Set();
-  let invalid = 0;
-  let duplicates = 0;
-  for (const line of rawLines) {
-    const item = parseDestinationInput(line);
-    if (!item) { invalid++; continue; }
-    const identity = parsedIdentity(item);
-    if (inputKeys.has(identity)) { duplicates++; continue; }
-    inputKeys.add(identity);
-    parsed.push(item);
+  const selectedIds = new Set(effectiveAccountIds(initialSettings, null, accounts).map(String));
+  const selectedAccounts = accounts.filter(account => selectedIds.has(String(account.id)));
+  if (!selectedAccounts.length) {
+    return {
+      text: "Connect and select a personal Telegram account before importing destinations.",
+      added: 0, duplicates: 0, failed: 1, attention: 0, pending: 0, topics: 0,
+      destinationIds: [], requiresPersonal: true,
+    };
   }
-  if (!parsed.length) return { added: 0, duplicates, failed: invalid || 1, attention: 0, text: "No valid Telegram destinations were found." };
-  if (!selectedIds.length) return { requiresPersonal: true, parsed, invalid, added: 0, duplicates, failed: 0, attention: 0 };
 
-  const before = new Set((settings.groups || []).map(group => String(group.id)));
-  const seenResolvedIds = new Set();
-  const countedExistingIds = new Set();
-  const failures = [];
-  let pendingOnly = 0;
-  let deferred = 0;
+  const lines = String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const parsedRows = lines.map(line => ({ line, parsed: parseDestinationInput(line) }));
+  const beforeIds = new Set((Array.isArray(initialSettings.groups) ? initialSettings.groups : []).map(group => String(group.id)));
+  const joinedIds = new Set();
+  const topicIds = new Set();
+  let failed = 0, pending = 0;
+  const errors = [];
 
-  for (let accountIndex = 0; accountIndex < selectedIds.length; accountIndex++) {
-    const accountId = selectedIds[accountIndex];
-    const account = byId.get(accountId);
-    if (!account) continue;
-    const store = clearExpiredCooldowns(readAutomation(id));
-    if (Number(store.joinCooldowns[accountId] || 0) > Date.now()) {
-      deferred += queueJoinItems(id, accountId, parsed);
+  for (const row of parsedRows) {
+    if (!row.parsed) {
+      failed++;
+      errors.push(`${row.line} — invalid Telegram destination.`);
       continue;
     }
-    let client;
-    try {
-      client = await openAccountClient(id, account);
-      for (let index = 0; index < parsed.length; index++) {
-        const item = parsed[index];
-        try {
-          const rows = await processParsedForAccount(id, account, client, item);
-          for (const row of rows) {
-            const resolvedId = row?.destination?.id ? String(row.destination.id) : "";
-            if (accountIndex === 0 && resolvedId) {
-              if (before.has(resolvedId)) {
-                if (!countedExistingIds.has(resolvedId)) { duplicates++; countedExistingIds.add(resolvedId); }
-              } else if (seenResolvedIds.has(resolvedId)) {
-                duplicates++;
-              } else {
-                seenResolvedIds.add(resolvedId);
-              }
-            }
-            if (row?.pendingOnly) pendingOnly++;
-            if (row?.error) failures.push(`${row.source || item.original} — ${row.error}`);
-          }
-        } catch (err) {
-          const code = errorCode(err);
-          const label = item.original;
-          if (code.includes("FLOOD_WAIT")) {
-            setJoinCooldown(id, accountId, err);
-            deferred += queueJoinItems(id, accountId, parsed.slice(index));
-            break;
-          }
-          if (code.includes("INVITE_SLUG_EXPIRED") || code.includes("INVITE_HASH_EXPIRED")) failures.push(`${label} — invite expired.`);
-          else if (code.includes("CHANNELS_TOO_MUCH")) failures.push(`${label} — this account has reached Telegram's joined-channel limit.`);
-          else if (code.includes("USER_BANNED_IN_CHANNEL")) failures.push(`${label} — this account is banned from that destination.`);
-          else failures.push(`${label} — ${String(err?.message || err).slice(0, 160)}`);
+    for (const account of selectedAccounts) {
+      try {
+        const result = await processParsedForAccount(id, account, row.parsed);
+        if (result.pending) {
+          pending++;
+          continue;
         }
+        for (const destinationId of result.joinedIds || []) joinedIds.add(String(destinationId));
+        for (const destinationId of result.topicIds || []) topicIds.add(String(destinationId));
+      } catch (err) {
+        failed++;
+        errors.push(`${accountDisplayLabel(account)} — ${errorText(err)}`);
       }
-    } catch (err) {
-      failures.push(`${accountDisplayLabel(account)} — ${String(err?.message || err).slice(0, 160)}`);
-      updateAccountStatus(id, account.id, { status: "unknown", lastError: String(err?.message || err).slice(0, 180), lastVerifiedAt: Date.now() });
-    } finally {
-      try { await client?.disconnect(); } catch {}
     }
   }
 
-  const afterSettings = readAppSettings(id);
-  const afterGroups = Array.isArray(afterSettings.groups) ? afterSettings.groups : [];
-  const added = afterGroups.filter(group => !before.has(String(group.id))).length;
-  const counts = summaryCounts(afterGroups);
-  const queueRemaining = readAutomation(id).joinQueue.length;
-  const attention = counts.needs_topic + counts.pending + counts.verification + counts.partial + pendingOnly + queueRemaining;
-  const summary = [
-    "✅ Destination import complete",
-    `Added — ${added}`,
-    `Duplicates skipped — ${duplicates}`,
-    queueRemaining ? `⚡ Auto-join queued — ${queueRemaining}` : null,
-    `Needs attention — ${attention}`,
-    `Failed / invalid — ${failures.length + invalid}`,
-  ].filter(Boolean);
-  if (counts.needs_topic) summary.push(`Topics to choose — ${counts.needs_topic}`);
-  if (pendingOnly || counts.pending) summary.push(`Awaiting approval — ${pendingOnly + counts.pending}`);
-  if (counts.verification) summary.push(`Verification required — ${counts.verification}`);
-  if (deferred) summary.push("Telegram asked this sender to slow down. Remaining joins are queued and will resume automatically.");
-  if (failures.length) summary.push("", ...failures.slice(0, 8));
-  return { added, duplicates, failed: failures.length + invalid, attention, queued: queueRemaining, text: summary.join("\n") };
+  const finalSettings = readAppSettings(id);
+  const finalGroups = Array.isArray(finalSettings.groups) ? finalSettings.groups : [];
+  const addedIds = finalGroups.map(group => String(group.id)).filter(destinationId => !beforeIds.has(destinationId));
+  const duplicateIds = [...joinedIds].filter(destinationId => beforeIds.has(destinationId));
+  const attention = finalGroups.filter(group => ["needs_topic", "pending", "verification", "read_only", "failed", "partial"].includes(String(group.joinStatus || ""))).length;
+  const cleanupPending = readCleanup(id).filter(row => !row.muteDone || !row.archiveDone).length;
+
+  if (addedIds.length && !topicIds.size) {
+    try { advanceTutorialAfterAction(id, 3, 4); } catch {}
+  }
+
+  const resultLines = [
+    "✅ Destination import finished",
+    "",
+    `Added — ${addedIds.length}`,
+    `Already saved — ${duplicateIds.length}`,
+    `Join requests pending — ${pending}`,
+    `Topics to choose — ${topicIds.size}`,
+    `Failed / invalid — ${failed}`,
+    `Mute + archive queued — ${cleanupPending}`,
+  ];
+  if (errors.length) resultLines.push("", ...errors.slice(0, 6).map(value => `• ${value}`));
+
+  return {
+    text: resultLines.join("\n"),
+    added: addedIds.length,
+    duplicates: duplicateIds.length,
+    failed,
+    attention,
+    pending,
+    topics: topicIds.size,
+    destinationIds: addedIds,
+    error: errors[0] || "",
+  };
 }
 
-function topicQueueForGroups(uid) {
+function destinationGroups(uid) {
+  const groups = readAppSettings(uid).groups;
+  return Array.isArray(groups) ? groups : [];
+}
+export function destinationMenu(uid) {
+  const groups = destinationGroups(uid);
+  const topicCount = groups.filter(group => group.topicRequired === true && !Number(group.topicId || 0)).length;
+  const cleanupCount = readCleanup(uid).filter(row => !row.muteDone || !row.archiveDone).length;
+  const lines = groups.slice(0, 30).map((group, index) => `${index + 1}. ${group.username || group.label || group.id}${group.topicTitle ? ` → ${group.topicTitle}` : ""}`);
+  if (groups.length > 30) lines.push(`…and ${groups.length - 30} more`);
+  const text = [
+    `📍 Destinations · ${groups.length}`,
+    "",
+    lines.length ? lines.join("\n") : "No destinations yet.",
+    "",
+    `Topics ${topicCount} · Cleanup queued ${cleanupCount}`,
+  ].join("\n");
+  const keyboard = new InlineKeyboard().text("＋ Add destinations", "add_group").row();
+  if (topicCount) keyboard.text(`💬 Choose topics (${topicCount})`, "dest_topics").row();
+  if (cleanupCount) keyboard.text("⏳ Cleanup status", "dest_pending").row();
+  if (groups.length) keyboard.text("Manage", "remove_group_menu").row();
+  keyboard.text("← Home", "home");
+  return { text, keyboard };
+}
+
+async function fetchTopicsForSavedGroup(uid, group) {
   const settings = readAppSettings(uid);
-  const groups = new Map((settings.groups || []).map(group => [String(group.id), group]));
-  const store = readAutomation(uid);
-  store.topicQueue = store.topicQueue.filter(item => {
-    const group = groups.get(String(item.destinationId));
-    return group && group.topicRequired === true && !Number(group.topicId || 0);
-  });
-  writeAutomation(uid, store);
-  return store.topicQueue;
+  const accounts = listAccounts(uid);
+  const selected = effectiveAccountIds(settings, group, accounts).map(String);
+  const account = accounts.find(item => selected.includes(String(item.id))) || accounts[0];
+  if (!account) throw new Error("Connect a personal Telegram account first.");
+  let client;
+  try {
+    client = await openAccountClient(uid, account);
+    const entity = await resolveSavedEntity(client, group);
+    return forumTopics(client, entity);
+  } finally {
+    try { await client?.disconnect(); } catch {}
+  }
 }
 async function showTopicIndex(ctx) {
   const uid = String(ctx.from?.id || "");
-  const queue = topicQueueForGroups(uid);
-  const kb = new InlineKeyboard();
-  for (const item of queue.slice(0, 12)) kb.text(`💬 ${String(item.label).slice(0, 40)}`, `dest_topic_page:${item.token}:0`).row();
-  kb.text("← Destinations", "groups");
-  await ctx.editMessageText([
-    "💬 Choose posting topics",
-    "",
-    queue.length ? `${queue.length} forum destination${queue.length === 1 ? " needs" : "s need"} a topic.` : "All forum destinations have a posting topic selected.",
-    "",
-    "TelePilot can suggest likely advertising topics, but it will never silently guess where to post.",
-  ].join("\n"), { reply_markup: kb });
+  const waiting = destinationGroups(uid).filter(group => group.topicRequired === true && !Number(group.topicId || 0));
+  const keyboard = new InlineKeyboard();
+  for (const group of waiting.slice(0, 30)) keyboard.text(String(group.label || group.username || group.id).slice(0, 42), `dest_topic_open:${group.id}:0`).row();
+  keyboard.text("← Destinations", "groups");
+  return ctx.editMessageText(
+    waiting.length ? "💬 Choose a forum group\n\nSelect a group, then choose the exact posting topic." : "✅ No forum topics are waiting for selection.",
+    { reply_markup: keyboard },
+  );
 }
-async function showTopicPage(ctx, token, requestedPage = 0) {
+async function showTopicPage(ctx, destinationId, page = 0) {
   const uid = String(ctx.from?.id || "");
-  const item = topicQueueForGroups(uid).find(row => row.token === token);
-  if (!item) return showTopicIndex(ctx);
-  const pages = Math.max(1, Math.ceil(item.topics.length / TOPIC_PAGE_SIZE));
-  const page = Math.max(0, Math.min(Number(requestedPage) || 0, pages - 1));
-  const start = page * TOPIC_PAGE_SIZE;
-  const kb = new InlineKeyboard();
-  for (const topic of item.topics.slice(start, start + TOPIC_PAGE_SIZE)) {
-    const star = Number(topic.id) === Number(item.suggestedId) ? "⭐ " : "";
-    kb.text(`${star}${String(topic.title).slice(0, 42)}`, `dest_topic_pick:${token}:${topic.id}`).row();
+  const group = destinationGroups(uid).find(item => String(item.id) === String(destinationId));
+  if (!group) throw new Error("Destination no longer exists.");
+  const topics = await fetchTopicsForSavedGroup(uid, group);
+  writeTopicUiItem(uid, group.id, group.label || group.username || group.id, topics);
+  const pages = Math.max(1, Math.ceil(topics.length / TOPIC_PAGE_SIZE));
+  const current = Math.max(0, Math.min(Number(page) || 0, pages - 1));
+  const keyboard = new InlineKeyboard();
+  for (const topic of topics.slice(current * TOPIC_PAGE_SIZE, (current + 1) * TOPIC_PAGE_SIZE)) {
+    keyboard.text(topic.title.slice(0, 42), `dest_topic_pick:${group.id}:${topic.id}`).row();
   }
   if (pages > 1) {
-    if (page > 0) kb.text("◀ Prev", `dest_topic_page:${token}:${page - 1}`);
-    if (page < pages - 1) kb.text("Next ▶", `dest_topic_page:${token}:${page + 1}`);
-    kb.row();
+    if (current > 0) keyboard.text("◀ Prev", `dest_topic_open:${group.id}:${current - 1}`);
+    if (current < pages - 1) keyboard.text("Next ▶", `dest_topic_open:${group.id}:${current + 1}`);
+    keyboard.row();
   }
-  kb.text("Choose later", "groups").row().text("← Forum groups", "dest_topics");
-  await ctx.editMessageText([
-    `💬 ${item.label}`,
-    "",
-    item.suggestedId ? "⭐ TelePilot highlighted the most likely advertising topic. Check it before selecting." : "Choose the exact topic where TelePilot should post.",
-    "",
-    `Page ${page + 1}/${pages}`,
-  ].join("\n"), { reply_markup: kb });
+  keyboard.text("← Forum groups", "dest_topics");
+  return ctx.editMessageText(`💬 ${group.label || group.username || group.id}\n\nChoose the exact topic TelePilot should use.`, { reply_markup: keyboard });
 }
-function chooseTopic(uid, token, topicId) {
-  const store = readAutomation(uid);
-  const item = store.topicQueue.find(row => row.token === token);
-  if (!item) return null;
-  const topic = item.topics.find(row => Number(row.id) === Number(topicId));
-  if (!topic) return null;
+async function chooseTopic(uid, destinationId, topicId) {
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const group = groups.find(row => String(row.id) === String(item.destinationId));
-  if (!group) return null;
-  group.topicId = Number(topic.id);
-  group.topicTitle = String(topic.title || "");
+  const index = groups.findIndex(group => String(group.id) === String(destinationId));
+  if (index < 0) return false;
+  const group = { ...groups[index] };
+  let title = `Topic ${topicId}`;
+  try {
+    const topics = await fetchTopicsForSavedGroup(uid, group);
+    title = topics.find(topic => topic.id === Number(topicId))?.title || title;
+  } catch {}
   group.topicRequired = true;
+  group.topicId = Number(topicId);
+  group.topicTitle = title;
   group.joinStatus = overallStatus(group);
-  if (group.joinStatus === "needs_topic") group.joinStatus = Object.values(group.accountJoin || {}).some(row => row.status === "ready") ? "ready" : overallStatus({ ...group, topicRequired: false });
+  groups[index] = group;
   writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-  store.topicQueue = store.topicQueue.filter(row => row.token !== token);
-  writeAutomation(uid, store);
-  syncUserGroups(uid);
-  return { group, topic };
-}
-
-async function showPending(ctx) {
-  const uid = String(ctx.from?.id || "");
-  const settings = readAppSettings(uid);
-  const groups = Array.isArray(settings.groups) ? settings.groups : [];
-  const store = clearExpiredCooldowns(readAutomation(uid));
-  const lines = [];
-  if (store.joinQueue.length) lines.push(`⚡ ${store.joinQueue.length} destination${store.joinQueue.length === 1 ? " is" : "s are"} queued for automatic joining.`);
-  const activeCooldowns = Object.entries(store.joinCooldowns || {}).filter(([, until]) => Number(until) > Date.now());
-  for (const [accountId, until] of activeCooldowns.slice(0, 10)) {
-    const account = listAccounts(uid).find(item => String(item.id) === String(accountId));
-    const seconds = Math.max(1, Math.ceil((Number(until) - Date.now()) / 1000));
-    lines.push(`⏳ ${account ? accountDisplayLabel(account) : "Sender"} · Telegram cooldown ${seconds}s`);
-  }
-  for (const group of groups) {
-    const rows = Object.entries(group.accountJoin || {}).filter(([, row]) => row?.status && row.status !== "ready");
-    for (const [accountId, row] of rows.slice(0, 30)) {
-      const account = listAccounts(uid).find(item => item.id === accountId);
-      const name = account ? accountDisplayLabel(account) : "Sender";
-      const icon = row.status === "pending" ? "⏳" : row.status === "verification" ? "🛡" : "⚠️";
-      lines.push(`${icon} ${groupDisplay(group)} · ${name}\n${row.reason || row.status}`);
-    }
-  }
-  for (const row of store.unresolvedInvites.slice(0, 20)) lines.push(`⏳ ${row.original || "Private invite"}\n${row.reason || "Waiting for approval"}`);
-  const kb = new InlineKeyboard().text("↻ Check again", "dest_recheck").row().text("← Destinations", "groups");
-  await ctx.editMessageText([
-    "⏳ Pending & verification",
-    "",
-    lines.length ? lines.join("\n\n") : "Nothing currently needs attention.",
-    "",
-    "Fast Auto Join runs automatically. Telegram-requested cooldowns resume on their own. Captchas or verification steps still need to be completed in Telegram.",
-  ].join("\n"), { reply_markup: kb });
-}
-
-function setGroupAccountStatus(uid, destinationId, accountId, status, reason = "") {
-  const settings = readAppSettings(uid);
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const group = groups.find(row => String(row?.id || "") === String(destinationId || ""));
-  if (!group) return false;
-  group.accountJoin = { ...(group.accountJoin || {}) };
-  group.accountJoin[String(accountId)] = accountJoinEntry(status, reason);
-  group.joinStatus = overallStatus(group);
-  writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
+  removeTopicUiItem(uid, destinationId);
   syncUserGroups(uid);
   return true;
-}
-
-export function queueRoutingSync(uid, destinationId = "", onlyAccountIds = []) {
-  const id = String(uid || "");
-  if (!id) return 0;
-  const settings = readAppSettings(id);
-  const accounts = listAccounts(id);
-  const filter = new Set((Array.isArray(onlyAccountIds) ? onlyAccountIds : []).map(String));
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const store = readAutomation(id);
-  const existing = new Set((store.routingQueue || []).map(row => `${row.destinationId}|${row.accountId}`));
-  let queued = 0, changed = false;
-  for (const group of groups) {
-    if (destinationId && String(group.id) !== String(destinationId)) continue;
-    const required = effectiveAccountIds(settings, group, accounts).map(String);
-    for (const accountId of required) {
-      if (filter.size && !filter.has(accountId)) continue;
-      const current = group.accountJoin?.[accountId];
-      if (current?.status === "ready") continue;
-      const key = `${group.id}|${accountId}`;
-      if (!existing.has(key)) {
-        store.routingQueue.push({ destinationId: String(group.id), accountId, queuedAt: Date.now() });
-        existing.add(key);
-        queued++;
-      }
-      if (!current) {
-        group.accountJoin = { ...(group.accountJoin || {}) };
-        group.accountJoin[accountId] = accountJoinEntry("pending", "TelePilot is preparing this destination for the selected sender account.");
-        group.joinStatus = overallStatus(group);
-        changed = true;
-      }
-    }
-  }
-  if (changed) {
-    writeAppSettings(id, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-    syncUserGroups(id);
-  }
-  writeAutomation(id, store);
-  return queued;
-}
-
-async function joinOneAddlistDestination(client, group) {
-  const slug = String(group?.sourceSlug || "");
-  if (!slug) throw new Error("The original Addlist is unavailable for this destination.");
-  const invite = await client.api.chatlists.checkChatlistInvite({ slug });
-  const chats = Array.isArray(invite?.chats) ? invite.chats : [];
-  const wanted = String(group.id || "").replace(/^-100/, "").replace(/^-/, "").replace(/\D/g, "");
-  let entity = chats.find(chat => idString(chat?.id || "").replace(/\D/g, "") === wanted) || null;
-  const isAlready = invite?.className === "ChatlistInviteAlready" || Number.isInteger(Number(invite?.filterId));
-  const peers = isAlready ? (Array.isArray(invite?.missingPeers) ? invite.missingPeers : []) : (Array.isArray(invite?.peers) ? invite.peers : []);
-  const peer = peers.find(row => peerKey(row) === wanted) || null;
-  if (peer) {
-    const input = await inputPeer(client, entity || peer);
-    try {
-      if (isAlready) {
-        await client.api.chatlists.joinChatlistUpdates({ chatlist: new Api.InputChatlistDialogFilter({ filterId: Number(invite.filterId) }), peers: [input] });
-      } else {
-        await client.api.chatlists.joinChatlistInvite({ slug, peers: [input] });
-      }
-    } catch (err) {
-      if (errorCode(err).includes("INVITE_REQUEST_SENT")) return { entity: null, status: "pending", reason: "Join request sent; waiting for admin approval." };
-      throw err;
-    }
-  }
-  if (!entity) { try { entity = await client.getEntity(group.id); } catch {} }
-  return entity ? { entity, status: "ready", reason: "" } : { entity: null, status: "failed", reason: "Telegram could not resolve this Addlist destination for the selected account." };
-}
-async function prepareExistingDestination(uid, group, account, client) {
-  let joined;
-  if (group.username) joined = await joinPublic(client, { kind: "public", username: normalizeUsername(group.username), original: group.username });
-  else if (group.source === "invite" && group.sourceSlug) joined = await joinPrivateInvite(client, { kind: "invite", hash: group.sourceSlug, original: "Private invite" });
-  else if (group.source === "addlist" && group.sourceSlug) joined = await joinOneAddlistDestination(client, group);
-  else {
-    let entity = null;
-    try { entity = await client.getEntity(group.id); } catch {}
-    joined = entity ? { entity, status: "ready", reason: "" } : { entity: null, status: "failed", reason: "This private destination has no reusable invite. Add it again with its invite or Addlist link." };
-  }
-  if (!joined.entity) {
-    setGroupAccountStatus(uid, group.id, account.id, joined.status || "failed", joined.reason || "Destination is not ready.");
-    if (joined.status === "pending" && group.source === "invite" && group.sourceSlug) {
-      addUnresolvedInvite(uid, { accountId: account.id, kind: "invite", hash: group.sourceSlug, original: group.label || "Private invite", status: "pending", reason: joined.reason });
-    }
-    return false;
-  }
-  await processEntityForAccount(uid, account, client, joined.entity, {
-    kind: group.source || (group.username ? "public" : "existing"),
-    slug: group.source === "addlist" ? group.sourceSlug : "",
-    hash: group.source === "invite" ? group.sourceSlug : "",
-    original: group.username || group.label || group.id,
-  });
-  return true;
-}
-
-export async function processRoutingQueue(uid, maxItems = 4) {
-  const id = String(uid || "");
-  const accounts = listAccounts(id);
-  const byId = new Map(accounts.map(account => [String(account.id), account]));
-  let initial = clearExpiredCooldowns(readAutomation(id));
-  const work = (initial.routingQueue || []).slice(0, Math.max(1, Number(maxItems) || 4));
-  if (!work.length) return { checked: 0, changed: 0 };
-  const processed = new Set();
-  const clients = new Map();
-  const blockedAccounts = new Set();
-  let checked = 0, changed = 0;
-  try {
-    for (const item of work) {
-      const key = `${item.destinationId}|${item.accountId}`;
-      const accountId = String(item.accountId);
-      if (blockedAccounts.has(accountId) || Number(initial.joinCooldowns[accountId] || 0) > Date.now()) continue;
-      const settings = readAppSettings(id);
-      const group = (settings.groups || []).find(row => String(row.id) === String(item.destinationId));
-      const account = byId.get(accountId);
-      if (!group || !account || !effectiveAccountIds(settings, group, accounts).map(String).includes(accountId)) { processed.add(key); continue; }
-      let client = clients.get(accountId);
-      if (!client) {
-        try { client = await openAccountClient(id, account); clients.set(accountId, client); }
-        catch (err) {
-          setGroupAccountStatus(id, group.id, account.id, "failed", `Sender connection failed: ${String(err?.message || err).slice(0, 120)}`);
-          processed.add(key);
-          continue;
-        }
-      }
-      checked++;
-      try {
-        changed += (await prepareExistingDestination(id, group, account, client)) ? 1 : 0;
-        processed.add(key);
-      } catch (err) {
-        const code = errorCode(err);
-        if (code.includes("FLOOD_WAIT")) {
-          setJoinCooldown(id, accountId, err);
-          blockedAccounts.add(accountId);
-          continue;
-        }
-        const reason = code.includes("CHANNELS_TOO_MUCH")
-          ? "This account has reached Telegram's joined-channel limit."
-          : code.includes("INVITE_SLUG_EXPIRED") || code.includes("INVITE_HASH_EXPIRED")
-            ? "The original invite has expired."
-            : String(err?.message || err).slice(0, 160);
-        setGroupAccountStatus(id, group.id, account.id, "failed", reason);
-        processed.add(key);
-      }
-    }
-  } finally { for (const client of clients.values()) try { await client.disconnect(); } catch {} }
-  if (processed.size) {
-    const latest = readAutomation(id);
-    latest.routingQueue = (latest.routingQueue || []).filter(row => !processed.has(`${row.destinationId}|${row.accountId}`));
-    writeAutomation(id, latest);
-  }
-  if (changed) syncUserGroups(id);
-  return { checked, changed };
-}
-
-async function resolveForRecheck(client, group) {
-  if (group.username) return client.getEntity(group.username);
-  return client.getEntity(group.id);
-}
-async function recheckGroupAccount(uid, group, account, client) {
-  let entity;
-  try { entity = await resolveForRecheck(client, group); } catch { return false; }
-  const assessment = await assessEntity(client, entity);
-  const settings = readAppSettings(uid);
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const current = groups.find(row => String(row.id) === String(group.id));
-  if (!current) return false;
-  current.accountJoin = { ...(current.accountJoin || {}) };
-  current.accountJoin[account.id] = accountJoinEntry(assessment.status === "needs_topic" ? "ready" : assessment.status, assessment.reason);
-  current.topicRequired = current.topicRequired === true || entity?.forum === true;
-  if (assessment.status === "needs_topic" && !Number(current.topicId || 0)) upsertTopicQueue(uid, current, assessment.topics);
-  current.joinStatus = overallStatus(current);
-  writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-  if (assessment.status !== "pending") await archiveAndMuteEntity(client, entity);
-  return true;
-}
-async function recheckUnresolved(uid, item, account, client) {
-  if (item.kind === "invite" && item.hash) {
-    try {
-      const checked = await client.checkChatInvite(item.hash);
-      if (!checked?.chat) return false;
-      await processEntityForAccount(uid, account, client, checked.chat, item);
-      removeUnresolvedInvite(uid, item.key);
-      return true;
-    } catch { return false; }
-  }
-  if (item.kind === "public" && item.username) {
-    try {
-      const entity = await client.getEntity(`@${item.username}`);
-      const assessment = await assessEntity(client, entity);
-      if (assessment.status === "pending") return false;
-      await processEntityForAccount(uid, account, client, entity, item);
-      removeUnresolvedInvite(uid, item.key);
-      return true;
-    } catch { return false; }
-  }
-  return false;
-}
-export async function recheckDestinations(uid, maxItems = RECHECK_PER_TICK) {
-  const id = String(uid || "");
-  const accounts = listAccounts(id);
-  if (!accounts.length) return { checked: 0, changed: 0 };
-  const byId = new Map(accounts.map(account => [account.id, account]));
-  const settings = readAppSettings(id);
-  const groups = Array.isArray(settings.groups) ? settings.groups : [];
-  const work = [];
-  for (const group of groups) {
-    for (const [accountId, row] of Object.entries(group.accountJoin || {})) {
-      if (["pending", "verification", "read_only", "failed"].includes(String(row?.status || ""))) work.push({ type: "group", group, accountId });
-    }
-  }
-  const store = readAutomation(id);
-  for (const item of store.unresolvedInvites) work.push({ type: "invite", item, accountId: item.accountId });
-  let checked = 0, changed = 0;
-  const clients = new Map();
-  try {
-    for (const item of work.slice(0, Math.max(1, Number(maxItems) || RECHECK_PER_TICK))) {
-      const account = byId.get(String(item.accountId));
-      if (!account) continue;
-      if (Number(store.joinCooldowns[String(account.id)] || 0) > Date.now()) continue;
-      let client = clients.get(account.id);
-      if (!client) { try { client = await openAccountClient(id, account); clients.set(account.id, client); } catch { continue; } }
-      checked++;
-      try {
-        if (item.type === "group") changed += (await recheckGroupAccount(id, item.group, account, client)) ? 1 : 0;
-        else changed += (await recheckUnresolved(id, item.item, account, client)) ? 1 : 0;
-      } catch (err) {
-        if (errorCode(err).includes("FLOOD_WAIT")) setJoinCooldown(id, account.id, err);
-      }
-    }
-  } finally { for (const client of clients.values()) try { await client.disconnect(); } catch {} }
-  if (changed) syncUserGroups(id);
-  return { checked, changed };
 }
 
 function installHandlers(bot) {
-  bot.callbackQuery("dest_topics", async ctx => { await ctx.answerCallbackQuery(); await showTopicIndex(ctx); });
-  bot.callbackQuery(/^dest_topic_page:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {
+  bot.callbackQuery("dest_topics", async ctx => {
     await ctx.answerCallbackQuery();
-    await showTopicPage(ctx, String(ctx.match?.[1] || ""), Number(ctx.match?.[2] || 0));
+    try { await showTopicIndex(ctx); }
+    catch (err) { await ctx.editMessageText(`Could not load topics: ${errorText(err)}`, { reply_markup: new InlineKeyboard().text("← Destinations", "groups") }); }
   });
-  bot.callbackQuery(/^dest_topic_pick:([A-Za-z0-9_-]+):(\d+)$/, async ctx => {
-    const result = chooseTopic(String(ctx.from?.id || ""), String(ctx.match?.[1] || ""), Number(ctx.match?.[2] || 0));
-    if (!result) return ctx.answerCallbackQuery({ text: "That topic is no longer available.", show_alert: true });
-    await ctx.answerCallbackQuery({ text: `Posting topic: ${result.topic.title}` });
-    const remaining = topicQueueForGroups(String(ctx.from?.id || ""));
-    const tutorialScreen = remaining.length ? null : advanceTutorialAfterAction(String(ctx.from?.id || ""), 3, 4);
-    if (tutorialScreen) return ctx.editMessageText(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard });
-    await showTopicIndex(ctx);
+  bot.callbackQuery(/^dest_topic_open:(-\d+):(\d+)$/, async ctx => {
+    await ctx.answerCallbackQuery();
+    try { await showTopicPage(ctx, ctx.match[1], Number(ctx.match[2])); }
+    catch (err) { await ctx.editMessageText(`Could not load topics: ${errorText(err)}`, { reply_markup: new InlineKeyboard().text("← Destinations", "groups") }); }
   });
-  bot.callbackQuery("dest_pending", async ctx => { await ctx.answerCallbackQuery(); await showPending(ctx); });
-  bot.callbackQuery("dest_recheck", async ctx => {
-    await ctx.answerCallbackQuery({ text: "Checking…" });
-    await processJoinQueue(String(ctx.from?.id || ""), MAX_FAST_JOIN_BATCH);
-    await recheckDestinations(String(ctx.from?.id || ""), 30);
-    await showPending(ctx);
+  bot.callbackQuery(/^dest_topic_pick:(-\d+):(\d+)$/, async ctx => {
+    await ctx.answerCallbackQuery({ text: "Topic selected" });
+    const uid = String(ctx.from?.id || "");
+    await chooseTopic(uid, ctx.match[1], Number(ctx.match[2]));
+    if (!destinationGroups(uid).some(group => group.topicRequired === true && !Number(group.topicId || 0))) {
+      const screen = advanceTutorialAfterAction(uid, 3, 4);
+      if (screen) return ctx.editMessageText(screen.text, { reply_markup: screen.keyboard });
+    }
+    return showTopicIndex(ctx);
+  });
+  bot.callbackQuery("dest_pending", async ctx => {
+    await ctx.answerCallbackQuery();
+    const pending = readCleanup(String(ctx.from?.id || "")).filter(row => !row.muteDone || !row.archiveDone);
+    await ctx.editMessageText([
+      "⏳ Cleanup status",
+      "",
+      `Mute/archive jobs waiting — ${pending.length}`,
+      "",
+      "Each joined destination is queued once. Completed jobs are retained and are not continuously re-added.",
+    ].join("\n"), { reply_markup: new InlineKeyboard().text("← Destinations", "groups") });
   });
 }
 export function installDestinationAutomation(BotClass) {
@@ -1113,44 +846,33 @@ export function installDestinationAutomation(BotClass) {
   if (typeof originalStart !== "function") throw new Error("Unsupported grammY Bot shape for destination automation");
   Object.defineProperty(BotClass.prototype, "__telepilotDestinationAutomationInstalled", { value: true });
   BotClass.prototype.start = function(...args) {
-    if (!this.__telepilotDestinationAutomationHandlersRegistered) {
-      Object.defineProperty(this, "__telepilotDestinationAutomationHandlersRegistered", { value: true });
+    if (!this.__telepilotFreshDestinationHandlers) {
+      Object.defineProperty(this, "__telepilotFreshDestinationHandlers", { value: true });
       installHandlers(this);
     }
     return originalStart.apply(this, args);
   };
 }
 
-let workerTimer = null;
-let workerBusy = false;
+let timer = null;
+let busy = false;
 export function startDestinationAutomationWorker() {
-  if (workerTimer || !API_ID || !API_HASH) return workerTimer;
+  if (timer || !API_ID || !API_HASH) return timer;
   const tick = async () => {
-    if (workerBusy) return;
-    workerBusy = true;
+    if (busy) return;
+    busy = true;
     try {
       for (const uid of listUserIds()) {
-        let store = clearExpiredCooldowns(readAutomation(uid));
-        if (store.joinQueue.length) {
-          try { await processJoinQueue(uid, MAX_FAST_JOIN_BATCH); } catch (err) { console.warn(`Fast auto-join failed for ${uid}:`, err?.message || err); }
-          store = readAutomation(uid);
-        }
-        const now = Date.now();
-        const shouldSlowCheck = now - Number(store.lastWorkerAt || 0) >= SLOW_RECHECK_INTERVAL_MS;
-        if (!shouldSlowCheck) continue;
-        store.lastWorkerAt = now;
-        writeAutomation(uid, store);
-        const settings = readAppSettings(uid);
-        const hasAttention = store.routingQueue.length || store.unresolvedInvites.length || (settings.groups || []).some(group => Object.values(group.accountJoin || {}).some(row => ["pending", "verification"].includes(String(row?.status || ""))));
-        if (!hasAttention) continue;
-        try { if (store.routingQueue.length) await processRoutingQueue(uid, 20); } catch (err) { console.warn(`Destination routing sync failed for ${uid}:`, err?.message || err); }
-        try { await recheckDestinations(uid, RECHECK_PER_TICK); } catch (err) { console.warn(`Destination recheck failed for ${uid}:`, err?.message || err); }
+        try { await processCleanupForUser(uid); }
+        catch (err) { console.warn(`Destination cleanup failed for ${uid}: ${errorText(err)}`); }
       }
-    } finally { workerBusy = false; }
+    } finally {
+      busy = false;
+    }
   };
-  workerTimer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
-  workerTimer.unref?.();
-  setTimeout(() => void tick(), 2_000).unref?.();
-  console.log("TelePilot Fast Auto Join worker enabled (duplicate detection + archive/mute)");
-  return workerTimer;
+  timer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
+  timer.unref?.();
+  setTimeout(() => void tick(), 1_000).unref?.();
+  console.log("TelePilot fresh destination importer enabled (public/private/Addlist + topics + cleanup)");
+  return timer;
 }

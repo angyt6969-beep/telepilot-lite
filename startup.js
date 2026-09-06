@@ -8,13 +8,6 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationAutomation, startDestinationAutomationWorker } from "./destination-automation.js";
 import { installDestinationDeleteControls, installDestinationDeleteUi } from "./destination-delete-ui.js";
-import { installArchiveMuteQueue, startArchiveMuteWorker } from "./archive-mute-queue.js";
-import { startArchiveMuteCoverageWorker } from "./archive-mute-coverage.js";
-import { installAddlistReconciliation, startAddlistReconciliationWorker } from "./addlist-reconciliation.js";
-import { installAddlistJoinCompatibility } from "./addlist-join-compat.js";
-import { installAddlistPeerResolution } from "./addlist-peer-resolution.js";
-import { installAddlistImportUi } from "./addlist-import-ui.js";
-import { installForumGeneralFallback, startForumGeneralFallbackWorker } from "./forum-general-fallback.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
@@ -51,8 +44,6 @@ installLegalPages();
 installConnectUi();
 
 installOwnerControlsBot(Bot);
-installForumGeneralFallback(Bot);
-
 installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
 installProControls(Bot);
@@ -71,14 +62,9 @@ prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 installPrivatePeerResolution(TelegramClient);
-installArchiveMuteQueue(TelegramClient);
-installAddlistReconciliation(TelegramClient);
-installAddlistJoinCompatibility(TelegramClient);
-installAddlistPeerResolution(TelegramClient);
 
 installOwnerControlsUi(Api);
 installDestinationDeleteUi(Api);
-installAddlistImportUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
 installSupportUi(Api);
@@ -123,9 +109,5 @@ try {
 
 startV1Worker();
 startDestinationAutomationWorker();
-startAddlistReconciliationWorker();
-startArchiveMuteWorker();
-startArchiveMuteCoverageWorker();
-startForumGeneralFallbackWorker();
 startQolV13Worker();
 await import("./app.js");
