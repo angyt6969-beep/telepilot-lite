@@ -12,6 +12,7 @@ const MAIN_CHANNEL_USERNAME = String(process.env.TELEPILOT_MAIN_CHANNEL_USERNAME
 export const TUTORIAL_PLANE_EMOJI_ID = "5231361378748472914";
 export const TUTORIAL_CHECK_EMOJI_ID = "5206607081334906820";
 export const TUTORIAL_ACTION_EMOJI_ID = "5411590687663608498";
+export const TUTORIAL_SLIDES = 5;
 
 let appStartHandler = null;
 
@@ -94,34 +95,119 @@ function emphasizeAppendedLabel(text, entities, label) {
   addEntity(entities, { type: "bold", offset, length: label.length });
   addEntity(entities, { type: "italic", offset, length: label.length });
 }
+function slideNumber(value) {
+  return Math.max(1, Math.min(TUTORIAL_SLIDES, Number(value) || 1));
+}
+function telePilotHeading(title, slide) {
+  return [
+    `<tg-emoji emoji-id="${TUTORIAL_PLANE_EMOJI_ID}">✈️</tg-emoji> <b><i>${title}</i></b>`,
+    `<i>Slide ${slide} of ${TUTORIAL_SLIDES}</i>`,
+  ];
+}
+function navigationRows(slide, alreadyActive, support, channel) {
+  const rows = [];
+  if (slide < TUTORIAL_SLIDES) {
+    const row = [];
+    if (slide > 1) row.push(premiumCallback("Back", `linear_tutorial:${slide - 1}`, TUTORIAL_ACTION_EMOJI_ID));
+    row.push(premiumCallback("Next", `linear_tutorial:${slide + 1}`, TUTORIAL_PLANE_EMOJI_ID, { style: "primary" }));
+    rows.push(row);
+    return rows;
+  }
+
+  rows.push([premiumCallback("Back", `linear_tutorial:${TUTORIAL_SLIDES - 1}`, TUTORIAL_ACTION_EMOJI_ID)]);
+  rows.push([
+    alreadyActive
+      ? premiumCallback("Open Dashboard", "linear_onboarding_complete", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })
+      : premiumCallback("Redeem Key", "redeem_key", TUTORIAL_CHECK_EMOJI_ID, { style: "success" }),
+  ]);
+  if (!alreadyActive) {
+    const links = [premiumUrl("Get a Key", sellerUrl(support), TUTORIAL_ACTION_EMOJI_ID)];
+    if (channel) links.push(premiumUrl("Main Channel", channelUrl(channel), TUTORIAL_PLANE_EMOJI_ID));
+    rows.push(links);
+  }
+  return rows;
+}
 
 export function tutorialScreen(options = {}) {
   const support = String(options.supportUsername || SUPPORT_USERNAME).replace(/^@+/, "");
+  const channel = String(options.mainChannelUsername ?? MAIN_CHANNEL_USERNAME).replace(/^@+/, "");
   const alreadyActive = options.accessActive === true;
-  const action = alreadyActive
-    ? premiumCallback("Open Dashboard", "linear_onboarding_complete", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })
-    : premiumCallback("Redeem Key", "redeem_key", TUTORIAL_CHECK_EMOJI_ID, { style: "success" });
+  const slide = slideNumber(options.slide);
+  let body;
+
+  if (slide === 2) {
+    body = [
+      ...telePilotHeading("Choose your sender", slide),
+      "",
+      "👤 <b>Personal account:</b> — Post as your own Telegram account and use TelePilot's destination automation.",
+      "",
+      "🤖 <b>TelePilot Bot:</b> — Use the bot as the sender when it has access to the destinations you configure.",
+      "",
+      "🔐 <b>Account connection:</b> — Personal login details use TelePilot's protected connection flow.",
+      "",
+      "<i>You choose or change the active sender later from Accounts.</i>",
+    ];
+  } else if (slide === 3) {
+    body = [
+      ...telePilotHeading("Add destinations", slide),
+      "",
+      "📍 <b>Groups & channels:</b> — Add the Telegram destinations where your sender is allowed to post.",
+      "",
+      "🗂 <b>Addlists:</b> — Import supported Telegram shared folders without adding destinations one by one.",
+      "",
+      "💬 <b>Forum topics:</b> — Choose the exact topic when a destination uses Telegram topics.",
+      "",
+      "<i>Destination Health helps surface access, restriction and routing issues.</i>",
+    ];
+  } else if (slide === 4) {
+    body = [
+      ...telePilotHeading("Build your post", slide),
+      "",
+      "📝 <b>Normal Post:</b> — Create your message with formatting, links and supported media.",
+      "",
+      "↪️ <b>Forwarded Post:</b> — Use a real Telegram forward from a selected source message.",
+      "",
+      "⏱ <b>Timing:</b> — Choose a repeat interval or use exact-time scheduling when needed.",
+      "",
+      "👀 <b>Smart Preview:</b> — Check sender, message, destinations and timing before going live.",
+    ];
+  } else if (slide === 5) {
+    body = [
+      ...telePilotHeading("You're ready", slide),
+      "",
+      "✅ <b>Tutorial:</b> — Complete",
+      alreadyActive ? "🟢 <b>Access:</b> — Active" : "🔑 <b>Access:</b> — Key required",
+      "",
+      "Once inside the dashboard, the normal flow is simple:",
+      "",
+      "<b>Sender:</b> — Choose who posts",
+      "<b>Destinations:</b> — Choose where to post",
+      "<b>Message:</b> — Choose what to post",
+      "<b>Timing:</b> — Choose when to post",
+      "",
+      alreadyActive
+        ? "<i>Open your dashboard and start building your setup.</i>"
+        : `<i>Redeem your key to unlock TelePilot. Need one? Message @${support}.</i>`,
+    ];
+  } else {
+    body = [
+      ...telePilotHeading("Welcome to TelePilot", slide),
+      "",
+      "✨ <b>TelePilot:</b> — A clean control panel for automated Telegram posting.",
+      "",
+      "⚡ Set up your sender, destinations, message and timing once — then manage everything from one dashboard.",
+      "",
+      "🛡 <b>Built for control:</b> — Preview what will happen, review destination issues and keep posting settings organized.",
+      "",
+      "<i>This tutorial is short. Each slide covers one part of the setup.</i>",
+    ];
+  }
+
   return {
-    text: [
-      "✈️ <b><i>Welcome to TelePilot</i></b>",
-      "",
-      "<i>Read this quick guide once before opening your dashboard.</i>",
-      "",
-      "<b>Sender:</b> — Connect the Telegram account that will publish your posts.",
-      "<b>Destinations:</b> — Add the groups and channels where that account is allowed to post.",
-      "<b>Message:</b> — Create a normal post or use Forwarded Post.",
-      "<b>Timing:</b> — Choose a repeat interval or exact-time schedule.",
-      "<b>Go live:</b> — Start once; TelePilot handles the posting cycles and tracks issues.",
-      "",
-      "<b>Power tools:</b> — Addlists, forum-topic routing, multiple accounts, Smart Preview, activity history and destination health are available inside TelePilot.",
-      "",
-      `<i>Need an access key? Message @${support}.</i>`,
-      "",
-      alreadyActive ? "<b>Next:</b> — Open your dashboard." : "<b>Next:</b> — Redeem your TelePilot access key."
-    ].join("\n"),
+    text: body.join("\n"),
     other: {
       parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [[action]] },
+      reply_markup: { inline_keyboard: navigationRows(slide, alreadyActive, support, channel) },
     },
   };
 }
@@ -149,13 +235,8 @@ export function redeemPromptScreen(options = {}) {
   };
 }
 
-export function replayTutorialScreen() {
-  const screen = tutorialScreen({ accessActive: true });
-  screen.text = screen.text.replace(
-    "<i>Read this quick guide once before opening your dashboard.</i>",
-    "<i>A quick reference for your TelePilot setup.</i>",
-  );
-  return screen;
+export function replayTutorialScreen(slide = 1) {
+  return tutorialScreen({ accessActive: true, slide });
 }
 
 async function sendScreen(ctx, screen, edit = false) {
@@ -272,38 +353,44 @@ export function decorateLinearOnboardingPayload(chatId, text, other, options = {
 }
 
 function registerLinearHandlers(bot) {
-  // Active legacy/admin users still read the page once, but never need to redeem a
-  // second key just to migrate from the older onboarding state.
+  // Active legacy/admin users still read the slides once, but never need to redeem
+  // a second key just to migrate from the older onboarding state.
   bot.callbackQuery("linear_onboarding_complete", async ctx => {
     const uid = uidOf(ctx);
     if (!uid) return;
     if (!accessActive(uid)) {
       await ctx.answerCallbackQuery({ text: "Redeem an access key first.", show_alert: true });
-      return sendScreen(ctx, tutorialScreen(), true);
+      return sendScreen(ctx, tutorialScreen({ slide: TUTORIAL_SLIDES }), true);
     }
     markLinearOnboardingComplete(uid);
     await ctx.answerCallbackQuery({ text: "Tutorial complete" });
     return openApp(ctx);
   });
 
+  bot.callbackQuery(/^linear_tutorial:([1-5])$/, async ctx => {
+    const uid = uidOf(ctx);
+    await ctx.answerCallbackQuery();
+    return sendScreen(ctx, tutorialScreen({ slide: Number(ctx.match[1]), accessActive: accessActive(uid) }), true);
+  });
+
   bot.callbackQuery("tutorial_restart", async ctx => {
     await ctx.answerCallbackQuery();
-    return sendScreen(ctx, replayTutorialScreen(), true);
+    return sendScreen(ctx, replayTutorialScreen(1), true);
   });
 
   // Compatibility only for old tutorial messages that may still exist in a chat.
   // These callbacks no longer mark onboarding complete or expose setup shortcuts.
   bot.callbackQuery("tutorial:skip", async ctx => {
     await ctx.answerCallbackQuery({ text: "The TelePilot tutorial cannot be skipped.", show_alert: true });
-    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
+    return sendScreen(ctx, tutorialScreen({ slide: 1, accessActive: accessActive(uidOf(ctx)) }), true);
   });
   bot.callbackQuery("tutorial:begin", async ctx => {
     await ctx.answerCallbackQuery();
-    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
+    return sendScreen(ctx, tutorialScreen({ slide: 1, accessActive: accessActive(uidOf(ctx)) }), true);
   });
   bot.callbackQuery(/^tutorial:(?:[1-7]|bot|personal|finish)$/, async ctx => {
-    await ctx.answerCallbackQuery({ text: "The tutorial has been simplified." });
-    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
+    await ctx.answerCallbackQuery({ text: "The tutorial has been updated." });
+    return sendScreen(ctx, tutorialScreen({ slide: 1, accessActive: accessActive(uidOf(ctx)) }), true);
   });
 }
 
@@ -325,7 +412,7 @@ export function installLinearOnboardingV4(BotClass) {
     const wrapped = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx, next) {
       const uid = uidOf(ctx);
       if (!uid || readLinearOnboarding(uid).completed) return handler.call(this, ctx, next);
-      return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uid) }), false);
+      return sendScreen(ctx, tutorialScreen({ slide: 1, accessActive: accessActive(uid) }), false);
     });
     return originalCommand.call(this, command, ...wrapped);
   };
