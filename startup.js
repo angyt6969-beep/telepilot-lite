@@ -10,6 +10,7 @@ import { installDestinationsV2, destinationsHomeScreen } from "./destinations-v2
 import { installDestinationHealthV3 } from "./destination-health-v3.js";
 import { installDestinationMembershipV4 } from "./destination-membership-v4.js";
 import { installDestinationTopicButtonRepairV4 } from "./destination-topic-button-repair-v4.js";
+import { installReviewIssuesIconCleanup } from "./review-issues-icon-cleanup.js";
 import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
@@ -105,6 +106,9 @@ installDestinationHealthV3(Bot, destinationsHomeScreen);
 installDestinationMembershipV4(Bot);
 // Keep issue-detail topic buttons routed into the established d2 topic picker.
 installDestinationTopicButtonRepairV4(Bot);
+// Remove legacy warning glyphs from Review Issues button text while preserving
+// the dedicated premium custom emoji icon.
+installReviewIssuesIconCleanup(Bot);
 // Bind before app.js registers its legacy message:text handler so destination
 // input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
