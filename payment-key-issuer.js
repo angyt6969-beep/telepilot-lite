@@ -30,6 +30,7 @@ function encryptKey(key, orderId, secret = SECURITY_SECRET) {
 export function decryptIssuedKey(encrypted, orderId, options = {}) {
   try {
     const raw = Buffer.from(String(encrypted || ""), "base64url");
+    if (raw.length < 29) return "";
     const iv = raw.subarray(0, 12), tag = raw.subarray(12, 28), body = raw.subarray(28);
     const decipher = crypto.createDecipheriv("aes-256-gcm", derive(`payment-key:${orderId}`, options.secret || SECURITY_SECRET), iv);
     decipher.setAuthTag(tag);
@@ -53,7 +54,12 @@ export function issuePaymentKey(input, options = {}) {
   if (!/^TPP-[A-Z0-9-]{8,80}$/.test(orderId)) throw new Error("Invalid payment order ID");
   if (!/^\d+$/.test(uid)) throw new Error("Invalid Telegram user ID");
   const existing = db.keys.find(row => String(row?.paymentOrderId || "") === orderId);
-  if (existing) return { record: existing, key: "", alreadyIssued: true };
+  if (existing) {
+    const encryptedKey = String(existing.paymentEncryptedKey || "");
+    const key = decryptIssuedKey(encryptedKey, orderId, options);
+    if (!encryptedKey || !key) throw new Error("Existing payment key cannot be recovered safely");
+    return { record: existing, key, encryptedKey, alreadyIssued: true };
+  }
   const lifetime = input.lifetime === true;
   const durationDays = lifetime ? null : Number(input.durationDays);
   if (!lifetime && (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650)) throw new Error("Invalid key duration");
@@ -65,6 +71,7 @@ export function issuePaymentKey(input, options = {}) {
     key = "";
   }
   if (!key) throw new Error("Could not allocate a unique TelePilot key");
+  const encryptedKey = encryptKey(key, orderId, options.secret || SECURITY_SECRET);
   const record = {
     id: crypto.randomBytes(5).toString("hex"),
     hash,
@@ -80,13 +87,9 @@ export function issuePaymentKey(input, options = {}) {
     source: "nowpayments",
     paymentOrderId: orderId,
     providerPaymentId: String(input.providerPaymentId || ""),
+    paymentEncryptedKey: encryptedKey,
   };
   db.keys.push(record);
   writeJsonAtomic(file, db);
-  return {
-    record,
-    key,
-    encryptedKey: encryptKey(key, orderId, options.secret || SECURITY_SECRET),
-    alreadyIssued: false,
-  };
+  return { record, key, encryptedKey, alreadyIssued: false };
 }
