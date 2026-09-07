@@ -24,6 +24,38 @@ assert.equal(health.stateFromParticipant({ participant: { className: "ChannelPar
 assert.equal(health.stateFromParticipant({ participant: { className: "ChannelParticipantBanned", left: true, bannedRights: { viewMessages: true } } }).status, "banned");
 assert.equal(health.stateFromParticipant({ participant: { className: "ChannelParticipantSelf" } }).status, "ready");
 
+// Route-specific sender selection must override the global sender selection.
+// This is the exact failure mode that previously left a newly routed sender
+// unchecked forever because routing sync was a no-op.
+const routeAccounts = [{ id: "A" }, { id: "B" }];
+const globalA = { senderMode: "selected", selectedAccountIds: ["A"] };
+assert.deepEqual(
+  health.requiredAccountIds(globalA, { accountMode: "selected", accountIds: ["B"] }, routeAccounts),
+  ["B"],
+  "destination routing must check B even when A is selected globally",
+);
+assert.deepEqual(
+  health.requiredAccountIds(globalA, { accountMode: "all", accountIds: [] }, routeAccounts).sort(),
+  ["A", "B"],
+  "all-account routes must check every connected sender",
+);
+assert.deepEqual(
+  health.requiredAccountIds(globalA, { accountMode: "bot", accountIds: ["B"] }, routeAccounts),
+  [],
+  "bot-routed destinations must not be blocked by stale personal-account membership",
+);
+
+assert.equal(
+  health.joinStatusForRoute({ accountJoin: { A: { status: "ready" }, B: { status: "not_member" } } }, ["A", "B"], false),
+  "partial",
+  "a multi-sender route with only some ready accounts must not be called fully ready",
+);
+assert.equal(
+  health.joinStatusForRoute({ accountJoin: {} }, [], true),
+  "ready",
+  "an explicit bot route has no personal-account membership requirement",
+);
+
 const counts = health.healthCounts([
   { id: "-1001", accountJoin: { a: { status: "ready" } } },
   { id: "-1002", accountJoin: { a: { status: "banned" } } },
@@ -34,6 +66,12 @@ const counts = health.healthCounts([
 assert.deepEqual({ total: counts.total, ready: counts.ready, banned: counts.banned, text: counts.text_blocked, notMember: counts.not_member, topic: counts.topic, attention: counts.attention }, {
   total: 5, ready: 1, banned: 1, text: 1, notMember: 1, topic: 1, attention: 4,
 });
+
+const mixedRouteCounts = health.healthCounts([
+  { id: "-1006", joinStatus: "partial", accountJoin: { A: { status: "ready" }, B: { status: "not_member" } } },
+]);
+assert.equal(mixedRouteCounts.ready, 0, "a partially ready multi-sender route must appear in issues instead of being hidden as ready");
+assert.equal(mixedRouteCounts.issue, 1);
 
 const decorated = health.decorateIssueButtons({
   reply_markup: {
