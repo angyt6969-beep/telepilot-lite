@@ -17,6 +17,7 @@ import {
 } from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
 import { setPendingInput } from "./qol-store.js";
+import { recheckDestinationsV4 } from "./destination-membership-v4.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
@@ -25,9 +26,12 @@ const STATE_VERSION = 2;
 const INPUT_TTL_MS = 20 * 60_000;
 const REVIEW_TTL_MS = 30 * 60_000;
 const PAGE_SIZE = 8;
+const ROUTING_BATCH_SIZE = 200;
+const ROUTING_QUEUE_LIMIT = 100;
 
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function statePath(uid) { return path.join(userDir(uid), "destinations-v2.json"); }
+function routingQueuePath(uid) { return path.join(userDir(uid), "destination-routing-sync.json"); }
 function readJson(file, fallback) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : fallback; }
   catch { return fallback; }
@@ -38,6 +42,19 @@ function writeJsonAtomic(file, value) {
   fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
+function cleanRoutingQueue(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(item => item && typeof item === "object" && String(item.id || ""))
+    .map(item => ({
+      id: String(item.id),
+      destinationIds: [...new Set((Array.isArray(item.destinationIds) ? item.destinationIds : []).map(String).filter(Boolean))].slice(0, ROUTING_BATCH_SIZE),
+      accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String).filter(Boolean))],
+      createdAt: Number(item.createdAt || 0) || Date.now(),
+    }))
+    .slice(-ROUTING_QUEUE_LIMIT);
+}
+function readRoutingQueue(uid) { return cleanRoutingQueue(readJson(routingQueuePath(uid), [])); }
+function writeRoutingQueue(uid, queue) { writeJsonAtomic(routingQueuePath(uid), cleanRoutingQueue(queue)); }
 function cleanState(raw = {}) {
   const review = raw?.review && Date.now() - Number(raw.review.createdAt || 0) <= REVIEW_TTL_MS ? raw.review : null;
   const pendingInput = raw?.pendingInput && Date.now() - Number(raw.pendingInput.createdAt || 0) <= INPUT_TTL_MS ? raw.pendingInput : null;
@@ -168,17 +185,28 @@ function membershipState(entity) {
   }
   return { status: "ready", reason: "Already joined in Telegram." };
 }
+function membershipErrorState(err) {
+  const text = errorText(err);
+  const code = text.toUpperCase();
+  if (code.includes("USER_NOT_PARTICIPANT")) return { status: "not_member", reason: "Telegram explicitly reports this account is not a participant." };
+  if (code.includes("USER_BANNED_IN_CHANNEL")) return { status: "issue", reason: "Telegram reports this account is banned/restricted in the destination." };
+  if (code.includes("CHANNEL_PRIVATE") || code.includes("CHAT_FORBIDDEN") || code.includes("CHANNEL_INVALID") || code.includes("CHAT_INVALID")) return { status: "issue", reason: `Telegram could not verify access: ${text}` };
+  return { status: "issue", reason: `Telegram membership check was inconclusive: ${text}` };
+}
+async function directMembershipState(ctx, entity) {
+  try {
+    await ctx.client.getParticipant(entity, "me");
+    return membershipState(entity);
+  } catch (err) {
+    return membershipErrorState(err);
+  }
+}
 async function verifyPublicMembership(ctx, parsed) {
   const entity = await ctx.client.getEntity(`@${parsed.username}`);
   const candidate = candidateFromEntity(entity, parsed);
   if (!candidate) return null;
   const key = entityKey(entity);
-  let member = ctx.dialogByKey.has(key);
-  if (!member) {
-    try { await ctx.client.getParticipant(entity, "me"); member = true; }
-    catch { member = false; }
-  }
-  candidate.accountJoin[String(ctx.account.id)] = member ? membershipState(entity) : { status: "not_member", reason: "Join this group in Telegram first." };
+  candidate.accountJoin[String(ctx.account.id)] = ctx.dialogByKey.has(key) ? membershipState(entity) : await directMembershipState(ctx, entity);
   return candidate;
 }
 async function verifyPrivateInvite(ctx, parsed) {
@@ -206,8 +234,7 @@ async function scanAddlistForAccount(ctx, parsed) {
   for (const entity of chats) {
     const candidate = candidateFromEntity(entity, parsed);
     if (!candidate) continue;
-    const member = membership.has(entityKey(entity));
-    candidate.accountJoin[String(ctx.account.id)] = member ? membershipState(entity) : { status: "not_member", reason: "Join this group in Telegram first." };
+    candidate.accountJoin[String(ctx.account.id)] = membership.has(entityKey(entity)) ? membershipState(entity) : await directMembershipState(ctx, entity);
     out.push(candidate);
   }
   return { inviteClass: String(invite?.className || ""), chats: out };
@@ -219,6 +246,17 @@ function candidateAccessible(candidate) {
 function candidateUnsupported(candidate) {
   const rows = Object.values(candidate?.accountJoin || {});
   return rows.length > 0 && rows.every(row => row?.status === "unsupported");
+}
+function candidateNotJoined(candidate) {
+  const rows = Object.values(candidate?.accountJoin || {});
+  return rows.length > 0 && rows.every(row => row?.status === "not_member");
+}
+function candidateIssue(candidate) {
+  return !candidateAccessible(candidate) && !candidateUnsupported(candidate) && !candidateNotJoined(candidate);
+}
+function candidateIssueReason(candidate) {
+  const reasons = [...new Set(Object.values(candidate?.accountJoin || {}).map(row => String(row?.reason || "").trim()).filter(Boolean))];
+  return reasons.slice(0, 2).join(" · ") || "Telegram could not verify membership for the routed account(s).";
 }
 function sourceLabel(parsed) {
   if (parsed?.kind === "addlist") return "Shared folder";
@@ -277,8 +315,11 @@ export async function scanDestinationSources(uid, text) {
 
     const all = [...candidates.values()];
     const accessible = all.filter(candidateAccessible).filter(candidate => !candidateUnsupported(candidate));
-    const notJoined = all.filter(candidate => !candidateAccessible(candidate) && !candidateUnsupported(candidate));
+    const notJoined = all.filter(candidateNotJoined);
     const unsupported = all.filter(candidateUnsupported);
+    for (const candidate of all.filter(candidateIssue)) {
+      unavailable.push({ original: candidate.username || candidate.label || candidate.id, reason: candidateIssueReason(candidate) });
+    }
     return {
       token: reviewToken(),
       createdAt: Date.now(),
@@ -528,10 +569,19 @@ async function entityForSavedGroup(client, group) {
   }
   return null;
 }
+function topicAccountFor(settings, group, accounts) {
+  const routedIds = new Set(effectiveAccountIds(settings, group, accounts).map(String));
+  const readyIds = new Set(Object.entries(group?.accountJoin || {}).filter(([, row]) => row?.status === "ready").map(([id]) => String(id)));
+  return accounts.find(item => routedIds.has(String(item.id)) && readyIds.has(String(item.id)))
+    || accounts.find(item => readyIds.has(String(item.id)))
+    || accounts.find(item => routedIds.has(String(item.id)))
+    || accounts[0]
+    || null;
+}
 async function topicsForGroup(uid, group) {
-  const accounts = selectedAccounts(uid);
-  const readyIds = Object.entries(group?.accountJoin || {}).filter(([, row]) => row?.status === "ready").map(([id]) => String(id));
-  const account = accounts.find(item => readyIds.includes(String(item.id))) || accounts[0];
+  const settings = readAppSettings(uid);
+  const accounts = listAccounts(uid);
+  const account = topicAccountFor(settings, group, accounts);
   if (!account) throw new Error("Connect a personal Telegram account first");
   let client;
   try {
@@ -575,36 +625,7 @@ function deleteGroup(uid, groupId) {
 }
 
 export async function recheckDestinations(uid, limit = 40) {
-  const settings = readAppSettings(uid);
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const accounts = selectedAccounts(uid);
-  if (!groups.length || !accounts.length) return { checked: 0, changed: 0 };
-  const contexts = [];
-  let checked = 0, changed = 0;
-  try {
-    for (const account of accounts) {
-      try { contexts.push(await buildAccountContext(uid, account)); } catch {}
-    }
-    for (let index = 0; index < groups.length && checked < Math.max(1, Number(limit) || 40); index++) {
-      const group = { ...groups[index], accountJoin: { ...(groups[index].accountJoin || {}) } };
-      const key = digits(group.id);
-      const before = JSON.stringify(group.accountJoin);
-      for (const ctx of contexts) {
-        const entity = ctx.dialogByKey.get(key);
-        group.accountJoin[String(ctx.account.id)] = entity ? membershipState(entity) : { status: "not_member", reason: "Join this group in Telegram first." };
-      }
-      group.joinStatus = normalizedJoinStatus(group);
-      group.lastCheckedAt = Date.now();
-      if (JSON.stringify(group.accountJoin) !== before) changed++;
-      groups[index] = group;
-      checked++;
-    }
-    if (checked) {
-      writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-      syncUserGroups(uid);
-    }
-    return { checked, changed };
-  } finally { for (const ctx of contexts) try { await ctx.client.disconnect(); } catch {} }
+  return recheckDestinationsV4(uid, { limit: Math.max(1, Number(limit) || 40) });
 }
 
 async function editOrReply(ctx, screen) {
@@ -727,5 +748,52 @@ export async function handleDestinationText(uid, text) {
     destinationIds: result.savedIds,
   };
 }
-export function queueRoutingSync() { return 0; }
-export async function processRoutingQueue() { return { processed: 0, changed: 0 }; }
+
+export function queueRoutingSync(uid, destinationId = "", accountIds = []) {
+  const settings = readAppSettings(uid);
+  const allIds = (Array.isArray(settings.groups) ? settings.groups : []).map(group => String(group?.id || "")).filter(Boolean);
+  const wanted = destinationId ? allIds.filter(id => id === String(destinationId)) : allIds;
+  if (!wanted.length) return 0;
+  const queue = readRoutingQueue(uid);
+  const normalizedAccounts = [...new Set((Array.isArray(accountIds) ? accountIds : []).map(String).filter(Boolean))];
+  const requests = [];
+  for (let index = 0; index < wanted.length; index += ROUTING_BATCH_SIZE) {
+    const destinationIds = wanted.slice(index, index + ROUTING_BATCH_SIZE);
+    const duplicate = queue.some(item =>
+      JSON.stringify(item.destinationIds) === JSON.stringify(destinationIds)
+      && JSON.stringify(item.accountIds) === JSON.stringify(normalizedAccounts)
+    );
+    if (duplicate) continue;
+    requests.push({ id: crypto.randomBytes(8).toString("hex"), destinationIds, accountIds: normalizedAccounts, createdAt: Date.now() });
+  }
+  if (!requests.length) return 0;
+  writeRoutingQueue(uid, [...queue, ...requests].slice(-ROUTING_QUEUE_LIMIT));
+  return requests.length;
+}
+
+export async function processRoutingQueue(uid, limit = 8) {
+  const max = Math.max(1, Math.min(20, Number(limit) || 8));
+  let processed = 0;
+  let changed = 0;
+  for (let index = 0; index < max; index++) {
+    const queue = readRoutingQueue(uid);
+    const request = queue[0];
+    if (!request) break;
+    const result = await recheckDestinationsV4(uid, {
+      destinationIds: request.destinationIds,
+      accountIds: request.accountIds,
+      limit: Math.max(1, request.destinationIds.length),
+    });
+    changed += Number(result?.changed || 0);
+    writeRoutingQueue(uid, readRoutingQueue(uid).filter(item => item.id !== request.id));
+    processed++;
+  }
+  return { processed, changed };
+}
+
+export const __test = {
+  membershipErrorState,
+  candidateNotJoined,
+  candidateIssue,
+  topicAccountFor,
+};

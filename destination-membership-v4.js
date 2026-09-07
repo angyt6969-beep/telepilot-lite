@@ -7,6 +7,7 @@ import {
   listAccounts,
   loadAccountSession,
   updateAccountStatus,
+  usesBotSender,
 } from "./account-store.js";
 import { readAppSettings, writeAppSettings } from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
@@ -117,13 +118,6 @@ function stateFromError(err) {
   return { status: "issue", reason: `Telegram access check was inconclusive: ${errorText(err)}`, telegramCode: errorText(err), checkedAt: Date.now() };
 }
 
-function selectedAccounts(uid) {
-  const settings = readAppSettings(uid);
-  const accounts = listAccounts(uid);
-  const selected = new Set(effectiveAccountIds(settings, null, accounts).map(String));
-  const preferred = accounts.filter(account => selected.has(String(account.id)));
-  return preferred.length ? preferred : accounts;
-}
 async function openAccountClient(uid, account) {
   const session = loadAccountSession(uid, account.id);
   if (!session) throw new Error("Saved Telegram session is missing");
@@ -155,6 +149,40 @@ function explicitPeer(group) {
   }
   return null;
 }
+function hydratePeerMetadata(group, entity) {
+  if (!group || !entity) return;
+  if (entity?.accessHash !== undefined && entity?.accessHash !== null) group.accessHash = String(entity.accessHash);
+  const username = String(entity?.username || "").replace(/^@/, "");
+  if (username && !group.username) group.username = `@${username}`;
+}
+async function peerFromSavedSource(ctx, group) {
+  const kind = String(group?.source || "");
+  const slug = String(group?.sourceSlug || "");
+  const wanted = peerKey(group?.id);
+  if (!slug || !wanted) return null;
+  if (kind === "invite") {
+    try {
+      const checked = await ctx.client.checkChatInvite(slug);
+      const entity = checked?.chat || null;
+      if (entity && entityKey(entity) === wanted) {
+        hydratePeerMetadata(group, entity);
+        return entity;
+      }
+    } catch {}
+    return null;
+  }
+  if (kind === "addlist") {
+    try {
+      const checked = await ctx.client.api.chatlists.checkChatlistInvite({ slug });
+      const entity = (Array.isArray(checked?.chats) ? checked.chats : []).find(item => entityKey(item) === wanted) || null;
+      if (entity) {
+        hydratePeerMetadata(group, entity);
+        return entity;
+      }
+    } catch {}
+  }
+  return null;
+}
 async function verifyMissingDialog(ctx, group) {
   try {
     let peer = null;
@@ -165,6 +193,7 @@ async function verifyMissingDialog(ctx, group) {
       try { peer = await ctx.client.getInputEntity(String(group.id)); } catch {}
     }
     if (!peer) peer = explicitPeer(group);
+    if (!peer) peer = await peerFromSavedSource(ctx, group);
     if (!peer) return { status: "issue", reason: "This destination is not in the current dialog list and TelePilot has no resolvable peer for a direct membership check. It is not being marked as not joined.", checkedAt: Date.now() };
     const result = await ctx.client.getParticipant(peer, "me");
     return stateFromParticipant(result);
@@ -172,56 +201,122 @@ async function verifyMissingDialog(ctx, group) {
     return stateFromError(err);
   }
 }
-function joinStatus(group) {
+function requiredAccountIds(settings, group, accounts) {
+  if (usesBotSender(settings, group, accounts)) return [];
+  return effectiveAccountIds(settings, group, accounts).map(String);
+}
+function joinStatusForRoute(group, requiredIds, botRoute = false) {
   if (group?.topicRequired === true && !Number(group?.topicId || 0)) return "needs_topic";
-  const rows = Object.values(group?.accountJoin || {});
-  if (rows.some(row => row?.status === "ready")) return "ready";
+  if (botRoute) return "ready";
+  if (!requiredIds.length) return "failed";
+  const rows = requiredIds.map(id => group?.accountJoin?.[id]).filter(Boolean);
+  if (rows.length === requiredIds.length && rows.every(row => row?.status === "ready")) return "ready";
+  if (rows.some(row => row?.status === "ready")) return "partial";
   if (rows.some(row => ["text_blocked", "media_blocked", "restricted"].includes(row?.status))) return "read_only";
+  if (rows.some(row => row?.status === "verification")) return "verification";
+  if (rows.some(row => row?.status === "pending")) return "pending";
   return "failed";
 }
+function normalizeRecheckOptions(options) {
+  if (typeof options === "number") return { limit: options };
+  return options && typeof options === "object" ? options : {};
+}
 
-export async function recheckDestinationsV4(uid) {
+export async function recheckDestinationsV4(uid, rawOptions = {}) {
   if (!API_ID || !API_HASH) throw new Error("Telegram API credentials are not configured");
+  const options = normalizeRecheckOptions(rawOptions);
   const settings = readAppSettings(uid);
   const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const accounts = selectedAccounts(uid);
-  if (!groups.length || !accounts.length) return { checked: 0, changed: 0, total: groups.length, counts: {} };
-  const contexts = [];
-  let checked = 0, changed = 0;
-  try {
-    for (const account of accounts) {
-      try { contexts.push(await buildContext(uid, account)); }
-      catch (err) { updateAccountStatus(uid, account.id, { lastError: errorText(err), lastVerifiedAt: Date.now() }); }
+  const accounts = listAccounts(uid);
+  const accountById = new Map(accounts.map(account => [String(account.id), account]));
+  const requestedDestinationIds = new Set((Array.isArray(options.destinationIds) ? options.destinationIds : []).map(String).filter(Boolean));
+  const requestedAccountIds = new Set((Array.isArray(options.accountIds) ? options.accountIds : []).map(String).filter(Boolean));
+  const limit = Math.max(1, Math.min(MAX_EXPLICIT_RECHECK, Number(options.limit || MAX_EXPLICIT_RECHECK) || MAX_EXPLICIT_RECHECK));
+  const targetIndexes = [];
+  for (let index = 0; index < groups.length && targetIndexes.length < limit; index++) {
+    if (requestedDestinationIds.size && !requestedDestinationIds.has(String(groups[index]?.id || ""))) continue;
+    targetIndexes.push(index);
+  }
+  if (!targetIndexes.length) return { checked: 0, changed: 0, total: groups.length, counts: healthCounts(groups) };
+
+  const requiredByGroup = new Map();
+  const accountIdsToOpen = new Set();
+  for (const index of targetIndexes) {
+    const group = groups[index];
+    const botRoute = usesBotSender(settings, group, accounts);
+    const required = requiredAccountIds(settings, group, accounts);
+    requiredByGroup.set(index, { required, botRoute });
+    for (const id of required) {
+      if (!requestedAccountIds.size || requestedAccountIds.has(id)) accountIdsToOpen.add(id);
     }
-    if (!contexts.length) throw new Error("Could not open a connected Telegram account");
-    const max = Math.min(groups.length, MAX_EXPLICIT_RECHECK);
-    for (let index = 0; index < max; index++) {
-      const group = { ...groups[index], accountJoin: { ...(groups[index]?.accountJoin || {}) } };
-      const key = peerKey(group.id);
-      const before = JSON.stringify(group.accountJoin);
-      for (const ctx of contexts) {
-        const entity = ctx.dialogByKey.get(key);
-        group.accountJoin[String(ctx.account.id)] = entity ? stateFromEntity(entity) : await verifyMissingDialog(ctx, group);
+  }
+
+  const contexts = new Map();
+  const accountErrors = new Map();
+  try {
+    for (const accountId of accountIdsToOpen) {
+      const account = accountById.get(accountId);
+      if (!account) continue;
+      try { contexts.set(accountId, await buildContext(uid, account)); }
+      catch (err) {
+        const message = errorText(err);
+        accountErrors.set(accountId, message);
+        updateAccountStatus(uid, account.id, { lastError: message, lastVerifiedAt: Date.now() });
       }
-      group.joinStatus = joinStatus(group);
+    }
+
+    let checked = 0;
+    let changed = 0;
+    const validAccountIds = new Set(accounts.map(account => String(account.id)));
+    for (const index of targetIndexes) {
+      const original = groups[index];
+      const group = { ...original, accountJoin: {} };
+      const route = requiredByGroup.get(index) || { required: [], botRoute: false };
+      const requiredSet = new Set(route.required);
+      for (const [accountId, row] of Object.entries(original?.accountJoin || {})) {
+        if (validAccountIds.has(String(accountId)) && requiredSet.has(String(accountId))) group.accountJoin[String(accountId)] = row;
+      }
+
+      const key = peerKey(group.id);
+      for (const accountId of route.required) {
+        if (requestedAccountIds.size && !requestedAccountIds.has(accountId)) continue;
+        const ctx = contexts.get(accountId);
+        if (!ctx) {
+          group.accountJoin[accountId] = {
+            status: "issue",
+            reason: accountErrors.get(accountId) ? `Could not check this sender: ${accountErrors.get(accountId)}` : "This routed sender is not available for an access check.",
+            checkedAt: Date.now(),
+          };
+          continue;
+        }
+        const entity = ctx.dialogByKey.get(key);
+        if (entity) hydratePeerMetadata(group, entity);
+        group.accountJoin[accountId] = entity ? stateFromEntity(entity) : await verifyMissingDialog(ctx, group);
+      }
+
+      group.joinStatus = joinStatusForRoute(group, route.required, route.botRoute);
       group.lastCheckedAt = Date.now();
-      if (JSON.stringify(group.accountJoin) !== before) changed++;
+      const before = JSON.stringify({ accountJoin: original?.accountJoin || {}, joinStatus: original?.joinStatus || "", accessHash: original?.accessHash || "", username: original?.username || "" });
+      const after = JSON.stringify({ accountJoin: group.accountJoin, joinStatus: group.joinStatus, accessHash: group.accessHash || "", username: group.username || "" });
+      if (before !== after) changed++;
       groups[index] = group;
       checked++;
     }
+
     writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
     syncUserGroups(uid);
     return { checked, changed, total: groups.length, counts: healthCounts(groups) };
   } finally {
-    for (const ctx of contexts) try { await ctx.client.disconnect(); } catch {}
+    for (const ctx of contexts.values()) try { await ctx.client.disconnect(); } catch {}
   }
 }
 
 function groupStatus(group) {
   if (group?.topicRequired === true && !Number(group?.topicId || 0)) return "topic";
   const rows = Object.values(group?.accountJoin || {});
-  if (!rows.length) return "unchecked";
-  if (rows.some(row => row?.status === "ready")) return "ready";
+  if (!rows.length) return String(group?.joinStatus || "") === "ready" ? "ready" : "unchecked";
+  if (rows.every(row => row?.status === "ready")) return "ready";
+  if (rows.some(row => row?.status === "ready")) return "issue";
   for (const status of ["banned", "unavailable", "text_blocked", "media_blocked", "restricted", "not_member", "issue"]) {
     if (rows.some(row => row?.status === status)) return status;
   }
@@ -411,4 +506,14 @@ export function installDestinationMembershipV4(BotClass) {
   return true;
 }
 
-export const __test = { peerKey, stateFromEntity, stateFromParticipant, stateFromError, groupStatus, healthCounts, decorateIssueButtons };
+export const __test = {
+  peerKey,
+  stateFromEntity,
+  stateFromParticipant,
+  stateFromError,
+  groupStatus,
+  healthCounts,
+  decorateIssueButtons,
+  requiredAccountIds,
+  joinStatusForRoute,
+};
