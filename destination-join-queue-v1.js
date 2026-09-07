@@ -11,13 +11,16 @@ const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 
-// Fast path: reuse one authenticated Telegram connection for a few joins instead
-// of reconnecting for every group. Telegram FLOOD_WAIT always overrides these
-// local timings and pauses every pending task for that account durably.
+// Keep the queue responsive, but let each Telegram account learn its own safe
+// pace. A FLOOD_WAIT always wins, is persisted, and increases that account's
+// local gap. Successful joins gradually reduce the gap again.
 const WORKER_INTERVAL_MS = 500;
-const BASE_JOIN_GAP_MS = 750;
+const DEFAULT_JOIN_GAP_MS = 1_500;
+const MIN_JOIN_GAP_MS = 1_000;
+const MAX_JOIN_GAP_MS = 10_000;
+const JOIN_GAP_RECOVERY_STEP_MS = 250;
 const INITIAL_JOIN_DELAY_MS = 200;
 const MAX_JOINS_PER_SESSION = 4;
 const REQUEST_PENDING_RETRY_MS = 24 * 60 * 60_000;
@@ -43,6 +46,11 @@ function errorText(err) {
 }
 function errorCode(err) { return errorText(err).toUpperCase(); }
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, Math.max(0, ms))); }
+function clampGap(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_JOIN_GAP_MS;
+  return Math.max(MIN_JOIN_GAP_MS, Math.min(MAX_JOIN_GAP_MS, Math.round(n)));
+}
 
 export function floodWaitSeconds(err) {
   for (const value of [err?.seconds, err?.value]) {
@@ -51,6 +59,25 @@ export function floodWaitSeconds(err) {
   }
   const match = errorCode(err).match(/FLOOD_WAIT(?:_|\s|\(|:|-)*(\d+)/);
   return match ? Math.max(1, Number(match[1])) : 0;
+}
+export function gapAfterFloodWait(currentGap, waitSeconds) {
+  const current = clampGap(currentGap);
+  const wait = Math.max(1, Number(waitSeconds || 0));
+  const floor = wait <= 5 ? 2_500
+    : wait <= 30 ? 4_000
+      : wait <= 120 ? 6_000
+        : 8_000;
+  return clampGap(Math.max(floor, current * 1.5));
+}
+export function gapAfterSuccess(currentGap) {
+  return clampGap(Math.max(DEFAULT_JOIN_GAP_MS, clampGap(currentGap) - JOIN_GAP_RECOVERY_STEP_MS));
+}
+function storedFloodWaitSeconds(message) {
+  const match = String(message || "").match(/Telegram asked to wait\s+(\d+)s/i);
+  return match ? Math.max(1, Number(match[1])) : 0;
+}
+function accountGap(state, accountId) {
+  return clampGap(state?.accountGapMs?.[String(accountId)] || DEFAULT_JOIN_GAP_MS);
 }
 
 function taskKey(accountId, destinationId) { return `${String(accountId)}:${String(destinationId)}`; }
@@ -90,18 +117,47 @@ function readState(uid) {
     if (task.status === "done" && now - task.updatedAt > DONE_RETENTION_MS) continue;
     tasks[key] = task;
   }
+
   const accountNextAt = {};
   for (const [accountId, value] of Object.entries(raw?.accountNextAt || {})) {
     const n = Math.max(0, Number(value || 0) || 0);
     if (n) accountNextAt[String(accountId)] = n;
   }
-  return { version: STATE_VERSION, tasks, accountNextAt, updatedAt: Number(raw?.updatedAt || 0) || 0 };
+
+  const accountGapMs = {};
+  for (const [accountId, value] of Object.entries(raw?.accountGapMs || {})) {
+    accountGapMs[String(accountId)] = clampGap(value);
+  }
+
+  // Migrate existing v1 queues safely. If the previous build already received a
+  // large FLOOD_WAIT, infer a conservative gap from the persisted task errors so
+  // a deploy during that cooldown does not immediately repeat the same burst.
+  const inferredWaitByAccount = {};
+  for (const task of Object.values(tasks)) {
+    if (task.status !== "pending") continue;
+    const wait = storedFloodWaitSeconds(task.lastError);
+    if (!wait) continue;
+    inferredWaitByAccount[task.accountId] = Math.max(Number(inferredWaitByAccount[task.accountId] || 0), wait);
+  }
+  for (const [accountId, wait] of Object.entries(inferredWaitByAccount)) {
+    if (accountGapMs[accountId]) continue;
+    accountGapMs[accountId] = gapAfterFloodWait(DEFAULT_JOIN_GAP_MS, wait);
+  }
+
+  return {
+    version: STATE_VERSION,
+    tasks,
+    accountNextAt,
+    accountGapMs,
+    updatedAt: Number(raw?.updatedAt || 0) || 0,
+  };
 }
 function writeState(uid, state) {
   writeJsonAtomic(statePath(uid), {
     version: STATE_VERSION,
     tasks: state.tasks || {},
     accountNextAt: state.accountNextAt || {},
+    accountGapMs: state.accountGapMs || {},
     updatedAt: Date.now(),
   });
 }
@@ -282,10 +338,14 @@ function normalRetryDelay(attempts) {
 }
 export function applyFloodWait(state, accountId, waitSeconds, now = Date.now()) {
   const seconds = Math.max(1, Number(waitSeconds || 0));
+  const accountKey = String(accountId);
   const until = now + (seconds * 1000) + 1000;
-  state.accountNextAt[String(accountId)] = Math.max(Number(state.accountNextAt[String(accountId)] || 0), until);
+  state.accountNextAt ||= {};
+  state.accountGapMs ||= {};
+  state.accountNextAt[accountKey] = Math.max(Number(state.accountNextAt[accountKey] || 0), until);
+  state.accountGapMs[accountKey] = gapAfterFloodWait(accountGap(state, accountKey), seconds);
   for (const task of Object.values(state.tasks || {})) {
-    if (String(task.accountId) !== String(accountId) || task.status !== "pending") continue;
+    if (String(task.accountId) !== accountKey || task.status !== "pending") continue;
     task.nextAt = Math.max(Number(task.nextAt || 0), until);
     task.lastError = `Telegram asked to wait ${seconds}s`;
     task.updatedAt = now;
@@ -336,9 +396,11 @@ async function processAccount(uid, account, state) {
 
       try {
         const outcome = await joinCandidate(client, task.candidate);
+        const gapBeforeAttempt = accountGap(state, account.id);
         if (outcome.status === "joined") {
           completeTask(uid, task);
           completedAny = true;
+          state.accountGapMs[String(account.id)] = gapAfterSuccess(gapBeforeAttempt);
         } else if (outcome.status === "request_pending") {
           task.status = "request_pending";
           task.nextAt = 0;
@@ -350,17 +412,17 @@ async function processAccount(uid, account, state) {
           task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
           task.updatedAt = Date.now();
         }
-        state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+        state.accountNextAt[String(account.id)] = Date.now() + gapBeforeAttempt;
       } catch (err) {
         const wait = floodWaitSeconds(err);
         if (wait) {
           const until = applyFloodWait(state, account.id, wait);
-          console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; resumeAt=${new Date(until).toISOString()}`);
+          console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; adaptiveGap=${accountGap(state, account.id)}ms; resumeAt=${new Date(until).toISOString()}`);
           writeState(uid, state);
           break;
         }
         failTask(task, err);
-        state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+        state.accountNextAt[String(account.id)] = Date.now() + accountGap(state, account.id);
       }
 
       writeState(uid, state);
@@ -423,7 +485,7 @@ export function startDestinationJoinWorker() {
   workerTimer = setInterval(() => void runDestinationJoinTick(), WORKER_INTERVAL_MS);
   workerTimer.unref?.();
   setTimeout(() => void runDestinationJoinTick(), 250).unref?.();
-  console.log("TelePilot destination join queue enabled (durable, flood-aware, fast burst)");
+  console.log("TelePilot destination join queue enabled (durable, flood-aware, adaptive pacing)");
   return workerTimer;
 }
 
