@@ -13,10 +13,11 @@ import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installDestinationPreparationUi } from "./destination-preparation-ui.js";
 import { installAddlistBulkReimport } from "./destination-addlist-reimport-bulk.js";
 import { installDestinationDeleteAll } from "./destination-delete-all-v1.js";
-import { startDestinationPreparationWorker } from "./destination-preparation-v1.js";
+import { runDestinationPreparationTick } from "./destination-preparation-v1.js";
 import { startDestinationJoinWorker } from "./destination-join-queue-v1.js";
 import { startCleanupRejoinBridge } from "./destination-cleanup-rejoin-bridge.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
+import { installTelegramRuntimeOptimizer } from "./telegram-runtime-optimizer.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
@@ -55,6 +56,13 @@ import {
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+
+const runtimeOptimizer = installTelegramRuntimeOptimizer(TelegramClient, {
+  getMeTtlMs: 5 * 60_000,
+  dialogMinGapMs: 6_000,
+  connectMinGapMs: 750,
+});
+console.log(`TelePilot Telegram runtime optimizer enabled (identity cache ${Math.round(runtimeOptimizer.getMeTtlMs / 60_000)}m; dialog gap ${Math.round(runtimeOptimizer.dialogMinGapMs / 1000)}s; connect gap ${runtimeOptimizer.connectMinGapMs}ms)`);
 
 retireLegacyDestinationState();
 installLegalPages();
@@ -145,9 +153,18 @@ try {
   console.error("Could not update TelePilot bot description:", err?.message || err);
 }
 
+function startOptimizedDestinationPreparationWorker() {
+  const intervalMs = 10_000;
+  const timer = setInterval(() => void runDestinationPreparationTick(), intervalMs);
+  timer.unref?.();
+  setTimeout(() => void runDestinationPreparationTick(), 1_000).unref?.();
+  console.log("TelePilot destination preparation worker enabled (10s conservative polling; explicit jobs only; paced mute + batched archive)");
+  return timer;
+}
+
 startV1Worker();
 startQolV13Worker();
 startDestinationJoinWorker();
 startCleanupRejoinBridge();
-startDestinationPreparationWorker();
+startOptimizedDestinationPreparationWorker();
 await import("./app.js");
