@@ -4,6 +4,7 @@ const NAV_BACK = "telepilot_nav_back";
 const MAX_HISTORY = 20;
 const stateByMessage = new Map();
 const restoring = new Set();
+const LEADING_DECORATION_RE = /^(?:(?:\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?|[←→↩↪＋+✓✔◀▶])\s*)+/u;
 
 function cloneOther(other) {
   const next = { ...(other || {}) };
@@ -26,7 +27,7 @@ function plain(value) {
 }
 
 function firstLine(text) {
-  return plain(String(text || "").split("\n")[0]);
+  return plain(String(text || "").split("\n")[0]).replace(LEADING_DECORATION_RE, "").trim();
 }
 
 function allButtons(other) {
