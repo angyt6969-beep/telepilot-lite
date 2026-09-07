@@ -34,11 +34,13 @@ assert.match(source, /EditPeerFolders/);
 assert.match(source, /archiveReady\.length >= ARCHIVE_BATCH_SIZE/);
 assert.match(inputSource, /d3_prepare:/);
 assert.match(startupSource, /installDestinationPreparationUi\(Bot\)/);
-assert.match(startupSource, /startDestinationPreparationWorker\(\)/);
+assert.match(startupSource, /runDestinationPreparationTick/);
+assert.match(startupSource, /startOptimizedDestinationPreparationWorker\(\)/);
 
 const mod = await import(`./destination-preparation-v1.js?test=${Date.now()}`);
 const ui = await import(`./destination-preparation-ui.js?test=${Date.now()}`);
 assert.equal(typeof mod.startDestinationPreparationWorker, "function");
+assert.equal(typeof mod.runDestinationPreparationTick, "function");
 assert.equal(typeof mod.prepareReviewedSources, "function");
 assert.equal(typeof ui.installDestinationPreparationUi, "function");
 
