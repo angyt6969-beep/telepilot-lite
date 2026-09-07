@@ -12,9 +12,14 @@ const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
 const STATE_VERSION = 1;
-const WORKER_INTERVAL_MS = 2_000;
-const BASE_JOIN_GAP_MS = 4_000;
-const INITIAL_JOIN_DELAY_MS = 1_000;
+
+// Fast path: reuse one authenticated Telegram connection for a few joins instead
+// of reconnecting for every group. Telegram FLOOD_WAIT always overrides these
+// local timings and pauses every pending task for that account durably.
+const WORKER_INTERVAL_MS = 500;
+const BASE_JOIN_GAP_MS = 750;
+const INITIAL_JOIN_DELAY_MS = 200;
+const MAX_JOINS_PER_SESSION = 4;
 const REQUEST_PENDING_RETRY_MS = 24 * 60 * 60_000;
 const MAX_ATTEMPTS = 6;
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60_000;
@@ -37,6 +42,8 @@ function errorText(err) {
   return String(err?.errorMessage || err?.description || err?.message || err || "Unknown Telegram error").slice(0, 220);
 }
 function errorCode(err) { return errorText(err).toUpperCase(); }
+function delay(ms) { return new Promise(resolve => setTimeout(resolve, Math.max(0, ms))); }
+
 export function floodWaitSeconds(err) {
   for (const value of [err?.seconds, err?.value]) {
     const n = Number(value);
@@ -45,6 +52,7 @@ export function floodWaitSeconds(err) {
   const match = errorCode(err).match(/FLOOD_WAIT(?:_|\s|\(|:|-)*(\d+)/);
   return match ? Math.max(1, Number(match[1])) : 0;
 }
+
 function taskKey(accountId, destinationId) { return `${String(accountId)}:${String(destinationId)}`; }
 function cleanCandidate(candidate) {
   return {
@@ -268,7 +276,6 @@ function completeTask(uid, task) {
   task.lastError = "";
   task.updatedAt = Date.now();
   console.log(`TelePilot join queue confirmed ${uid}/${task.accountId}/${task.candidate.id}: saved=${saved.added || 0}, cleanup=${cleanup.created || 0}`);
-  void runDestinationPreparationTick();
 }
 function normalRetryDelay(attempts) {
   return Math.min(30 * 60_000, Math.max(15_000, 15_000 * (2 ** Math.min(5, attempts))));
@@ -304,50 +311,68 @@ export function pickDueTask(state, accountId, now = Date.now()) {
     .filter(task => String(task.accountId) === String(accountId) && task.status === "pending" && Number(task.nextAt || 0) <= now)
     .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))[0] || null;
 }
+function hasPendingForAccount(state, accountId) {
+  return Object.values(state?.tasks || {}).some(task => String(task.accountId) === String(accountId) && task.status === "pending");
+}
 
 async function processAccount(uid, account, state) {
-  const task = pickDueTask(state, account.id);
-  if (!task) return;
+  const firstTask = pickDueTask(state, account.id);
+  if (!firstTask) return;
 
   let client;
+  let completedAny = false;
   try {
     client = await openClient(uid, account);
   } catch (err) {
-    failTask(task, err);
+    failTask(firstTask, err);
     writeState(uid, state);
     return;
   }
 
   try {
-    try {
-      const outcome = await joinCandidate(client, task.candidate);
-      if (outcome.status === "joined") {
-        completeTask(uid, task);
-      } else if (outcome.status === "request_pending") {
-        task.status = "request_pending";
-        task.nextAt = 0;
-        task.lastError = "Telegram sent a join request; approval is required.";
-        task.updatedAt = Date.now();
-      } else {
-        task.status = "failed";
-        task.nextAt = 0;
-        task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
-        task.updatedAt = Date.now();
-      }
-      state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
-    } catch (err) {
-      const wait = floodWaitSeconds(err);
-      if (wait) {
-        const until = applyFloodWait(state, account.id, wait);
-        console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; resumeAt=${new Date(until).toISOString()}`);
-      } else {
+    for (let slot = 0; slot < MAX_JOINS_PER_SESSION; slot++) {
+      const task = pickDueTask(state, account.id);
+      if (!task) break;
+
+      try {
+        const outcome = await joinCandidate(client, task.candidate);
+        if (outcome.status === "joined") {
+          completeTask(uid, task);
+          completedAny = true;
+        } else if (outcome.status === "request_pending") {
+          task.status = "request_pending";
+          task.nextAt = 0;
+          task.lastError = "Telegram sent a join request; approval is required.";
+          task.updatedAt = Date.now();
+        } else {
+          task.status = "failed";
+          task.nextAt = 0;
+          task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
+          task.updatedAt = Date.now();
+        }
+        state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+      } catch (err) {
+        const wait = floodWaitSeconds(err);
+        if (wait) {
+          const until = applyFloodWait(state, account.id, wait);
+          console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; resumeAt=${new Date(until).toISOString()}`);
+          writeState(uid, state);
+          break;
+        }
         failTask(task, err);
         state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
       }
+
+      writeState(uid, state);
+      if (!hasPendingForAccount(state, account.id) || slot >= MAX_JOINS_PER_SESSION - 1) break;
+
+      const waitMs = Math.max(0, Number(state.accountNextAt[String(account.id)] || 0) - Date.now());
+      if (waitMs > 0) await delay(waitMs);
     }
   } finally {
     try { await client?.disconnect(); } catch {}
     writeState(uid, state);
+    if (completedAny) void runDestinationPreparationTick();
   }
 }
 
@@ -397,8 +422,8 @@ export function startDestinationJoinWorker() {
   if (workerTimer) return workerTimer;
   workerTimer = setInterval(() => void runDestinationJoinTick(), WORKER_INTERVAL_MS);
   workerTimer.unref?.();
-  setTimeout(() => void runDestinationJoinTick(), 500).unref?.();
-  console.log("TelePilot destination join queue enabled (durable, flood-aware, paced)");
+  setTimeout(() => void runDestinationJoinTick(), 250).unref?.();
+  console.log("TelePilot destination join queue enabled (durable, flood-aware, fast burst)");
   return workerTimer;
 }
 
