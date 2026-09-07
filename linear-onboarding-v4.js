@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Api as GrammyApi } from "grammy";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
@@ -287,6 +288,10 @@ export function installLinearOnboardingV4(BotClass) {
   const originalCommand = BotClass.prototype.command;
   const originalStart = BotClass.prototype.start;
   if (typeof originalCommand !== "function" || typeof originalStart !== "function") throw new Error("Unsupported grammY Bot shape for linear onboarding v4");
+  // Install the API transformer here, before startup adds the general UI wrappers.
+  // That makes this the final-output decorator: v1.3 builds the screen first, then
+  // this layer adds the dashboard access/community row without being overwritten.
+  installLinearOnboardingV4Ui(GrammyApi);
   Object.defineProperty(BotClass.prototype, "__telepilotLinearOnboardingV4Installed", { value: true });
 
   BotClass.prototype.command = function(command, ...middleware) {
