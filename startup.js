@@ -11,6 +11,7 @@ import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installDestinationPreparationUi } from "./destination-preparation-ui.js";
+import { installDestinationDeleteAll } from "./destination-delete-all-v1.js";
 import { startDestinationPreparationWorker } from "./destination-preparation-v1.js";
 import { startDestinationJoinWorker } from "./destination-join-queue-v1.js";
 import { startCleanupRejoinBridge } from "./destination-cleanup-rejoin-bridge.js";
@@ -78,6 +79,9 @@ installDestinationsV2InputPriority(Bot);
 // Telegram mutations live in a separate explicit action layer. It owns only d3_*
 // callbacks and never replaces the working scanner callbacks.
 installDestinationPreparationUi(Bot);
+// Delete-all is a focused d4_* destructive-control layer. It registers after
+// Destinations v2 so its enhanced d2_manage renderer gets callback priority.
+installDestinationDeleteAll(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
