@@ -16,7 +16,7 @@ const ALIASES = new Map([
   ["👁", ["👀"]], ["👁️", ["👀"]], ["🔎", ["👀"]], ["🔍", ["👀"]],
   ["⚙", ["💡"]], ["⚙️", ["💡"]], ["✨", ["💡"]], ["🧪", ["💡"]], ["ℹ️", ["💡"]], ["❓", ["💡"]],
   ["🔄", ["👀"]], ["↻", ["👀"]], ["🔁", ["👀"]], ["♻️", ["👀"]],
-  ["🚀", ["🔥"]], ["▶", ["🔥"]], ["▶️", ["🔥"]],
+  ["🚀", ["🔥"]],
   ["←", ["⬅️", "◀️", "↩️", "👀"]], ["⬅", ["⬅️", "◀️", "↩️", "👀"]], ["⬅️", ["⬅️", "◀️", "↩️", "👀"]],
   ["→", ["➡️", "▶️", "↪️", "👀"]], ["➡", ["➡️", "▶️", "↪️", "👀"]], ["➡️", ["➡️", "▶️", "↪️", "👀"]],
   ["◀", ["◀️", "⬅️", "↩️", "👀"]], ["◀️", ["◀️", "⬅️", "↩️", "👀"]],
@@ -85,7 +85,7 @@ function semanticCandidates(button) {
     [/stop|delete|remove|clear|revoke|disconnect|reset|cancel|close|disable|discard|expire|block/, ["❗"]],
     [/confirm|save|done|apply|approve|redeem|finish|complete|select|choose|enable|accept/, ["✅"]],
     [/refresh|retry|sync|recheck|reload|check access|check status|scan/, ["👀"]],
-    [/start|join|prepare|run|launch|continue|resume|activate|go live/, ["🔥"]],
+    [/start|join|prepar|run|launch|continue|resume|activate|go live/, ["🔥"]],
     [/account|sender|profile|phone|connect|user|member/, ["📱"]],
     [/access|key|security|admin|owner|staff|permission|login|session/, ["🪪"]],
     [/destination|group|folder|import|export|backup|restore|browse|library|archive/, ["📁"]],
@@ -106,7 +106,7 @@ function styleForButton(button) {
   const value = `${button?.text || ""} ${button?.callback_data || ""}`.toLowerCase();
   if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard|disable/.test(value)) return "danger";
   if (/confirm|save|done|apply|approve|redeem|finish|complete|start|launch|enable/.test(value)) return "success";
-  if (/add|create|new|connect|join|prepare|settings|tools|advanced|open|browse|preview/.test(value)) return "primary";
+  if (/add|create|new|connect|join|prepar|settings|tools|advanced|open|browse|preview/.test(value)) return "primary";
   return undefined;
 }
 
