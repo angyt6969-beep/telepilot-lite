@@ -26,11 +26,12 @@ assert.match(queueSource, /client\.joinChannel/);
 assert.match(queueSource, /Api\.channels\.JoinChannel/);
 assert.match(queueSource, /applyFloodWait/);
 assert.match(queueSource, /WORKER_INTERVAL_MS\s*=\s*500/);
-assert.match(queueSource, /BASE_JOIN_GAP_MS\s*=\s*750/);
-assert.match(queueSource, /INITIAL_JOIN_DELAY_MS\s*=\s*200/);
+assert.match(queueSource, /DEFAULT_JOIN_GAP_MS\s*=\s*1_500/);
 assert.match(queueSource, /MAX_JOINS_PER_SESSION\s*=\s*4/);
-assert.match(queueSource, /for \(let slot = 0; slot < MAX_JOINS_PER_SESSION; slot\+\+\)/);
-assert.match(queueSource, /fast burst/);
+assert.match(queueSource, /accountGapMs/);
+assert.match(queueSource, /gapAfterFloodWait/);
+assert.match(queueSource, /gapAfterSuccess/);
+assert.match(queueSource, /adaptive pacing/);
 assert.match(queueSource, /startDestinationJoinWorker/);
 assert.match(startupSource, /startDestinationJoinWorker\(\)/);
 assert.match(uiSource, /d3_join_status/);
@@ -83,8 +84,15 @@ assert.equal(queue.__test.candidateNeedsJoin(review.notJoined[0], "acc2"), false
 assert.equal(queue.floodWaitSeconds({ errorMessage: "FLOOD_WAIT_3" }), 3);
 assert.equal(queue.floodWaitSeconds({ seconds: 7 }), 7);
 
-// Faster local pacing must never weaken Telegram's own cooldown. A FLOOD_WAIT_3
-// still pauses all pending work for the account for 4 seconds including margin.
+// Telegram's cooldown is authoritative. A small wait slows the local pace, and
+// a long wait from the 91-group production test moves the account to a much more
+// conservative pace instead of repeating the same aggressive burst.
+assert.equal(queue.gapAfterFloodWait(1_500, 3), 2_500);
+assert.equal(queue.gapAfterFloodWait(1_500, 30), 4_000);
+assert.equal(queue.gapAfterFloodWait(1_500, 234), 8_000);
+assert.equal(queue.gapAfterSuccess(8_000), 7_750);
+assert.equal(queue.gapAfterSuccess(1_500), 1_500);
+
 const now = 1_000_000;
 const synthetic = {
   tasks: {
@@ -93,9 +101,11 @@ const synthetic = {
     "acc2:-1003": { accountId: "acc2", status: "pending", nextAt: 0, createdAt: 3 },
   },
   accountNextAt: {},
+  accountGapMs: {},
 };
-const resumeAt = queue.applyFloodWait(synthetic, "acc1", 3, now);
-assert.equal(resumeAt, now + 4_000);
+const resumeAt = queue.applyFloodWait(synthetic, "acc1", 234, now);
+assert.equal(resumeAt, now + 235_000);
+assert.equal(synthetic.accountGapMs.acc1, 8_000);
 assert.equal(synthetic.tasks["acc1:-1001"].status, "pending");
 assert.equal(synthetic.tasks["acc1:-1002"].status, "pending");
 assert.equal(synthetic.tasks["acc1:-1001"].nextAt, resumeAt);
@@ -105,15 +115,18 @@ assert.equal(queue.pickDueTask(synthetic, "acc1", resumeAt - 1), null);
 assert.equal(queue.pickDueTask(synthetic, "acc1", resumeAt)?.createdAt, 1);
 assert.equal(queue.pickDueTask(synthetic, "acc2", now)?.createdAt, 3);
 
+// Existing v1 queue files must remain readable across deployment. The new code
+// infers adaptive pacing from an already-persisted Telegram wait rather than
+// dropping or resetting the pending jobs.
 const userDir = path.join(root, "users", "42");
 fs.mkdirSync(userDir, { recursive: true });
 fs.writeFileSync(path.join(userDir, "destination-join-v1.json"), JSON.stringify({
   version: 1,
-  accountNextAt: {},
+  accountNextAt: { acc1: Date.now() + 10_000 },
   tasks: {
     done: { accountId: "acc1", candidate: { id: "-1001" }, status: "done", updatedAt: Date.now(), createdAt: Date.now() },
-    pending1: { accountId: "acc1", candidate: { id: "-1002" }, status: "pending", updatedAt: Date.now(), createdAt: Date.now() },
-    pending2: { accountId: "acc1", candidate: { id: "-1003" }, status: "pending", updatedAt: Date.now(), createdAt: Date.now() },
+    pending1: { accountId: "acc1", candidate: { id: "-1002" }, status: "pending", lastError: "Telegram asked to wait 234s", updatedAt: Date.now(), createdAt: Date.now() },
+    pending2: { accountId: "acc1", candidate: { id: "-1003" }, status: "pending", lastError: "Telegram asked to wait 234s", updatedAt: Date.now(), createdAt: Date.now() },
     request: { accountId: "acc1", candidate: { id: "-1004" }, status: "request_pending", updatedAt: Date.now(), createdAt: Date.now() },
     failed: { accountId: "acc1", candidate: { id: "-1005" }, status: "failed", updatedAt: Date.now(), createdAt: Date.now() },
   },
@@ -124,4 +137,4 @@ assert.deepEqual(
   { total: 5, joined: 1, pending: 2, requestPending: 1, failed: 1 },
 );
 
-console.log("TelePilot fast durable Addlist join queue checks passed");
+console.log("TelePilot adaptive durable Addlist join queue checks passed");
