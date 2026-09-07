@@ -27,14 +27,17 @@ assert.equal(enhancements.__test.preserveDestinationPeerMetadata(
 )[0].accessHash, "123");
 
 // Saved private Telegram peers should be usable without depending on a dialogs scan.
-const channelPeer = worker.__test.savedInputPeer({ id: "-100123456", accessHash: "987654321" });
+const channelPeer = worker.__test.savedInputPeer({ id: "-100123456", type: "supergroup", accessHash: "987654321" });
 assert.equal(channelPeer?.className, "InputPeerChannel");
 assert.equal(String(channelPeer?.channelId), "123456");
 assert.equal(String(channelPeer?.accessHash), "987654321");
-const chatPeer = worker.__test.savedInputPeer({ id: "-5555" });
+const chatPeer = worker.__test.savedInputPeer({ id: "-5555", type: "group" });
 assert.equal(chatPeer?.className, "InputPeerChat");
 assert.equal(String(chatPeer?.chatId), "5555");
-assert.equal(worker.__test.savedInputPeer({ id: "-100123456", accessHash: "" }), null);
+const prefixLikeBasicGroup = worker.__test.savedInputPeer({ id: "-100123", type: "group" });
+assert.equal(prefixLikeBasicGroup?.className, "InputPeerChat", "saved group type must win over a numeric -100 prefix lookalike");
+assert.equal(String(prefixLikeBasicGroup?.chatId), "100123");
+assert.equal(worker.__test.savedInputPeer({ id: "-100123456", type: "supergroup", accessHash: "" }), null);
 
 // A destination-specific failure must not mark the entire connected account unknown.
 assert.equal(worker.__test.accountStatusPatchForSendError(new Error("CHAT_WRITE_FORBIDDEN")), null);
