@@ -9,6 +9,14 @@ import {
   joinQueueSummary,
   runDestinationJoinTick,
 } from "./destination-join-queue-v1.js";
+import {
+  canPrepareReview,
+  expiredAddlistMessage,
+  expiredAddlistOnly,
+  isExpiredAddlistError,
+  normalizedUnavailable,
+  reviewCouldNotUseCount,
+} from "./expired-addlist-guard.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const REVIEW_TTL_MS = 30 * 60_000;
@@ -40,14 +48,32 @@ function inline(text, callback_data) { return { text, callback_data }; }
 function keyboard(rows) { return { inline_keyboard: rows.filter(row => Array.isArray(row) && row.length) }; }
 function errorText(err) { return String(err?.errorMessage || err?.description || err?.message || err || "Unknown Telegram error").slice(0, 220); }
 
+function expiredScreen(review) {
+  return {
+    text: [
+      "⚠️ Addlist link expired",
+      "",
+      expiredAddlistMessage(),
+      "",
+      "No groups were joined, saved, muted or archived.",
+    ].join("\n"),
+    rows: [
+      [inline("🔄 Scan fresh Addlist", "d2_add")],
+      review?.token ? [inline("View details", `d3_skipped:${review.token}`)] : [],
+      [inline("← Destination Hub", "v1_destinations_v13")],
+    ],
+  };
+}
+
 function reviewScreen(review) {
   const accessible = review?.accessible?.length || 0;
   const notJoined = review?.notJoined?.length || 0;
   const unsupported = review?.unsupported?.length || 0;
-  const invalid = (review?.invalid?.length || 0) + (review?.unavailable?.length || 0);
+  const invalid = reviewCouldNotUseCount(review);
   const forums = (review?.accessible || []).filter(item => item.forum).length;
   const sample = (review?.accessible || []).slice(0, 6).map(item => `✅ ${item.username || item.label}`).join("\n");
-  const canPrepare = Boolean(review?.sourceText);
+  const expiredOnly = expiredAddlistOnly(review);
+  const canPrepare = canPrepareReview(review);
   return {
     text: [
       "🔎 Review scan",
@@ -58,13 +84,17 @@ function reviewScreen(review) {
       unsupported ? `Unsupported  ${unsupported}` : null,
       invalid ? `Could not use  ${invalid}` : null,
       "",
-      sample || "No accessible groups were found yet.",
+      sample || (expiredOnly ? "The shared-folder link is no longer usable." : "No accessible groups were found yet."),
       accessible > 6 ? `… and ${accessible - 6} more` : null,
       "",
-      canPrepare ? "Choose Join + prepare. Missing Addlist groups are placed into a paced join queue; confirmed groups then enter mute + archive cleanup." : "Scan again to enable preparation.",
+      expiredOnly
+        ? expiredAddlistMessage()
+        : canPrepare
+          ? "Choose Join + prepare. Missing Addlist groups are placed into a paced join queue; confirmed groups then enter mute + archive cleanup."
+          : "Scan again to enable preparation.",
     ].filter(Boolean).join("\n"),
     rows: [
-      canPrepare ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
+      expiredOnly ? [inline("🔄 Scan fresh Addlist", "d2_add")] : canPrepare ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
       accessible ? [inline(`Add ${accessible} accessible only`, `d2_confirm:${review.token}`)] : [],
       notJoined || invalid || unsupported ? [inline("View not added", `d3_skipped:${review.token}`)] : [],
       [inline("Cancel", "v1_destinations_v13")],
@@ -76,7 +106,7 @@ function skippedScreen(review) {
   for (const item of review?.notJoined || []) lines.push(`↗️ ${item.username || item.label}\nNot joined yet.`);
   for (const item of review?.unsupported || []) lines.push(`⚠️ ${item.username || item.label}\nUnsupported destination type.`);
   for (const item of review?.invalid || []) lines.push(`❌ ${String(item.original || "Input").slice(0, 60)}\n${item.reason}`);
-  for (const item of review?.unavailable || []) lines.push(`❌ ${String(item.original || "Input").slice(0, 60)}\n${item.reason}`);
+  for (const item of normalizedUnavailable(review)) lines.push(`❌ ${String(item.original || "Input").slice(0, 60)}\n${item.reason}`);
   return {
     text: ["↗️ Not ready yet", "", lines.slice(0, 12).join("\n\n") || "Nothing was skipped.", lines.length > 12 ? `\n…and ${lines.length - 12} more` : ""].join("\n"),
     rows: [[inline("← Review", `d3_review:${review.token}`)]],
@@ -152,6 +182,10 @@ export function installDestinationPreparationUi(BotClass) {
           await ctx.answerCallbackQuery({ text: "That scan expired. Scan the destinations again.", show_alert: true });
           return editOrReply(ctx, { text: "⌛ Scan expired\n\nOpen Destination Hub and scan the sources again.", rows: [[inline("← Destination Hub", "v1_destinations_v13")]] });
         }
+        if (expiredAddlistOnly(review)) {
+          await ctx.answerCallbackQuery({ text: "This Addlist link has expired. Scan a fresh link instead.", show_alert: true });
+          return editOrReply(ctx, expiredScreen(review));
+        }
         if (running.has(uid)) return ctx.answerCallbackQuery({ text: "Preparation is already running." });
 
         running.add(uid);
@@ -170,15 +204,25 @@ export function installDestinationPreparationUi(BotClass) {
           const notJoined = result.postReview?.notJoined?.length || 0;
           const failures = result.failures?.length || 0;
           const topics = Number(result.saved?.topics || 0);
+          const added = Number(result.saved?.added || 0);
+          const existing = Number(result.saved?.existing || 0);
           const joinSummary = joinQueueSummary(uid);
           const joinActive = joinSummary.pending > 0;
+          const expiredFailure = (result.failures || []).find(isExpiredAddlistError);
+          const expiredNoProgress = Boolean(expiredFailure) && ready === 0 && added === 0 && existing === 0 && !joinSummary.total;
+
+          if (expiredNoProgress) {
+            await editOrReply(ctx, expiredScreen({ ...result.postReview, token: result.postReview?.token || review.token }));
+            return;
+          }
+
           await editOrReply(ctx, {
             text: [
               joinActive ? "⏳ Join preparation started" : "✅ Join stage finished",
               "",
               `Ready immediately  ${ready}`,
-              `New saved immediately  ${result.saved?.added || 0}`,
-              `Already saved  ${result.saved?.existing || 0}`,
+              `New saved immediately  ${added}`,
+              `Already saved  ${existing}`,
               topics ? `Topics to choose  ${topics}` : null,
               joinSummary.total ? `Join queue  ${joinSummary.joined}/${joinSummary.total}` : null,
               joinSummary.pending ? `Waiting to join  ${joinSummary.pending}` : null,
@@ -192,9 +236,12 @@ export function installDestinationPreparationUi(BotClass) {
               joinActive
                 ? "The remaining joins continue automatically. Each confirmed group is saved, muted and archived without restarting the import."
                 : "Mute and archive run only for Telegram-confirmed members.",
-              failures ? `\nFirst folder-level error: ${result.failures[0]}` : null,
+              expiredFailure
+                ? `\nOne shared-folder link expired. Scan a fresh t.me/addlist/... link to recover that source.`
+                : failures ? `\nFirst folder-level error: ${result.failures[0]}` : null,
             ].filter(Boolean).join("\n"),
             rows: [
+              expiredFailure ? [inline("🔄 Scan fresh Addlist", "d2_add")] : [],
               joinSummary.total ? [inline("⚡ Join status", "d3_join_status"), inline("🧹 Cleanup status", "d3_cleanup_status")] : [inline("🧹 Cleanup status", "d3_cleanup_status")],
               topics ? [inline("💬 Choose topics", "d2_topics:0")] : [],
               [inline("📚 Browse", "d2_browse:0")],
@@ -202,10 +249,14 @@ export function installDestinationPreparationUi(BotClass) {
             ],
           });
         } catch (err) {
-          await editOrReply(ctx, {
-            text: `❌ Preparation stopped\n\n${errorText(err)}\n\nThe read-only scanner remains unchanged. You can retry this preparation without rebuilding the Destination Hub.`,
-            rows: [[inline("← Review", `d3_review:${token}`)], [inline("← Destination Hub", "v1_destinations_v13")]],
-          });
+          if (isExpiredAddlistError(err)) {
+            await editOrReply(ctx, expiredScreen(review));
+          } else {
+            await editOrReply(ctx, {
+              text: `❌ Preparation stopped\n\n${errorText(err)}\n\nThe read-only scanner remains unchanged. You can retry this preparation without rebuilding the Destination Hub.`,
+              rows: [[inline("← Review", `d3_review:${token}`)], [inline("← Destination Hub", "v1_destinations_v13")]],
+            });
+          }
         } finally {
           running.delete(uid);
         }
@@ -237,3 +288,9 @@ export function installDestinationPreparationUi(BotClass) {
   };
   console.log("TelePilot destination preparation UI enabled");
 }
+
+export const __test = {
+  reviewScreen,
+  skippedScreen,
+  expiredScreen,
+};

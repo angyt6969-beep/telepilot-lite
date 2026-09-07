@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { scanDestinationSources } from "./destinations-v2.js";
+import {
+  canPrepareReview,
+  expiredAddlistMessage,
+  expiredAddlistOnly,
+  reviewCouldNotUseCount,
+} from "./expired-addlist-guard.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const INPUT_TTL_MS = 20 * 60_000;
@@ -39,9 +45,11 @@ function reviewScreen(review) {
   const accessible = review?.accessible?.length || 0;
   const notJoined = review?.notJoined?.length || 0;
   const unsupported = review?.unsupported?.length || 0;
-  const invalid = (review?.invalid?.length || 0) + (review?.unavailable?.length || 0);
+  const invalid = reviewCouldNotUseCount(review);
   const forums = (review?.accessible || []).filter(item => item.forum).length;
   const sample = (review?.accessible || []).slice(0, 6).map(item => `✅ ${item.username || item.label}`).join("\n");
+  const expiredOnly = expiredAddlistOnly(review);
+  const canPrepare = canPrepareReview(review);
   return {
     text: [
       "🔎 Review scan",
@@ -52,13 +60,17 @@ function reviewScreen(review) {
       unsupported ? `Unsupported  ${unsupported}` : null,
       invalid ? `Could not use  ${invalid}` : null,
       "",
-      sample || "No accessible groups were found yet.",
+      sample || (expiredOnly ? "The shared-folder link is no longer usable." : "No accessible groups were found yet."),
       accessible > 6 ? `… and ${accessible - 6} more` : null,
       "",
-      "Nothing has been changed yet. Join + prepare will join missing groups, then queue mute + archive only for Telegram-confirmed members.",
+      expiredOnly
+        ? expiredAddlistMessage()
+        : canPrepare
+          ? "Nothing has been changed yet. Join + prepare will join missing groups, then queue mute + archive only for Telegram-confirmed members."
+          : "Scan again to enable preparation.",
     ].filter(Boolean).join("\n"),
     rows: [
-      review?.sourceText ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
+      expiredOnly ? [inline("🔄 Scan fresh Addlist", "d2_add")] : canPrepare ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
       accessible ? [inline(`Add ${accessible} accessible only`, `d2_confirm:${review.token}`)] : [],
       notJoined || invalid || unsupported ? [inline("View not added", `d3_skipped:${review.token}`)] : [],
       [inline("Cancel", "v1_destinations_v13")],

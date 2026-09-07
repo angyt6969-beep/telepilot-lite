@@ -9,6 +9,7 @@ import {
 } from "./account-store.js";
 import { readAppSettings } from "./posting-engine-enhancements.js";
 import { parseDestinationInput } from "./destinations-v2.js";
+import { isExpiredAddlistError } from "./expired-addlist-guard.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
@@ -238,7 +239,9 @@ export function installAddlistBulkReimport(BotClass) {
         } catch (err) {
           console.warn(`TelePilot Addlist full reimport failed for ${uid}: ${errorText(err)}`);
           await ctx.answerCallbackQuery({
-            text: `Bulk import could not complete: ${errorText(err)}. The one-by-one fallback was not started. Retry after Telegram cooldowns clear.`,
+            text: isExpiredAddlistError(err)
+              ? "This shared-folder link has expired in Telegram. Copy a fresh t.me/addlist/... link and scan it again."
+              : `Bulk import could not complete: ${errorText(err)}. The one-by-one fallback was not started. Retry after Telegram cooldowns clear.`,
             show_alert: true,
           });
         }
