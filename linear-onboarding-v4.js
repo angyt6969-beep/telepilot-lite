@@ -8,7 +8,7 @@ const ADMIN_FILE = path.join(DATA_DIR, "telepilot-admin.json");
 const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
 const MAIN_CHANNEL_USERNAME = String(process.env.TELEPILOT_MAIN_CHANNEL_USERNAME || "").replace(/^@+/, "");
 
-// Known-good TelePilot custom emoji IDs already used by the project/owner.
+// Known-good custom emoji IDs already supplied/used for TelePilot.
 export const TUTORIAL_PLANE_EMOJI_ID = "5231361378748472914";
 export const TUTORIAL_CHECK_EMOJI_ID = "5206607081334906820";
 export const TUTORIAL_ACTION_EMOJI_ID = "5411590687663608498";
@@ -45,27 +45,22 @@ function isAdmin(uid) { return adminIds().has(String(uid || "")); }
 
 export function readLinearOnboarding(uid) {
   const saved = readJson(onboardingPath(uid), {});
-  if (saved.completed === true) {
-    return { version: 4, stage: "complete", completed: true, completedAt: Number(saved.completedAt || 0) || null };
-  }
-  const stage = saved.stage === "access" ? "access" : "tutorial";
-  return { version: 4, stage, completed: false, completedAt: null };
+  return {
+    version: 4,
+    completed: saved.completed === true,
+    completedAt: saved.completed === true ? (Number(saved.completedAt || 0) || null) : null,
+  };
 }
-function writeLinearOnboarding(uid, patch = {}) {
+export function markLinearOnboardingComplete(uid) {
   const id = String(uid || "");
   if (!/^\d+$/.test(id)) return;
   const current = readJson(onboardingPath(id), {});
-  const next = {
+  writeJson(onboardingPath(id), {
     ...current,
     version: 4,
-    stage: patch.completed === true ? "complete" : (patch.stage === "access" ? "access" : (patch.stage || current.stage || "tutorial")),
-    completed: patch.completed === true ? true : current.completed === true,
-    completedAt: patch.completed === true ? (Number(patch.completedAt || 0) || Date.now()) : (Number(current.completedAt || 0) || null),
-  };
-  writeJson(onboardingPath(id), next);
-}
-export function markLinearOnboardingComplete(uid) {
-  writeLinearOnboarding(uid, { completed: true, completedAt: Date.now(), stage: "complete" });
+    completed: true,
+    completedAt: Number(current.completedAt || 0) || Date.now(),
+  });
 }
 function accessActive(uid) {
   if (isAdmin(uid)) return true;
@@ -82,73 +77,84 @@ function channelUrl(username = MAIN_CHANNEL_USERNAME) {
   const clean = String(username || "").replace(/^@+/, "");
   return clean ? `https://t.me/${clean}` : "";
 }
-function premiumButton(text, callback_data, emojiId, extra = {}) {
+function premiumCallback(text, callback_data, emojiId, extra = {}) {
   return { text, callback_data, icon_custom_emoji_id: emojiId, ...extra };
 }
-function premiumUrlButton(text, url, emojiId) {
+function premiumUrl(text, url, emojiId) {
   return { text, url, icon_custom_emoji_id: emojiId };
+}
+function addEntity(entities, entity) {
+  if (!entities.some(row => row?.type === entity.type && row?.offset === entity.offset && row?.length === entity.length)) {
+    entities.push(entity);
+  }
+}
+function emphasizeAppendedLabel(text, entities, label) {
+  const offset = String(text).lastIndexOf(label);
+  if (offset < 0) return;
+  addEntity(entities, { type: "bold", offset, length: label.length });
+  addEntity(entities, { type: "italic", offset, length: label.length });
 }
 
 export function tutorialScreen(options = {}) {
   const support = String(options.supportUsername || SUPPORT_USERNAME).replace(/^@+/, "");
+  const alreadyActive = options.accessActive === true;
+  const action = alreadyActive
+    ? premiumCallback("Open Dashboard", "linear_onboarding_complete", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })
+    : premiumCallback("Redeem Key", "redeem_key", TUTORIAL_CHECK_EMOJI_ID, { style: "success" });
   return {
     text: [
       "✈️ <b><i>Welcome to TelePilot</i></b>",
       "",
-      "<i>Read this once before activating your access.</i>",
+      "<i>Read this quick guide once before opening your dashboard.</i>",
       "",
       "<b>Sender:</b> — Connect the Telegram account that will publish your posts.",
-      "<b>Destinations:</b> — Add the groups/channels where that account is allowed to post.",
+      "<b>Destinations:</b> — Add the groups and channels where that account is allowed to post.",
       "<b>Message:</b> — Create a normal post or use Forwarded Post.",
-      "<b>Timing:</b> — Choose an interval or an exact schedule.",
+      "<b>Timing:</b> — Choose a repeat interval or exact-time schedule.",
       "<b>Go live:</b> — Start once; TelePilot handles the posting cycles and tracks issues.",
       "",
-      "<b>Useful tools:</b> — Addlists, forum-topic routing, multiple accounts, Smart Preview, activity history and destination health are available from the dashboard.",
+      "<b>Power tools:</b> — Addlists, forum-topic routing, multiple accounts, Smart Preview, activity history and destination health are available inside TelePilot.",
       "",
-      `<i>Need help or an access key later? Message @${support}.</i>`,
+      `<i>Need an access key? Message @${support}.</i>`,
       "",
-      "<b>Next:</b> — Redeem your TelePilot access key."
+      alreadyActive ? "<b>Next:</b> — Open your dashboard." : "<b>Next:</b> — Redeem your TelePilot access key."
     ].join("\n"),
     other: {
       parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [[premiumButton("Continue", "linear_onboarding_continue", TUTORIAL_PLANE_EMOJI_ID, { style: "primary" })]],
-      },
+      reply_markup: { inline_keyboard: [[action]] },
     },
   };
 }
 
-export function accessScreen(options = {}) {
+export function redeemPromptScreen(options = {}) {
   const support = String(options.supportUsername || SUPPORT_USERNAME).replace(/^@+/, "");
   const channel = String(options.mainChannelUsername ?? MAIN_CHANNEL_USERNAME).replace(/^@+/, "");
-  const rows = [
-    [premiumButton("Redeem Key", "redeem_key", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })],
-    [premiumUrlButton("Get a Key", sellerUrl(support), TUTORIAL_ACTION_EMOJI_ID)],
-  ];
-  if (channel) rows.push([premiumUrlButton("Join Main Channel", channelUrl(channel), TUTORIAL_PLANE_EMOJI_ID)]);
+  const rows = [[premiumUrl("Get a Key", sellerUrl(support), TUTORIAL_ACTION_EMOJI_ID)]];
+  if (channel) rows[0].push(premiumUrl("Main Channel", channelUrl(channel), TUTORIAL_PLANE_EMOJI_ID));
   return {
     text: [
-      "🔑 <b><i>TelePilot Access</i></b>",
+      "🔑 <b><i>Redeem TelePilot Key</i></b>",
       "",
       "<b>Tutorial:</b> — Complete",
-      "<b>Access:</b> — Key required",
+      "<b>Access:</b> — Waiting for key",
       "",
-      "Tap <b>Redeem Key</b> and send the key you received.",
+      "Send your TelePilot access key below.",
       "",
       `<b>Need a key?</b> — Message @${support}.`,
       channel ? `<b>Main channel:</b> — Join @${channel} for TelePilot updates and announcements.` : null,
       "",
-      "<i>After a valid key is redeemed, TelePilot opens your dashboard.</i>",
+      "<i>Your key message is processed by TelePilot's existing protected redemption flow.</i>",
     ].filter(Boolean).join("\n"),
     other: { parse_mode: "HTML", reply_markup: { inline_keyboard: rows } },
   };
 }
 
 export function replayTutorialScreen() {
-  const screen = tutorialScreen();
-  screen.other.reply_markup.inline_keyboard = [[premiumButton("Dashboard", "v1_dashboard_v13", TUTORIAL_PLANE_EMOJI_ID, { style: "primary" })]];
-  screen.text = screen.text.replace("<i>Read this once before activating your access.</i>", "<i>A quick reference for your TelePilot setup.</i>")
-    .replace("<b>Next:</b> — Redeem your TelePilot access key.", "<b>Ready:</b> — Return to your dashboard when you are done reading.");
+  const screen = tutorialScreen({ accessActive: true });
+  screen.text = screen.text.replace(
+    "<i>Read this quick guide once before opening your dashboard.</i>",
+    "<i>A quick reference for your TelePilot setup.</i>",
+  );
   return screen;
 }
 
@@ -192,8 +198,15 @@ export function decorateLinearOnboardingPayload(chatId, text, other, options = {
   let value = String(text || "");
   let next = copyOther(other);
 
-  // app.js used to send Start Tutorial + Skip after first key redemption. Replace
-  // that legacy fork with the mandatory Tutorial -> Redeem Key -> Dashboard flow.
+  // Polish the existing secure key-input screen while preserving app.js' actual
+  // redemption state/rate limiting. Only its presentation is replaced.
+  if (/^🔑 REDEEM KEY/i.test(value)) {
+    const screen = redeemPromptScreen({ supportUsername: support, mainChannelUsername: channel });
+    return { text: screen.text, other: screen.other };
+  }
+
+  // app.js historically offered Start Tutorial + Skip after first redemption.
+  // A successful key now completes onboarding and exposes only the Dashboard.
   if (/^✅ ACCESS ACTIVATED/i.test(value)
       && (containsCallback(next, "tutorial:begin") || containsCallback(next, "tutorial:skip"))) {
     const details = activationDetails(value);
@@ -204,36 +217,49 @@ export function decorateLinearOnboardingPayload(chatId, text, other, options = {
       `<b>Plan:</b> — ${details.plan}`,
       `<b>Expires:</b> — ${details.expires}`,
       "",
-      "Your tutorial and access are complete.",
-      "<i>Open the dashboard to connect your sender and build your first posting setup.</i>",
+      "<b>Tutorial:</b> — Complete",
+      "<b>Access:</b> — Active",
+      "",
+      "<i>TelePilot is ready. Open the dashboard to connect your sender and build your posting setup.</i>",
     ].join("\n");
-    next = {
-      ...next,
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [[premiumButton("Open Dashboard", "v1_dashboard_v13", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })]],
+    return {
+      text: value,
+      other: {
+        ...next,
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [[premiumCallback("Open Dashboard", "v1_dashboard_v13", TUTORIAL_CHECK_EMOJI_ID, { style: "success" })]],
+        },
+        entities: undefined,
       },
     };
-    delete next.entities;
-    return { text: value, other: next };
   }
 
-  // Add lightweight purchase/community entry points to the current v1.3 dashboard.
+  // Add compact purchase/community entry points to the final v1.3 Dashboard.
   if (value.startsWith("✈️ TelePilot") && Array.isArray(next?.reply_markup?.inline_keyboard)) {
     const flat = next.reply_markup.inline_keyboard.flat();
     const looksLikeDashboard = flat.some(button => ["v1_posting_setup_v13", "v1_activity_v13"].includes(String(button?.callback_data || "")));
     if (looksLikeDashboard) {
-      const marker = "Need a key / renewal?";
-      if (!value.includes(marker)) {
-        value += `\n\n🔑 ${marker} — Message @${support}.`;
-        if (channel) value += `\n📢 Main channel: — Join @${channel} for updates.`;
+      const keyLabel = "Key / renewal:";
+      const channelLabel = "Main channel:";
+      if (!value.includes("Key / renewal: —")) {
+        value += `\n\n🔑 ${keyLabel} — Message @${support}.`;
+        if (channel) value += `\n📢 ${channelLabel} — Join @${channel} for updates.`;
       }
+      const entities = Array.isArray(next.entities) ? next.entities.map(entity => ({ ...entity })) : [];
+      emphasizeAppendedLabel(value, entities, keyLabel);
+      if (channel) emphasizeAppendedLabel(value, entities, channelLabel);
+      if (entities.length) {
+        delete next.parse_mode;
+        next.entities = entities.sort((a, b) => Number(a.offset || 0) - Number(b.offset || 0) || Number(a.length || 0) - Number(b.length || 0));
+      }
+
       const existing = new Set(flat.map(button => String(button?.url || "")));
       const row = [];
       const supportLink = sellerUrl(support);
       const mainLink = channelUrl(channel);
-      if (!existing.has(supportLink)) row.push(premiumUrlButton("Get / Renew Key", supportLink, TUTORIAL_ACTION_EMOJI_ID));
-      if (mainLink && !existing.has(mainLink)) row.push(premiumUrlButton("Main Channel", mainLink, TUTORIAL_PLANE_EMOJI_ID));
+      if (!existing.has(supportLink)) row.push(premiumUrl("Get / Renew Key", supportLink, TUTORIAL_ACTION_EMOJI_ID));
+      if (mainLink && !existing.has(mainLink)) row.push(premiumUrl("Main Channel", mainLink, TUTORIAL_PLANE_EMOJI_ID));
       if (row.length) {
         const adminIndex = next.reply_markup.inline_keyboard.findIndex(buttonRow => buttonRow.some(button => String(button?.callback_data || "") === "admin"));
         const insertAt = adminIndex >= 0 ? adminIndex : next.reply_markup.inline_keyboard.length;
@@ -246,16 +272,18 @@ export function decorateLinearOnboardingPayload(chatId, text, other, options = {
 }
 
 function registerLinearHandlers(bot) {
-  bot.callbackQuery("linear_onboarding_continue", async ctx => {
+  // Active legacy/admin users still read the page once, but never need to redeem a
+  // second key just to migrate from the older onboarding state.
+  bot.callbackQuery("linear_onboarding_complete", async ctx => {
     const uid = uidOf(ctx);
     if (!uid) return;
-    await ctx.answerCallbackQuery();
-    if (accessActive(uid)) {
-      markLinearOnboardingComplete(uid);
-      return openApp(ctx);
+    if (!accessActive(uid)) {
+      await ctx.answerCallbackQuery({ text: "Redeem an access key first.", show_alert: true });
+      return sendScreen(ctx, tutorialScreen(), true);
     }
-    writeLinearOnboarding(uid, { stage: "access" });
-    return sendScreen(ctx, accessScreen(), true);
+    markLinearOnboardingComplete(uid);
+    await ctx.answerCallbackQuery({ text: "Tutorial complete" });
+    return openApp(ctx);
   });
 
   bot.callbackQuery("tutorial_restart", async ctx => {
@@ -263,23 +291,19 @@ function registerLinearHandlers(bot) {
     return sendScreen(ctx, replayTutorialScreen(), true);
   });
 
-  // Compatibility with old tutorial messages that may still exist in chat.
-  // They no longer skip or branch into setup actions.
+  // Compatibility only for old tutorial messages that may still exist in a chat.
+  // These callbacks no longer mark onboarding complete or expose setup shortcuts.
   bot.callbackQuery("tutorial:skip", async ctx => {
     await ctx.answerCallbackQuery({ text: "The TelePilot tutorial cannot be skipped.", show_alert: true });
-    const uid = uidOf(ctx);
-    return sendScreen(ctx, readLinearOnboarding(uid).stage === "access" ? accessScreen() : tutorialScreen(), true);
+    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
   });
   bot.callbackQuery("tutorial:begin", async ctx => {
     await ctx.answerCallbackQuery();
-    return sendScreen(ctx, tutorialScreen(), true);
+    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
   });
   bot.callbackQuery(/^tutorial:(?:[1-7]|bot|personal|finish)$/, async ctx => {
     await ctx.answerCallbackQuery({ text: "The tutorial has been simplified." });
-    const uid = uidOf(ctx);
-    const state = readLinearOnboarding(uid);
-    if (state.completed) return sendScreen(ctx, replayTutorialScreen(), true);
-    return sendScreen(ctx, state.stage === "access" ? accessScreen() : tutorialScreen(), true);
+    return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uidOf(ctx)) }), true);
   });
 }
 
@@ -288,9 +312,10 @@ export function installLinearOnboardingV4(BotClass) {
   const originalCommand = BotClass.prototype.command;
   const originalStart = BotClass.prototype.start;
   if (typeof originalCommand !== "function" || typeof originalStart !== "function") throw new Error("Unsupported grammY Bot shape for linear onboarding v4");
-  // Install the API transformer here, before startup adds the general UI wrappers.
-  // That makes this the final-output decorator: v1.3 builds the screen first, then
-  // this layer adds the dashboard access/community row without being overwritten.
+
+  // Install against the raw grammY API before startup adds its normal UI wrappers.
+  // Later wrappers build the v1.3 screen first; this layer then sees the final
+  // payload and can append dashboard controls without them being overwritten.
   installLinearOnboardingV4Ui(GrammyApi);
   Object.defineProperty(BotClass.prototype, "__telepilotLinearOnboardingV4Installed", { value: true });
 
@@ -299,17 +324,8 @@ export function installLinearOnboardingV4(BotClass) {
     for (const handler of middleware) if (typeof handler === "function") appStartHandler = handler;
     const wrapped = middleware.map(handler => typeof handler !== "function" ? handler : async function(ctx, next) {
       const uid = uidOf(ctx);
-      if (!uid) return handler.call(this, ctx, next);
-      const state = readLinearOnboarding(uid);
-      if (state.completed) return handler.call(this, ctx, next);
-      if (state.stage === "access") {
-        if (accessActive(uid)) {
-          markLinearOnboardingComplete(uid);
-          return handler.call(this, ctx, next);
-        }
-        return sendScreen(ctx, accessScreen(), false);
-      }
-      return sendScreen(ctx, tutorialScreen(), false);
+      if (!uid || readLinearOnboarding(uid).completed) return handler.call(this, ctx, next);
+      return sendScreen(ctx, tutorialScreen({ accessActive: accessActive(uid) }), false);
     });
     return originalCommand.call(this, command, ...wrapped);
   };
