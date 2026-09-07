@@ -14,7 +14,8 @@ const USERS_DIR = path.join(DATA_DIR, "users");
 const STATE_VERSION = 1;
 const WORKER_INTERVAL_MS = 2_000;
 const BASE_JOIN_GAP_MS = 4_000;
-const MAX_JOIN_PER_ACCOUNT_TICK = 5;
+const INITIAL_JOIN_DELAY_MS = 1_000;
+const REQUEST_PENDING_RETRY_MS = 24 * 60 * 60_000;
 const MAX_ATTEMPTS = 6;
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAX_RECOVERY_PER_ACCOUNT = 200;
@@ -44,7 +45,6 @@ export function floodWaitSeconds(err) {
   const match = errorCode(err).match(/FLOOD_WAIT(?:_|\s|\(|:|-)*(\d+)/);
   return match ? Math.max(1, Number(match[1])) : 0;
 }
-function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function taskKey(accountId, destinationId) { return `${String(accountId)}:${String(destinationId)}`; }
 function cleanCandidate(candidate) {
   return {
@@ -107,41 +107,49 @@ export function enqueueJoinRecovery(uid, review) {
   const state = readState(uid);
   let created = 0;
   let requeued = 0;
+  let touched = false;
   const now = Date.now();
+
   for (const account of accounts) {
     const candidates = (review?.notJoined || [])
       .filter(candidate => candidateNeedsJoin(candidate, account.id))
       .slice(0, MAX_RECOVERY_PER_ACCOUNT);
+
     for (const candidate of candidates) {
       const key = taskKey(account.id, candidate.id);
       const existing = cleanTask(state.tasks[key]);
       if (existing) {
         existing.candidate = { ...existing.candidate, ...cleanCandidate(candidate) };
-        if (existing.status === "failed") {
+        const requestExpired = existing.status === "request_pending" && now - existing.updatedAt >= REQUEST_PENDING_RETRY_MS;
+        if (existing.status === "failed" || existing.status === "done" || requestExpired) {
           existing.status = "pending";
           existing.attempts = 0;
-          existing.nextAt = 0;
+          existing.nextAt = now + INITIAL_JOIN_DELAY_MS;
           existing.lastError = "";
           requeued++;
         }
         existing.updatedAt = now;
         state.tasks[key] = existing;
+        touched = true;
         continue;
       }
+
       state.tasks[key] = {
         accountId: String(account.id),
         candidate: cleanCandidate(candidate),
         status: "pending",
         attempts: 0,
-        nextAt: 0,
+        nextAt: now + INITIAL_JOIN_DELAY_MS,
         lastError: "",
         createdAt: now,
         updatedAt: now,
       };
       created++;
+      touched = true;
     }
   }
-  if (created || requeued) writeState(uid, state);
+
+  if (touched) writeState(uid, state);
   return { created, requeued, ...joinQueueSummary(uid) };
 }
 
@@ -192,7 +200,12 @@ async function joinCandidate(client, candidate) {
       return { status: "joined", method: "username" };
     }
     const channel = inputChannelFromCandidate(candidate);
-    if (!channel) return { status: "unsupported", reason: "Telegram did not provide enough access data to join this private Addlist chat directly." };
+    if (!channel) {
+      return {
+        status: "unsupported",
+        reason: "Telegram did not provide enough access data to join this private Addlist chat directly.",
+      };
+    }
     await client.invoke(new Api.channels.JoinChannel({ channel }));
     return { status: "joined", method: "input_channel" };
   } catch (err) {
@@ -222,6 +235,7 @@ function patchReviewReady(uid, task) {
   const id = String(task.candidate.id);
   const index = review.notJoined.findIndex(candidate => String(candidate?.id || "") === id);
   if (index < 0) return;
+
   const candidate = { ...review.notJoined[index] };
   candidate.accountJoin = {
     ...(candidate.accountJoin || {}),
@@ -233,6 +247,7 @@ function patchReviewReady(uid, task) {
   };
   const hasReady = Object.values(candidate.accountJoin).some(row => row?.status === "ready");
   if (!hasReady) return;
+
   review.notJoined = review.notJoined.filter((_, rowIndex) => rowIndex !== index);
   const accessible = Array.isArray(review.accessible) ? review.accessible.slice() : [];
   const existingIndex = accessible.findIndex(row => String(row?.id || "") === id);
@@ -242,11 +257,12 @@ function patchReviewReady(uid, task) {
   state.review = review;
   writeJsonAtomic(file, state);
 }
-function completeTask(uid, state, task) {
+function completeTask(uid, task) {
   const candidate = readyCandidate(task);
   const saved = saveReviewedDestinations(uid, { accessible: [candidate] });
   const cleanup = enqueueCleanup(uid, { accessible: [candidate] });
   patchReviewReady(uid, task);
+
   task.status = "done";
   task.nextAt = 0;
   task.lastError = "";
@@ -258,12 +274,13 @@ function normalRetryDelay(attempts) {
   return Math.min(30 * 60_000, Math.max(15_000, 15_000 * (2 ** Math.min(5, attempts))));
 }
 export function applyFloodWait(state, accountId, waitSeconds, now = Date.now()) {
-  const until = now + (Math.max(1, Number(waitSeconds || 0)) * 1000) + 1000;
+  const seconds = Math.max(1, Number(waitSeconds || 0));
+  const until = now + (seconds * 1000) + 1000;
   state.accountNextAt[String(accountId)] = Math.max(Number(state.accountNextAt[String(accountId)] || 0), until);
   for (const task of Object.values(state.tasks || {})) {
     if (String(task.accountId) !== String(accountId) || task.status !== "pending") continue;
     task.nextAt = Math.max(Number(task.nextAt || 0), until);
-    task.lastError = `Telegram asked to wait ${Math.max(1, Number(waitSeconds || 0))}s`;
+    task.lastError = `Telegram asked to wait ${seconds}s`;
     task.updatedAt = now;
   }
   return until;
@@ -289,50 +306,44 @@ export function pickDueTask(state, accountId, now = Date.now()) {
 }
 
 async function processAccount(uid, account, state) {
+  const task = pickDueTask(state, account.id);
+  if (!task) return;
+
   let client;
   try {
     client = await openClient(uid, account);
   } catch (err) {
-    const task = pickDueTask(state, account.id);
-    if (task) failTask(task, err);
+    failTask(task, err);
     writeState(uid, state);
     return;
   }
+
   try {
-    for (let processed = 0; processed < MAX_JOIN_PER_ACCOUNT_TICK; processed++) {
-      const task = pickDueTask(state, account.id);
-      if (!task) break;
-      try {
-        const outcome = await joinCandidate(client, task.candidate);
-        if (outcome.status === "joined") {
-          completeTask(uid, state, task);
-          state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
-        } else if (outcome.status === "request_pending") {
-          task.status = "request_pending";
-          task.nextAt = 0;
-          task.lastError = "Telegram sent a join request; approval is required.";
-          task.updatedAt = Date.now();
-          state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
-        } else {
-          task.status = "failed";
-          task.nextAt = 0;
-          task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
-          task.updatedAt = Date.now();
-        }
-      } catch (err) {
-        const wait = floodWaitSeconds(err);
-        if (wait) {
-          const until = applyFloodWait(state, account.id, wait);
-          console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; resumeAt=${new Date(until).toISOString()}`);
-          writeState(uid, state);
-          break;
-        }
+    try {
+      const outcome = await joinCandidate(client, task.candidate);
+      if (outcome.status === "joined") {
+        completeTask(uid, task);
+      } else if (outcome.status === "request_pending") {
+        task.status = "request_pending";
+        task.nextAt = 0;
+        task.lastError = "Telegram sent a join request; approval is required.";
+        task.updatedAt = Date.now();
+      } else {
+        task.status = "failed";
+        task.nextAt = 0;
+        task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
+        task.updatedAt = Date.now();
+      }
+      state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+    } catch (err) {
+      const wait = floodWaitSeconds(err);
+      if (wait) {
+        const until = applyFloodWait(state, account.id, wait);
+        console.warn(`TelePilot join queue flood wait for ${uid}/${account.id}: ${wait}s; resumeAt=${new Date(until).toISOString()}`);
+      } else {
         failTask(task, err);
         state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
       }
-      writeState(uid, state);
-      const waitMs = Math.max(0, Number(state.accountNextAt[String(account.id)] || 0) - Date.now());
-      if (waitMs > 0 && processed < MAX_JOIN_PER_ACCOUNT_TICK - 1) await delay(waitMs);
     }
   } finally {
     try { await client?.disconnect(); } catch {}
@@ -346,13 +357,24 @@ export async function runDestinationJoinTick() {
   workerRunning = true;
   try {
     let userIds = [];
-    try { userIds = fs.readdirSync(USERS_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name); }
-    catch { return; }
+    try {
+      userIds = fs.readdirSync(USERS_DIR, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name);
+    } catch {
+      return;
+    }
+
     for (const uid of userIds) {
       if (!fs.existsSync(statePath(uid))) continue;
       const state = readState(uid);
-      const pendingAccountIds = [...new Set(Object.values(state.tasks).filter(task => task.status === "pending").map(task => String(task.accountId)))];
+      const pendingAccountIds = [...new Set(
+        Object.values(state.tasks)
+          .filter(task => task.status === "pending")
+          .map(task => String(task.accountId)),
+      )];
       if (!pendingAccountIds.length) continue;
+
       const accounts = listAccounts(uid);
       for (const accountId of pendingAccountIds.slice(0, 1)) {
         const account = accounts.find(row => String(row.id) === accountId);
