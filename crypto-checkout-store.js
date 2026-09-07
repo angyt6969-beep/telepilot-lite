@@ -43,8 +43,10 @@ function seal(value, label, secret = SECURITY_SECRET) {
 }
 function unseal(value, label, secret = SECURITY_SECRET) {
   try {
-    const raw = Buffer.from(String(value || ""), "base64url");
-    if (raw.length < 29) return "";
+    const encoded = String(value || "");
+    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return "";
+    const raw = Buffer.from(encoded, "base64url");
+    if (raw.length < 29 || raw.toString("base64url") !== encoded) return "";
     const decipher = crypto.createDecipheriv("aes-256-gcm", derive(label, secret), raw.subarray(0, 12));
     decipher.setAuthTag(raw.subarray(12, 28));
     return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8");
