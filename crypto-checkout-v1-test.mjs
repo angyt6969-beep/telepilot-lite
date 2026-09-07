@@ -53,6 +53,23 @@ assert.equal(createBody.price_currency, "usd");
 assert.equal(createBody.pay_currency, "ton");
 assert.equal(createBody.case, "success");
 
+// Internal test mode is an explicit sandbox-only provider substitute. It must
+// never contact NOWPayments and must never report configured in production.
+const noNetwork = async () => { throw new Error("internal payment test attempted network access"); };
+assert.equal(provider.nowPaymentsConfigured({ mode: "sandbox", apiKey: "", internalTest: true }), true);
+assert.equal(provider.nowPaymentsConfigured({ mode: "production", apiKey: "", internalTest: true }), false);
+const internalProviderOrder = await provider.createNowPayment({
+  orderId: "TPP-INTERNAL12", priceAmount: 5, payCurrency: "sol", description: "TelePilot internal test",
+}, { mode: "sandbox", internalTest: true, now: 2_000_000, randomInt: () => 42, fetchImpl: noNetwork });
+assert.match(internalProviderOrder.paymentId, /^9\d{16}$/);
+assert.equal(internalProviderOrder.status, "waiting");
+assert.equal(internalProviderOrder.payAmount, "0");
+assert.equal(internalProviderOrder.payAddress, "INTERNAL-TEST-NO-PAYMENT-REQUIRED");
+assert.equal((await provider.getNowPayment(internalProviderOrder.paymentId, { mode: "sandbox", internalTest: true, now: 2_001_000, fetchImpl: noNetwork })).status, "waiting");
+assert.equal((await provider.getNowPayment(internalProviderOrder.paymentId, { mode: "sandbox", internalTest: true, now: 2_003_000, fetchImpl: noNetwork })).status, "finished");
+assert.equal(service.paymentAllowed("12345", "sandbox"), true);
+assert.equal(service.paymentAllowed("99999", "sandbox"), false);
+
 const issued = issuer.issuePaymentKey({ orderId: "TPP-KEYTEST12", uid: "12345", durationDays: 30, lifetime: false, providerPaymentId: "55" }, { dataDir: temp, secret });
 assert.match(issued.key, /^TP-[A-Z2-9]{5}(?:-[A-Z2-9]{5}){3}$/);
 assert.equal(issued.record.boundTo, "12345");
@@ -84,6 +101,47 @@ await service.refreshPaymentOrder(paymentOrder.id, {
   notifyKey: async (order, key) => delivered.push({ order: order.id, key }),
 });
 assert.equal(delivered.length, 1, "finished payment must not issue/deliver a second key");
+
+// Full internal simulation: real TelePilot order -> waiting -> finished -> one
+// real UID-bound key -> one delivery, with a network function that always fails
+// if accidentally called.
+const internalDir = path.join(temp, "internal-test");
+const internalDelivered = [];
+const internalOrder = await service.createPaymentOrder("12345", "7d", "sol", {
+  mode: "sandbox", internalTest: true, now: 3_000_000, randomInt: () => 7,
+  fetchImpl: noNetwork, dataDir: internalDir, secret,
+  notifyKey: async (order, key) => internalDelivered.push({ order: order.id, key }),
+});
+assert.equal(internalOrder.providerStatus, "waiting");
+assert.equal(internalOrder.payAmount, "0");
+assert.equal(internalDelivered.length, 0);
+const internalWaiting = await service.refreshPaymentOrder(internalOrder.id, {
+  mode: "sandbox", internalTest: true, now: 3_001_000, force: true,
+  fetchImpl: noNetwork, dataDir: internalDir, secret,
+  notifyKey: async (order, key) => internalDelivered.push({ order: order.id, key }),
+});
+assert.equal(internalWaiting.providerStatus, "waiting");
+assert.equal(internalDelivered.length, 0);
+const internalFinished = await service.refreshPaymentOrder(internalOrder.id, {
+  mode: "sandbox", internalTest: true, now: 3_003_000, force: true,
+  fetchImpl: noNetwork, dataDir: internalDir, secret,
+  notifyKey: async (order, key) => internalDelivered.push({ order: order.id, key }),
+});
+assert.equal(internalFinished.providerStatus, "finished");
+assert.ok(internalFinished.keyIssuedAt > 0);
+assert.ok(internalFinished.keySentAt > 0);
+assert.equal(internalDelivered.length, 1);
+assert.match(internalDelivered[0].key, /^TP-/);
+const internalDb = JSON.parse(fs.readFileSync(path.join(internalDir, "access-keys.json"), "utf8"));
+const internalRecord = internalDb.keys.find(row => row.paymentOrderId === internalOrder.id);
+assert.equal(internalRecord.boundTo, "12345");
+assert.equal(fs.readFileSync(path.join(internalDir, "access-keys.json"), "utf8").includes(internalDelivered[0].key), false);
+await service.refreshPaymentOrder(internalOrder.id, {
+  mode: "sandbox", internalTest: true, now: 3_010_000, force: true,
+  fetchImpl: noNetwork, dataDir: internalDir, secret,
+  notifyKey: async (order, key) => internalDelivered.push({ order: order.id, key }),
+});
+assert.equal(internalDelivered.length, 1, "internal simulation must not issue or deliver duplicate keys");
 
 const recoveryIssued = issuer.issuePaymentKey({ orderId: "TPP-RECOVERY12", uid: "12345", durationDays: 7, lifetime: false, providerPaymentId: "777" }, { dataDir: temp, secret });
 store.putOrder({
