@@ -31,11 +31,16 @@ assert.match(source, /getChatlistUpdates/);
 assert.match(source, /joinChatlistUpdates/);
 assert.match(source, /UpdateNotifySettings/);
 assert.match(source, /EditPeerFolders/);
+assert.match(source, /archiveReady\.length >= ARCHIVE_BATCH_SIZE/);
 assert.match(inputSource, /d3_prepare:/);
 assert.match(startupSource, /installDestinationPreparationUi\(Bot\)/);
 assert.match(startupSource, /startDestinationPreparationWorker\(\)/);
 
 const mod = await import(`./destination-preparation-v1.js?test=${Date.now()}`);
+const ui = await import(`./destination-preparation-ui.js?test=${Date.now()}`);
+assert.equal(typeof mod.startDestinationPreparationWorker, "function");
+assert.equal(typeof mod.prepareReviewedSources, "function");
+assert.equal(typeof ui.installDestinationPreparationUi, "function");
 
 // Test doubles: these are minimal Telegram chat/peer-shaped objects used only to
 // verify peer construction. In particular, min=true reproduces the shape that
