@@ -61,10 +61,10 @@ function valueAfterLabel(line, label) {
 }
 
 function statusFrom(text) {
-  const value = String(text || "").toUpperCase();
-  if (value.includes("PAUSED")) return "PAUSED";
-  if (value.includes("● LIVE") || /\bLIVE\b/.test(value)) return "LIVE";
-  if (value.includes("● READY") || /\bREADY\b/.test(value)) return "READY";
+  const header = linesOf(text).slice(0, 3).join(" ").toUpperCase();
+  if (/\bPAUSED\b/.test(header)) return "PAUSED";
+  if (/\bLIVE\b/.test(header)) return "LIVE";
+  if (/\bREADY\b/.test(header)) return "READY";
   return "SETUP";
 }
 
@@ -275,7 +275,7 @@ function renameAdvancedNavigation(text, other) {
 
 export function cleanupTelePilotUi(text, other) {
   const value = String(text || "");
-  if (value.startsWith("✈️ TelePilot") && /(SETUP|READY|LIVE|PAUSED)/i.test(value) && /Sender/i.test(value) && /Destinations/i.test(value)) {
+  if (value.startsWith("✈️ TelePilot") && /(SETUP|READY|LIVE|PAUSED)/i.test(linesOf(value).slice(0, 3).join(" ")) && /Sender/i.test(value) && /Destinations/i.test(value)) {
     return simplifyDashboard(value, other);
   }
   if (value.startsWith("📝 Posting Setup")) return compactPostingSetup(value, other);
