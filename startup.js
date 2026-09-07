@@ -42,6 +42,10 @@ import {
   configureDeepPremiumEmojiStickers,
   installDeepPremiumEmojiEnhancements,
 } from "./premium-deep-ui.js";
+import {
+  configureGlobalUiPolishStickers,
+  installGlobalUiPolish,
+} from "./global-ui-polish.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
@@ -76,6 +80,9 @@ installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 installPrivatePeerResolution(TelegramClient);
 
+// Install the gap-fill layer first so it is innermost. Existing page-specific
+// wrappers run before it and keep full priority over pages/buttons they already polish.
+installGlobalUiPolish(Api);
 installOwnerControlsUi(Api);
 installUxV13VisualPolish(Api);
 installDeepPremiumEmojiEnhancements(Api);
@@ -99,7 +106,8 @@ try {
   const stickers = await profileBot.api.raw.getForumTopicIconStickers();
   const palette = configurePremiumEmojiStickers(stickers);
   const deepPalette = configureDeepPremiumEmojiStickers(stickers);
-  console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available; deep UI ${deepPalette.enabled ? "enabled" : "disabled"}`);
+  const globalPalette = configureGlobalUiPolishStickers(stickers);
+  console.log(`TelePilot premium emoji palette loaded: ${palette.selected}/${palette.available} preferred icons available; deep UI ${deepPalette.enabled ? "enabled" : "disabled"}; global gap-fill ${globalPalette.enabled ? "enabled" : "disabled"}`);
 } catch (err) {
   console.warn("Could not load Telegram premium emoji palette; using standard emoji UI:", err?.message || err);
 }
