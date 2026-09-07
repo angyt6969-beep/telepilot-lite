@@ -8,6 +8,7 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationsV2, destinationsHomeScreen } from "./destinations-v2.js";
 import { installDestinationHealthV3 } from "./destination-health-v3.js";
+import { installDestinationMembershipV4 } from "./destination-membership-v4.js";
 import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
@@ -98,6 +99,9 @@ installDestinationsV2(Bot);
 // Destination health v3 is installed after Destinations v2 so its Bot.start
 // wrapper registers the enhanced hub/issues callbacks first at runtime.
 installDestinationHealthV3(Bot, destinationsHomeScreen);
+// Membership v4 is installed last among destination Bot.start wrappers so it
+// registers exact d2_refresh/d5 issue handlers first at runtime. It never joins.
+installDestinationMembershipV4(Bot);
 // Bind before app.js registers its legacy message:text handler so destination
 // input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
