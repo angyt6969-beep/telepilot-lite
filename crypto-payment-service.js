@@ -87,12 +87,11 @@ export async function fulfillOrder(orderId, options = {}) {
         lifetime: planFor(order.planId)?.lifetime === true,
         providerPaymentId: order.providerPaymentId,
       }, options);
-      if (issued.alreadyIssued) throw new Error("Existing payment key could not be recovered safely");
       key = issued.key;
       order = findOrder(order.id, dataDir) || order;
       order.keyId = issued.record.id;
       order.encryptedKey = issued.encryptedKey;
-      order.keyIssuedAt = Date.now();
+      order.keyIssuedAt = Number(order.keyIssuedAt || 0) || Date.now();
       order.updatedAt = Date.now();
       putOrder(order, dataDir);
     }
