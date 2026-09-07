@@ -384,6 +384,18 @@ async function processAccountCleanup(uid, account, state, tasks) {
   let client;
   try {
     client = await openAccountClient(uid, account);
+  } catch (err) {
+    const now = Date.now();
+    for (const task of tasks) {
+      if (task.mute.status === "pending" && task.mute.nextAt <= now) failStep(task.mute, err);
+      else if (task.mute.status === "done" && task.archive.status === "pending" && task.archive.nextAt <= now) failStep(task.archive, err);
+      task.updatedAt = Date.now();
+    }
+    writePrepState(uid, state);
+    throw err;
+  }
+
+  try {
     const now = Date.now();
     const muteDue = tasks.filter(task => task.mute.status === "pending" && task.mute.nextAt <= now).slice(0, MUTES_PER_ACCOUNT_TICK);
     for (let index = 0; index < muteDue.length; index++) {
@@ -403,10 +415,12 @@ async function processAccountCleanup(uid, account, state, tasks) {
       if (index < muteDue.length - 1) await delay(650);
     }
 
-    const archiveDue = tasks
-      .filter(task => task.mute.status === "done" && task.archive.status === "pending" && task.archive.nextAt <= Date.now())
-      .slice(0, ARCHIVE_BATCH_SIZE);
-    if (archiveDue.length) {
+    const archiveReady = tasks
+      .filter(task => task.mute.status === "done" && task.archive.status === "pending" && task.archive.nextAt <= Date.now());
+    const muteOutstanding = tasks.some(task => task.mute.status === "pending");
+    const shouldArchive = archiveReady.length > 0 && (!muteOutstanding || archiveReady.length >= ARCHIVE_BATCH_SIZE);
+    if (shouldArchive) {
+      const archiveDue = archiveReady.slice(0, ARCHIVE_BATCH_SIZE);
       const result = await archiveTasks(client, archiveDue);
       if (!result.error) {
         for (const task of result.used) {
@@ -441,7 +455,8 @@ export async function runDestinationPreparationTick() {
     for (const uid of userIds) {
       if (!fs.existsSync(prepPath(uid))) continue;
       const state = readPrepState(uid);
-      const due = Object.values(state.tasks).filter(task => {
+      const allTasks = Object.values(state.tasks);
+      const due = allTasks.filter(task => {
         const now = Date.now();
         return (task.mute.status === "pending" && task.mute.nextAt <= now)
           || (task.mute.status === "done" && task.archive.status === "pending" && task.archive.nextAt <= now);
@@ -451,16 +466,17 @@ export async function runDestinationPreparationTick() {
       const accountIds = [...new Set(due.map(task => task.accountId))];
       for (const accountId of accountIds.slice(0, 1)) {
         const account = accounts.find(row => String(row.id) === String(accountId));
-        const tasks = due.filter(task => String(task.accountId) === String(accountId));
+        const accountTasks = allTasks.filter(task => String(task.accountId) === String(accountId));
         if (!account) {
-          for (const task of tasks) {
-            if (task.mute.status === "pending") failStep(task.mute, new Error("Connected account no longer exists"));
-            if (task.archive.status === "pending") failStep(task.archive, new Error("Connected account no longer exists"));
+          for (const task of accountTasks) {
+            if (task.mute.status === "pending" && task.mute.nextAt <= Date.now()) failStep(task.mute, new Error("Connected account no longer exists"));
+            else if (task.mute.status === "done" && task.archive.status === "pending" && task.archive.nextAt <= Date.now()) failStep(task.archive, new Error("Connected account no longer exists"));
+            task.updatedAt = Date.now();
           }
           writePrepState(uid, state);
           continue;
         }
-        try { await processAccountCleanup(uid, account, state, tasks); }
+        try { await processAccountCleanup(uid, account, state, accountTasks); }
         catch (err) {
           console.warn(`TelePilot destination cleanup failed for ${uid}/${accountId}: ${errorText(err)}`);
         }
