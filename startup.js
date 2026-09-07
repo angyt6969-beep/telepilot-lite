@@ -8,6 +8,7 @@ import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
 import { installDestinationsV2 } from "./destinations-v2.js";
 import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
+import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
@@ -59,6 +60,10 @@ installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
 // Installed last so the new Destination Hub owns all destination callbacks.
 installDestinationsV2(Bot);
+// Bind before app.js registers its legacy message:text handler. This makes
+// pending Destinations v2 input consume the message first while all other text
+// continues through the normal TelePilot middleware chain unchanged.
+installDestinationsV2InputPriority(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
