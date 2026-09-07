@@ -13,6 +13,7 @@ import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
 import { installDestinationPreparationUi } from "./destination-preparation-ui.js";
 import { startDestinationPreparationWorker } from "./destination-preparation-v1.js";
 import { startDestinationJoinWorker } from "./destination-join-queue-v1.js";
+import { startCleanupRejoinBridge } from "./destination-cleanup-rejoin-bridge.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
@@ -124,5 +125,6 @@ try {
 startV1Worker();
 startQolV13Worker();
 startDestinationJoinWorker();
+startCleanupRejoinBridge();
 startDestinationPreparationWorker();
 await import("./app.js");
