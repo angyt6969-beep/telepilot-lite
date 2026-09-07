@@ -44,6 +44,7 @@ import { installSupportCenterEarly } from "./support-bootstrap.js";
 import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { installPauseResumeBot, installPauseResumeUi } from "./pause-resume-control-v1.js";
+import { installForwardedPostBot, installForwardedPostSend, installForwardedPostUi } from "./forwarded-post-v1.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
 import { installV1Extras } from "./v1-extras.js";
 import { installV1Ui } from "./v1-ui.js";
@@ -116,6 +117,9 @@ installReviewIssuesIconCleanup(Bot);
 // Bind before app.js registers its legacy message:text handler so destination
 // input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
+// Install after destination input priority so Forwarded Post's one-shot source
+// capture is registered first when app.js later binds its message:text handler.
+installForwardedPostBot(Bot);
 // Telegram mutations live in a separate explicit action layer. It owns only d3_*
 // callbacks and never replaces the working scanner callbacks.
 installDestinationPreparationUi(Bot);
@@ -132,10 +136,17 @@ installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
 installPostingReliabilityPost(TelegramClient);
 installPrivatePeerResolution(TelegramClient);
+// Forwarded Post is outermost on personal Telegram sends so it can replace only
+// interval-cycle sendMessage calls with Telegram's real forwardMessages method.
+installForwardedPostSend(TelegramClient);
+// Install this nearest the raw Bot API so it sees the final Message keyboard
+// after the general UI wrappers have applied their own polish.
+installForwardedPostUi(Api);
 // Install this before the general UI wrappers. Because those wrappers are added
 // later, this transformer runs nearest the raw Telegram send and sees their final
 // keyboard, so Pause/Resume cannot be accidentally dropped by later polish.
 installPauseResumeUi(Api);
+console.log("TelePilot Forwarded Post enabled (real Telegram forwards; personal senders only)");
 
 // The global gap-fill is innermost. Semantic icon correction sits directly
 // outside it, so it can claim plain buttons first and prevent generic fallbacks.
