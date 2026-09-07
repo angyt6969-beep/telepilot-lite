@@ -6,7 +6,8 @@ import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
 import { installOnboarding } from "./onboarding.js";
-import { installDestinationsV2 } from "./destinations-v2.js";
+import { installDestinationsV2, destinationsHomeScreen } from "./destinations-v2.js";
+import { installDestinationHealthV3 } from "./destination-health-v3.js";
 import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
@@ -94,6 +95,9 @@ installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
 // Destinations v2 remains the read-only scanner and destination data model.
 installDestinationsV2(Bot);
+// Destination health v3 is installed after Destinations v2 so its Bot.start
+// wrapper registers the enhanced hub/issues callbacks first at runtime.
+installDestinationHealthV3(Bot, destinationsHomeScreen);
 // Bind before app.js registers its legacy message:text handler so destination
 // input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
