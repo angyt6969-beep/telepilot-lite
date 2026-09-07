@@ -45,6 +45,7 @@ import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { installPauseResumeBot, installPauseResumeUi } from "./pause-resume-control-v1.js";
 import { installForwardedPostBot, installForwardedPostSend, installForwardedPostUi } from "./forwarded-post-v1.js";
+import { installForwardedPostV13UiFix } from "./forwarded-post-v13-ui-fix.js";
 import { installForwardedPostSchedulerCompat } from "./forwarded-post-scheduler-compat.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
 import { installV1Extras } from "./v1-extras.js";
@@ -140,9 +141,12 @@ installPrivatePeerResolution(TelegramClient);
 // Forwarded Post is outermost on personal Telegram sends so it can replace only
 // interval-cycle sendMessage calls with Telegram's real forwardMessages method.
 installForwardedPostSend(TelegramClient);
-// Install this nearest the raw Bot API so it sees the final Message keyboard
-// after the general UI wrappers have applied their own polish.
+// Legacy/raw Message screen integration.
 installForwardedPostUi(Api);
+// The current v1.3 Message screen is produced by later UI transformers. This
+// focused decorator sees that final screen on the way back to the raw Bot API and
+// inserts the same Forwarded Post controls without touching other screens.
+installForwardedPostV13UiFix(Api);
 // Keep the legacy scheduler satisfied when Forwarded Post is the only configured
 // post. The placeholder never reaches Telegram because personal sends are
 // replaced by forwardMessages before dispatch.
