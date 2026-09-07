@@ -3,6 +3,7 @@ import path from "node:path";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
+const ADMIN_FILE = path.join(DATA_DIR, "telepilot-admin.json");
 const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
 const MAIN_CHANNEL_USERNAME = String(process.env.TELEPILOT_MAIN_CHANNEL_USERNAME || "").replace(/^@+/, "");
 
@@ -28,6 +29,18 @@ function writeJson(file, value) {
   fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
+function adminIds() {
+  const ids = new Set();
+  for (const raw of [process.env.TELEPILOT_ADMIN_ID, process.env.OWNER_ID]) {
+    for (const part of String(raw || "").split(/[\s,;]+/)) if (/^\d+$/.test(part)) ids.add(part);
+  }
+  const persisted = readJson(ADMIN_FILE, {});
+  for (const id of Array.isArray(persisted?.adminIds) ? persisted.adminIds : []) {
+    if (/^\d+$/.test(String(id))) ids.add(String(id));
+  }
+  return ids;
+}
+function isAdmin(uid) { return adminIds().has(String(uid || "")); }
 
 export function readLinearOnboarding(uid) {
   const saved = readJson(onboardingPath(uid), {});
@@ -54,6 +67,7 @@ export function markLinearOnboardingComplete(uid) {
   writeLinearOnboarding(uid, { completed: true, completedAt: Date.now(), stage: "complete" });
 }
 function accessActive(uid) {
+  if (isAdmin(uid)) return true;
   const saved = readJson(settingsPath(uid), {});
   if (saved.accessRevoked === true) return false;
   if (saved.accessLifetime === true) return true;
