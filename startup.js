@@ -10,6 +10,8 @@ import { installDestinationsV2 } from "./destinations-v2.js";
 import { installDestinationsV2Copy } from "./destinations-v2-copy.js";
 import { installDestinationsV2InputPriority } from "./destinations-v2-input-priority.js";
 import { retireLegacyDestinationState } from "./destinations-v2-migration.js";
+import { installDestinationPreparationUi } from "./destination-preparation-ui.js";
+import { startDestinationPreparationWorker } from "./destination-preparation-v1.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
@@ -58,12 +60,14 @@ installOnboarding(Bot);
 installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
-// Installed last so the new Destination Hub owns all destination callbacks.
+// Destinations v2 remains the read-only scanner and destination data model.
 installDestinationsV2(Bot);
-// Bind before app.js registers its legacy message:text handler. This makes
-// pending Destinations v2 input consume the message first while all other text
-// continues through the normal TelePilot middleware chain unchanged.
+// Bind before app.js registers its legacy message:text handler so destination
+// input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
+// Telegram mutations live in a separate explicit action layer. It owns only d3_*
+// callbacks and never replaces the working scanner callbacks.
+installDestinationPreparationUi(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
@@ -80,8 +84,8 @@ installProTypography(Api);
 installProUiEnhancements(Api);
 installSenderAwareDestinationUi(Api);
 installUxV13Polish(Api);
-// This guard sits underneath the v1.3 transformer so any old destination copy
-// emitted by legacy screens is replaced after v1.3 finishes transforming it.
+// This guard sits underneath the v1.3 transformer so old destination copy is
+// replaced after v1.3 finishes transforming it.
 installDestinationsV2Copy(Api);
 installUxV13(Api);
 installUxV12(Api);
@@ -101,7 +105,7 @@ try {
 const description = [
   "✈️ TelePilot",
   "",
-  "Schedule Telegram posts from one clean control panel. Connect personal accounts, organize destinations you already have access to, choose forum topics and go live.",
+  "Schedule Telegram posts from one clean control panel. Connect personal accounts, organize destinations, choose forum topics and go live.",
   "",
   "Open the bot to get started.",
 ].join("\n");
@@ -118,4 +122,5 @@ try {
 
 startV1Worker();
 startQolV13Worker();
+startDestinationPreparationWorker();
 await import("./app.js");
