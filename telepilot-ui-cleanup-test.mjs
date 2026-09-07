@@ -6,7 +6,7 @@ const dashboardMarkup = {
     inline_keyboard: [
       [{ text: "▶ Start", callback_data: "start", icon_custom_emoji_id: "1" }, { text: "⏹ Stop", callback_data: "stop", icon_custom_emoji_id: "2" }],
       [{ text: "👀 Smart Preview", callback_data: "v1_preview", icon_custom_emoji_id: "3" }],
-      [{ text: "📝 Posting Setup", callback_data: "v1_posting_setup_v13" }, { text: "📊 Activity", callback_data: "v1_activity_v13" }],
+      [{ text: "📝 Posting Setup", callback_data: "v1_posting_setup_v13", icon_custom_emoji_id: "4" }, { text: "📊 Activity", callback_data: "v1_activity_v13", icon_custom_emoji_id: "5" }],
       [{ text: "🔑 Get / Renew Key", url: "https://example.test/checkout" }],
     ],
   },
@@ -28,21 +28,24 @@ const dashboard = cleanupTelePilotUi([
   "🔑 Key / renewal: — TelePilot Checkout or @noahxrp.",
 ].join("\n"), dashboardMarkup);
 
-assert.match(dashboard.text, /TelePilot/);
-assert.match(dashboard.text, /SETUP/);
-assert.match(dashboard.text, /Sender: — @noahxrp/);
-assert.match(dashboard.text, /Message: — Ready/);
+assert.match(dashboard.text, /<b><i>TelePilot<\/i><\/b>/);
+assert.match(dashboard.text, /<b>Status:<\/b> — <b>SETUP<\/b>/);
+assert.match(dashboard.text, /<b>Sender:<\/b> — @noahxrp/);
+assert.match(dashboard.text, /<b>Message:<\/b> — Ready/);
 assert.doesNotMatch(dashboard.text, /595 chars/);
-assert.match(dashboard.text, /Destinations: — Not set/);
-assert.match(dashboard.text, /Timing: — Every 30 min/);
-assert.match(dashboard.text, /Add a destination to continue\./);
-assert.match(dashboard.text, /Access: — TelePilot Checkout or @noahxrp\./);
+assert.match(dashboard.text, /<b>Destinations:<\/b> — Not set/);
+assert.match(dashboard.text, /<b>Timing:<\/b> — Every 30 min/);
+assert.match(dashboard.text, /<i>Add a destination to continue\.<\/i>/);
+assert.match(dashboard.text, new RegExp(`emoji-id="5307843983102204243"`));
+assert.match(dashboard.text, /<b>Access:<\/b> — TelePilot Checkout or @noahxrp\./);
 assert.doesNotMatch(dashboard.text, /No destination issues/);
 assert.doesNotMatch(dashboard.text, /✓|! Destinations/);
 assert.equal(dashboard.other.parse_mode, "HTML");
 assert.equal("entities" in dashboard.other, false);
 assert.equal(dashboard.other.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "v1_preview"), false);
 assert.equal(dashboard.other.reply_markup.inline_keyboard.flat().some(button => button.url?.includes("checkout")), true);
+assert.equal(dashboard.other.reply_markup.inline_keyboard.flat().find(button => button.callback_data === "start")?.text, "Start");
+assert.equal(dashboard.other.reply_markup.inline_keyboard.flat().find(button => button.url?.includes("checkout"))?.icon_custom_emoji_id, "5307843983102204243");
 
 const smartPreview = cleanupTelePilotUi([
   "👁 Smart preview",
@@ -62,18 +65,21 @@ const smartPreview = cleanupTelePilotUi([
   reply_markup: { inline_keyboard: [
     [{ text: "▶ Start posting", callback_data: "start", icon_custom_emoji_id: "a" }],
     [{ text: "Open message preview", callback_data: "message_preview", icon_custom_emoji_id: "b" }],
-    [{ text: "🧭 Posting queue", callback_data: "v1_queue" }, { text: "⚡ Power Tools", callback_data: "v1_tools" }],
+    [{ text: "🧭 Posting queue", callback_data: "v1_queue", icon_custom_emoji_id: "q" }, { text: "⚡ Power Tools", callback_data: "v1_tools", icon_custom_emoji_id: "p" }],
     [{ text: "⬅️ Dashboard", callback_data: "home", icon_custom_emoji_id: "c" }],
   ] },
+  entities: [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "preview-title" }],
 });
 const previewButtons = smartPreview.other.reply_markup.inline_keyboard.flat();
-assert.match(smartPreview.text, /Smart Preview/);
+assert.match(smartPreview.text, /emoji-id="preview-title"/);
+assert.match(smartPreview.text, /<b><i>Smart Preview<\/i><\/b>/);
 assert.doesNotMatch(smartPreview.text, /Rotation|Posting window|Next exact job/);
 assert.match(smartPreview.text, /Hello from TelePilot/);
 assert.equal(previewButtons.some(button => button.callback_data === "v1_queue"), false);
 assert.equal(previewButtons.some(button => button.callback_data === "v1_tools"), false);
 assert.equal(previewButtons.some(button => button.callback_data === "v1_posting_setup_v13"), true);
 assert.equal(previewButtons.find(button => button.callback_data === "v1_posting_setup_v13")?.icon_custom_emoji_id, "c");
+assert.equal(previewButtons.find(button => button.callback_data === "v1_posting_setup_v13")?.text, "Posting Setup");
 
 const advanced = cleanupTelePilotUi([
   "⚡ TelePilot Power Tools",
@@ -96,7 +102,8 @@ const advanced = cleanupTelePilotUi([
   ] },
 });
 const advancedButtons = advanced.other.reply_markup.inline_keyboard.flat();
-assert.match(advanced.text, /Advanced/);
+assert.match(advanced.text, /<b><i>Advanced<\/i><\/b>/);
+assert.match(advanced.text, /<b>Rotation:<\/b> — off/);
 assert.doesNotMatch(advanced.text, /Power Tools/);
 for (const removed of ["v1_limits", "v1_folders", "v1_overrides", "v1_search", "v1_variables", "v1_stats", "v1_notifications", "v1_session", "tutorial_restart", "v1_changelog", "tools"]) {
   assert.equal(advancedButtons.some(button => button.callback_data === removed), false, `${removed} should be hidden from Advanced`);
@@ -105,13 +112,128 @@ for (const kept of ["v1_rotation", "v1_exact", "v1_queue", "v1_backup", "v1_emer
   assert.equal(advancedButtons.some(button => button.callback_data === kept), true, `${kept} should remain in Advanced`);
 }
 assert.equal(advancedButtons.find(button => button.callback_data === "v1_rotation")?.icon_custom_emoji_id, "r");
+assert.equal(advancedButtons.find(button => button.callback_data === "v1_rotation")?.text, "Message Rotation");
 assert.equal(advancedButtons.find(button => button.callback_data === "v1_posting_setup_v13")?.icon_custom_emoji_id, "z");
+assert.equal(advancedButtons.find(button => button.callback_data === "v1_posting_setup_v13")?.text, "Posting Setup");
 
 const retiredTools = cleanupTelePilotUi("⚙️ TelePilot Tools\nOld tool menu", {
   reply_markup: { inline_keyboard: [[{ text: "⬅️ Home", callback_data: "home", icon_custom_emoji_id: "h" }]] },
+  entities: [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "tools-title" }],
 });
 assert.match(retiredTools.text, /Posting Setup/);
 assert.equal(retiredTools.other.reply_markup.inline_keyboard.flat().length, 1);
 assert.equal(retiredTools.other.reply_markup.inline_keyboard.flat()[0].callback_data, "v1_posting_setup_v13");
+assert.equal(retiredTools.other.reply_markup.inline_keyboard.flat()[0].text, "Posting Setup");
 
-console.log("TelePilot UI cleanup regression tests passed");
+// Generic v1.3 pages should receive the same title/label hierarchy without
+// losing premium custom-emoji IDs that were assigned by the semantic layer.
+const activityText = [
+  "📊 Activity",
+  "",
+  "Posting  Running",
+  "Senders  @noahxrp",
+  "Next  10 min",
+  "Recent  4 successful",
+].join("\n");
+const activity = cleanupTelePilotUi(activityText, {
+  reply_markup: { inline_keyboard: [[{ text: "📊 Dashboard", callback_data: "v1_dashboard_v13", icon_custom_emoji_id: "dash-icon" }]] },
+  entities: [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "activity-title" }],
+});
+assert.match(activity.text, /Posting: — Running/);
+assert.match(activity.text, /Senders: — @noahxrp/);
+assert.match(activity.text, /Next: — 10 min/);
+assert.equal(activity.other.parse_mode, undefined);
+assert.equal(activity.other.reply_markup.inline_keyboard[0][0].text, "Dashboard");
+assert.equal(activity.other.entities.some(entity => entity.type === "custom_emoji" && entity.custom_emoji_id === "activity-title" && entity.offset === 0), true);
+const activityTitleStart = activity.text.indexOf("Activity");
+assert.equal(activity.other.entities.some(entity => entity.type === "bold" && entity.offset === activityTitleStart && entity.length === "Activity".length), true);
+assert.equal(activity.other.entities.some(entity => entity.type === "italic" && entity.offset === activityTitleStart && entity.length === "Activity".length), true);
+const postingLabelStart = activity.text.indexOf("Posting:");
+assert.equal(activity.other.entities.some(entity => entity.type === "bold" && entity.offset === postingLabelStart && entity.length === "Posting:".length), true);
+
+const settings = cleanupTelePilotUi([
+  "⚙️ Settings",
+  "Access  Active",
+  "Topic suggestions  Suggest only",
+  "Preferred topic words  deals, promo",
+  "",
+  "Choose how TelePilot suggests forum topics.",
+].join("\n"), {
+  reply_markup: { inline_keyboard: [[{ text: "❓ Tutorial", callback_data: "tutorial_restart", icon_custom_emoji_id: "tutorial-icon" }]] },
+});
+assert.match(settings.text, /Access: — Active/);
+assert.match(settings.text, /Topic suggestions: — Suggest only/);
+assert.match(settings.text, /Preferred topic words: — deals, promo/);
+assert.equal(settings.other.reply_markup.inline_keyboard[0][0].text, "Tutorial");
+
+const destination = cleanupTelePilotUi([
+  "📁 Example Group",
+  "",
+  "Status  ✅ ready",
+  "Topic  General",
+  "Source  addlist · example",
+  "Note  Main advertising group",
+].join("\n"), {
+  reply_markup: { inline_keyboard: [[{ text: "⬅️ Destinations", callback_data: "v1_destinations_v13", icon_custom_emoji_id: "back-icon" }]] },
+  entities: [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "folder-title" }],
+});
+assert.match(destination.text, /Status: — ✅ ready/);
+assert.match(destination.text, /Topic: — General/);
+assert.match(destination.text, /Source: — addlist · example/);
+assert.match(destination.text, /Note: — Main advertising group/);
+assert.equal(destination.other.entities.some(entity => entity.type === "custom_emoji" && entity.custom_emoji_id === "folder-title"), true);
+
+const admin = cleanupTelePilotUi([
+  "👑 ADMIN TEAM",
+  "",
+  "Owners: 1",
+  "Active admins: 2",
+  "",
+  "Admins can manage customers and request keys.",
+].join("\n"), {
+  reply_markup: { inline_keyboard: [[{ text: "⬅️ Admin", callback_data: "admin", icon_custom_emoji_id: "admin-back" }]] },
+});
+assert.match(admin.text, /^👑 Admin Team/m);
+assert.match(admin.text, /Owners: — 1/);
+assert.match(admin.text, /Active admins: — 2/);
+const adminTitleStart = admin.text.indexOf("Admin Team");
+assert.equal(admin.other.entities.some(entity => entity.type === "bold" && entity.offset === adminTitleStart && entity.length === "Admin Team".length), true);
+assert.equal(admin.other.entities.some(entity => entity.type === "italic" && entity.offset === adminTitleStart && entity.length === "Admin Team".length), true);
+
+const keyApproval = cleanupTelePilotUi([
+  "⏳ KEY APPROVAL PENDING",
+  "",
+  "Requested: 30 days",
+  "Expires in: 15 minutes",
+].join("\n"), {
+  reply_markup: { inline_keyboard: [[{ text: "⬅️ Keys", callback_data: "admin_keys", icon_custom_emoji_id: "key-back" }]] },
+});
+assert.match(keyApproval.text, /Key Approval Pending/);
+assert.match(keyApproval.text, /Requested: — 30 days/);
+assert.match(keyApproval.text, /Expires in: — 15 minutes/);
+
+// If a page contains a semantic entity such as a text link, leave its text and
+// offsets intact while still adding the consistent title hierarchy.
+const linkedText = "💬 Support\nRead documentation";
+const linked = cleanupTelePilotUi(linkedText, {
+  reply_markup: { inline_keyboard: [[{ text: "⬅️ Dashboard", callback_data: "home", icon_custom_emoji_id: "back" }]] },
+  entities: [{ type: "text_link", offset: linkedText.indexOf("documentation"), length: "documentation".length, url: "https://example.test" }],
+});
+assert.equal(linked.text, linkedText);
+assert.equal(linked.other.entities.some(entity => entity.type === "text_link" && entity.url === "https://example.test"), true);
+const supportTitleStart = linked.text.indexOf("Support");
+assert.equal(linked.other.entities.some(entity => entity.type === "bold" && entity.offset === supportTitleStart && entity.length === "Support".length), true);
+assert.equal(linked.other.entities.some(entity => entity.type === "italic" && entity.offset === supportTitleStart && entity.length === "Support".length), true);
+
+// Existing HTML tutorial/onboarding pages are preserved rather than escaped or
+// double-formatted; only their buttons receive the final navigation cleanup.
+const tutorialHtml = cleanupTelePilotUi('<tg-emoji emoji-id="5231361378748472914">✈️</tg-emoji> <b><i>Welcome to TelePilot</i></b>\n<i>Slide 1 of 5</i>', {
+  parse_mode: "HTML",
+  reply_markup: { inline_keyboard: [[{ text: "➡️ Next", callback_data: "linear_tutorial:2", icon_custom_emoji_id: "next-icon" }]] },
+});
+assert.match(tutorialHtml.text, /<tg-emoji/);
+assert.match(tutorialHtml.text, /<b><i>Welcome to TelePilot<\/i><\/b>/);
+assert.equal(tutorialHtml.other.parse_mode, "HTML");
+assert.equal(tutorialHtml.other.reply_markup.inline_keyboard[0][0].text, "Next");
+
+console.log("TelePilot full UI cleanup regression tests passed");
