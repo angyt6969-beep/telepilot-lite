@@ -23,10 +23,13 @@ const STATIC_PREMIUM = new Map([
   ["🛑", STOP_EMOJI_ID],
   ["❌", STOP_EMOJI_ID],
   ["⚠", STOP_EMOJI_ID],
+  ["👀", ACTION_EMOJI_ID],
+  ["👁", ACTION_EMOJI_ID],
+  ["📝", ACTION_EMOJI_ID],
 ]);
 
 const TELEPILOT_CALLBACK_RE = /^(?:v1_|d[2345]_|fp_|linear_|tutorial(?::|_)|admin(?:_|$)|account(?:_|$)|message(?:_|$)|groups(?:_|$)|interval$|activity$|access$|support$|settings(?:_|$)|start(?:_|$)|stop(?:_|$)|home$|posting_setup$|redeem_key$)/i;
-const TELEPILOT_TITLE_RE = /\b(?:TelePilot|Posting|Destination|Destinations|Account|Accounts|Sender|Message|Schedule|Timing|Activity|Settings|Access|Support|Tutorial|Preview|Backup|Import|Topic|Topics|Key|Admin|User|Pause|Retry|Search|Filter|Preset|Setups|Forwarded Post|Rotation|Exact|Queue|Emergency|Notifications|Statistics|Health|Variables|Folders|Overrides)\b/i;
+const TELEPILOT_TITLE_RE = /\b(?:TelePilot|Posting|Destination|Destinations|Account|Accounts|Sender|Message|Schedule|Timing|Activity|Settings|Access|Support|Tutorial|Preview|Backup|Import|Topic|Topics|Key|Admin|User|Pause|Retry|Search|Filter|Preset|Setups|Forwarded Post|Rotation|Exact|Queue|Emergency|Notifications|Statistics|Health|Variables|Folders|Overrides|Payment|Checkout|Redeem|Security|License)\b/i;
 const LEADING_DECORATION_RE = /^(?:(?:\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?|[←→↩↪＋+✓✔◀▶])\s*)+/u;
 
 const TITLE_RENAMES = new Map([
@@ -110,13 +113,16 @@ function staticPremiumId(emoji) {
 }
 
 function customEmojiHtml(text, other, emoji, fallbackId = "") {
+  const source = String(text || "");
   const normalized = normalizeEmoji(emoji);
-  const entity = (other?.entities || []).find(item => {
-    if (item?.type !== "custom_emoji") return false;
-    const value = String(text || "").slice(Number(item.offset || 0), Number(item.offset || 0) + Number(item.length || 0));
+  const customEntities = (other?.entities || []).filter(item => item?.type === "custom_emoji" && item?.custom_emoji_id);
+  const exact = customEntities.find(item => {
+    const value = source.slice(Number(item.offset || 0), Number(item.offset || 0) + Number(item.length || 0));
     return normalizeEmoji(value) === normalized;
   });
-  const id = String(entity?.custom_emoji_id || fallbackId || staticPremiumId(emoji) || "");
+  const firstLineEnd = source.indexOf("\n") < 0 ? source.length : source.indexOf("\n");
+  const titleEntity = customEntities.find(item => Number(item.offset || 0) < firstLineEnd);
+  const id = String(exact?.custom_emoji_id || titleEntity?.custom_emoji_id || fallbackId || staticPremiumId(emoji) || "");
   return id ? `<tg-emoji emoji-id="${id}">${esc(emoji)}</tg-emoji>` : esc(emoji);
 }
 
@@ -293,7 +299,7 @@ function compactPostingSetup(text, other) {
     const row = pair.map(data => findButton(other, data)).filter(Boolean);
     if (row.length) rows.push(row);
   }
-  const titleEmoji = customEmojiHtml(text, other, "📝");
+  const titleEmoji = customEmojiHtml(text, other, "📝", ACTION_EMOJI_ID);
   return {
     text: [
       `${titleEmoji} <b><i>Posting Setup</i></b>`,
@@ -324,7 +330,7 @@ function compactSmartPreview(text, other) {
   if (openMessage) rows.push([makeButton("📝 Open Message", "message_preview", openMessage)]);
   const backTemplate = findButton(other, "home") || findButton(other, "v1_dashboard_v13") || findButton(other, "v1_tools");
   rows.push([makeButton("← Posting Setup", "v1_posting_setup_v13", backTemplate)]);
-  const titleEmoji = customEmojiHtml(text, other, "👀");
+  const titleEmoji = customEmojiHtml(text, other, "👀", ACTION_EMOJI_ID);
 
   return {
     text: [
@@ -380,7 +386,7 @@ function compactAdvanced(text, other) {
 
 function retireToolsPage(text, other) {
   const backTemplate = findButton(other, "home") || findButton(other, "posting_setup") || findButton(other, "v1_tools");
-  const titleEmoji = customEmojiHtml(text, other, "📝");
+  const titleEmoji = customEmojiHtml(text, other, "📝", ACTION_EMOJI_ID);
   return {
     text: `${titleEmoji} <b><i>Posting Setup</i></b>\n\n<i>Everyday controls are in Posting Setup. Scheduling and safety controls are under Advanced.</i>`,
     other: polishButtons(cleanOther(other, [[makeButton("← Posting Setup", "v1_posting_setup_v13", backTemplate)]], true)),
