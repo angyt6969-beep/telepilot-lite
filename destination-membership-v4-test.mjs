@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { __test as health } from "./destination-membership-v4.js";
 import { __test as failure } from "./destination-failure-v2.js";
+import { cleanReviewIssuesButton, cleanReviewIssuesPayload } from "./review-issues-icon-cleanup.js";
 
 assert.equal(health.peerKey("-1001234567890"), "1234567890", "supergroup -100 prefix must be removed before dialog lookup");
 assert.equal(health.peerKey("-123456789"), "123456789", "basic group minus prefix must be removed before dialog lookup");
@@ -44,6 +45,21 @@ const decorated = health.decorateIssueButtons({
 });
 assert.equal(decorated.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id, "5280957715462505291");
 assert.equal(decorated.reply_markup.inline_keyboard[1][0].icon_custom_emoji_id, "5420323339723881652");
+
+const cleanedButton = cleanReviewIssuesButton({ text: "⚠ Review Issues · 12", callback_data: "d5_issues:0" });
+assert.equal(cleanedButton.text, "Review Issues · 12", "fallback warning symbol must be removed from Review Issues text");
+assert.equal(cleanedButton.icon_custom_emoji_id, "5280957715462505291", "premium Issues emoji must remain on Review Issues");
+const cleanedPayload = cleanReviewIssuesPayload({
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: "❗️ Review Issues", callback_data: "v1_dest_issues_v13" }],
+      [{ text: "Unrelated", callback_data: "home" }],
+    ],
+  },
+});
+assert.equal(cleanedPayload.reply_markup.inline_keyboard[0][0].text, "Review Issues");
+assert.equal(cleanedPayload.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id, "5280957715462505291");
+assert.equal(cleanedPayload.reply_markup.inline_keyboard[1][0].text, "Unrelated", "unrelated buttons must be untouched");
 
 assert.equal(failure.classifyFailure("USER_NOT_PARTICIPANT").status, "not_member");
 assert.equal(failure.classifyFailure("CHANNEL_PRIVATE").status, "unavailable");
