@@ -5,6 +5,7 @@ import { scanDestinationSources } from "./destinations-v2.js";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const INPUT_TTL_MS = 20 * 60_000;
 const REVIEW_TTL_MS = 30 * 60_000;
+const MAX_SOURCE_TEXT = 20_000;
 
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function statePath(uid) { return path.join(userDir(uid), "destinations-v2.json"); }
@@ -45,20 +46,21 @@ function reviewScreen(review) {
     text: [
       "🔎 Review scan",
       "",
-      `Ready to save  ${accessible}`,
+      `Ready now  ${accessible}`,
       forums ? `Forum groups  ${forums}` : null,
-      notJoined ? `Join in Telegram first  ${notJoined}` : null,
+      notJoined ? `Not joined yet  ${notJoined}` : null,
       unsupported ? `Unsupported  ${unsupported}` : null,
       invalid ? `Could not use  ${invalid}` : null,
       "",
-      sample || "No accessible groups were found.",
+      sample || "No accessible groups were found yet.",
       accessible > 6 ? `… and ${accessible - 6} more` : null,
       "",
-      "Nothing has been changed yet.",
+      "Nothing has been changed yet. Join + prepare will join missing groups, then queue mute + archive only for Telegram-confirmed members.",
     ].filter(Boolean).join("\n"),
     rows: [
-      accessible ? [inline(`Add ${accessible} accessible`, `d2_confirm:${review.token}`)] : [],
-      notJoined || invalid || unsupported ? [inline("View not added", `d2_skipped:${review.token}`)] : [],
+      review?.sourceText ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
+      accessible ? [inline(`Add ${accessible} accessible only`, `d2_confirm:${review.token}`)] : [],
+      notJoined || invalid || unsupported ? [inline("View not added", `d3_skipped:${review.token}`)] : [],
       [inline("Cancel", "v1_destinations_v13")],
     ],
   };
@@ -81,15 +83,17 @@ async function destinationInputPriorityMiddleware(ctx, next) {
   if (pending?.type !== "source") return next();
 
   try { await ctx.deleteMessage(); } catch {}
-  const sourceCount = String(ctx.message.text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean).length;
+  const rawText = String(ctx.message.text || "").slice(0, MAX_SOURCE_TEXT);
+  const sourceCount = rawText.split(/\r?\n/).map(line => line.trim()).filter(Boolean).length;
   console.log(`TelePilot Destinations v2 captured destination input for ${uid}: ${sourceCount} source line(s)`);
 
   try {
     await editPrompt(ctx, pending, {
-      text: "🔎 Scanning Telegram access…\n\nChecking only chats your connected personal accounts already belong to.",
+      text: "🔎 Scanning Telegram access…\n\nChecking current membership first. No Telegram changes are made during this scan.",
       rows: [],
     });
-    const review = await scanDestinationSources(uid, ctx.message.text);
+    const scanned = await scanDestinationSources(uid, rawText);
+    const review = { ...scanned, sourceText: rawText };
     writeState(uid, {
       ...state,
       pendingInput: null,
