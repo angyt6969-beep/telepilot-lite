@@ -4,6 +4,7 @@ import {
   cleanupSummary,
   prepareReviewedSources,
 } from "./destination-preparation-v1.js";
+import { recoverNotJoinedAddlistPeers } from "./destination-preparation-addlist-recovery.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const REVIEW_TTL_MS = 30 * 60_000;
@@ -129,18 +130,21 @@ export function installDestinationPreparationUi(BotClass) {
           rows: [],
         });
         try {
-          const result = await prepareReviewedSources(uid, review);
+          const initial = await prepareReviewedSources(uid, review);
+          const result = await recoverNotJoinedAddlistPeers(uid, initial);
           writeReview(uid, result.postReview);
           const ready = result.postReview?.accessible?.length || 0;
           const notJoined = result.postReview?.notJoined?.length || 0;
           const failures = result.failures?.length || 0;
           const topics = Number(result.saved?.topics || 0);
+          const recovered = Number(result.recovery?.recoveredAccessible || 0);
           await editOrReply(ctx, {
             text: [
               "✅ Join stage finished",
               "",
               `Ready after verification  ${ready}`,
               `Newly accessible  ${result.newlyAccessible}`,
+              recovered ? `Recovered from imported folder  ${recovered}` : null,
               `New saved  ${result.saved?.added || 0}`,
               `Already saved  ${result.saved?.existing || 0}`,
               topics ? `Topics to choose  ${topics}` : null,
@@ -149,7 +153,7 @@ export function installDestinationPreparationUi(BotClass) {
               failures ? `Join errors  ${failures}` : null,
               "",
               `Cleanup queued  ${result.cleanup?.pending || 0}`,
-              "Mute and archive now run from a separate paced queue. They cannot re-add completed work.",
+              "Mute and archive run from the separate paced queue only after Telegram confirms membership.",
               failures ? `\nFirst error: ${result.failures[0]}` : null,
             ].filter(Boolean).join("\n"),
             rows: [
