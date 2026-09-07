@@ -59,6 +59,7 @@ assert.equal(issued.record.boundTo, "12345");
 assert.equal(fs.readFileSync(path.join(temp, "access-keys.json"), "utf8").includes(issued.key), false);
 const duplicate = issuer.issuePaymentKey({ orderId: "TPP-KEYTEST12", uid: "12345", durationDays: 30, lifetime: false, providerPaymentId: "55" }, { dataDir: temp, secret });
 assert.equal(duplicate.alreadyIssued, true);
+assert.equal(duplicate.key, issued.key);
 
 const delivered = [];
 const paymentOrder = await service.createPaymentOrder("12345", "1d", "ton", {
@@ -83,6 +84,18 @@ await service.refreshPaymentOrder(paymentOrder.id, {
   notifyKey: async (order, key) => delivered.push({ order: order.id, key }),
 });
 assert.equal(delivered.length, 1, "finished payment must not issue/deliver a second key");
+
+const recoveryIssued = issuer.issuePaymentKey({ orderId: "TPP-RECOVERY12", uid: "12345", durationDays: 7, lifetime: false, providerPaymentId: "777" }, { dataDir: temp, secret });
+store.putOrder({
+  version: 1, id: "TPP-RECOVERY12", uid: "12345", planId: "7d", planLabel: "7 Days", priceUsd: 20, payCurrency: "sol",
+  providerPaymentId: "777", providerStatus: "finished", payAddress: "sandbox", payAmount: "2", actuallyPaid: "2",
+  createdAt: Date.now(), updatedAt: Date.now(), lastProviderCheckAt: Date.now(), encryptedKey: "", keyId: "", keyIssuedAt: 0, keySentAt: 0, sendAttempts: 0, lastError: "",
+}, temp);
+const recoveryDelivered = [];
+const recovered = await service.fulfillOrder("TPP-RECOVERY12", { dataDir: temp, secret, notifyKey: async (order, key) => recoveryDelivered.push(key) });
+assert.equal(recovered.key, recoveryIssued.key);
+assert.equal(recoveryDelivered.length, 1);
+assert.equal(recoveryDelivered[0], recoveryIssued.key);
 
 const markup = { reply_markup: { inline_keyboard: [[{ text: "Get a Key", url: "https://t.me/noahxrp", icon_custom_emoji_id: "old" }]] } };
 const decorated = botUi.decorateCryptoCheckoutLinks("12345", "Need one? Message @noahxrp.", markup, { publicUrl: "https://telepilot.example", secret });
