@@ -55,7 +55,11 @@ assert.equal(buttons.some(button => button.icon_custom_emoji_id === "electric"),
 const entities = corrected.other.entities || [];
 assert.ok(entities.some(entity => entity.type === "custom_emoji" && entity.offset === 0 && entity.custom_emoji_id === "fire"), "Preparing heading electricity glyph should render with action/fire premium semantics");
 const refreshOffset = corrected.text.indexOf("↻");
-assert.ok(entities.some(entity => entity.type === "custom_emoji" && entity.offset === refreshOffset && entity.custom_emoji_id === "view"), "Refresh/check glyph should not render as electricity");
+assert.equal(
+  entities.some(entity => entity.type === "custom_emoji" && entity.offset === refreshOffset && entity.custom_emoji_id === "electric"),
+  false,
+  "Plain refresh symbol must never inherit the generic electricity premium icon",
+);
 
 const previewText = "👀 Smart preview\n\nMessage preview:\n⚡ user content";
 const preview = ui.correctUiIconPayload(previewText, { reply_markup: { inline_keyboard: [[{ text: "Back", callback_data: "home" }]] } });
