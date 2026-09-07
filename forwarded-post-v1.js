@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { currentDispatchContext } from "./dispatch-context.js";
+import {
+  completeExternalPersonalDispatch,
+  failExternalPersonalDispatch,
+  prepareExternalPersonalDispatch,
+} from "./v1-engine.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
@@ -268,7 +273,7 @@ async function resolveForwardSourcePeer(client, cfg) {
   } catch {}
 
   const wanted = peerDigits(cfg.sourcePeer);
-  const dialogs = await client.getDialogs({ limit: 500 });
+  const dialogs = await client.getDialogs({ limit: 1000 });
   for (const dialog of dialogs) {
     if (candidatePeerIds(dialog).some(value => peerDigits(value) === wanted)) {
       const entity = dialog?.inputEntity || dialog?.entity || dialog;
@@ -285,6 +290,17 @@ export function threadIdFromSendParams(params) {
   if (typeof params?.replyTo === "number" && params.replyTo > 1) return Number(params.replyTo);
   const reply = Number(params?.replyTo?.replyToMsgId || 0);
   return reply > 1 ? reply : 0;
+}
+
+function firstForwardedResult(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstForwardedResult(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  return value || null;
 }
 
 export function installForwardedPostSend(TelegramClientClass, options = {}) {
@@ -306,16 +322,22 @@ export function installForwardedPostSend(TelegramClientClass, options = {}) {
       return originalSendMessage.call(this, entity, params, ...rest);
     }
 
-    const source = await resolveSource(this, cfg);
-    const threadId = threadIdFromSendParams(params);
-    const forwarded = await this.forwardMessages(entity, {
-      messages: Number(cfg.sourceMessageId),
-      fromPeer: source,
-      ...(threadId > 1 ? { topMsgId: threadId, replyTo: params?.replyTo || threadId } : {}),
-    });
-    const result = Array.isArray(forwarded) ? forwarded.find(Boolean) : forwarded;
-    if (!result) throw new Error("Telegram did not confirm the forwarded post.");
-    return result;
+    const dispatchHandle = await prepareExternalPersonalDispatch(dispatch, entity);
+    if (dispatchHandle?.skip) return dispatchHandle.result;
+    try {
+      const source = await resolveSource(this, cfg);
+      const threadId = threadIdFromSendParams(params);
+      const forwarded = await this.forwardMessages(entity, {
+        messages: Number(cfg.sourceMessageId),
+        fromPeer: source,
+        ...(threadId > 1 ? { topMsgId: threadId, replyTo: params?.replyTo || threadId } : {}),
+      });
+      const result = firstForwardedResult(forwarded);
+      if (!result) throw new Error("Telegram did not confirm the forwarded post.");
+      return completeExternalPersonalDispatch(dispatchHandle, result);
+    } catch (err) {
+      return failExternalPersonalDispatch(dispatchHandle, err);
+    }
   };
   return true;
 }
@@ -429,4 +451,6 @@ export const __test = {
   messageMenuPayload,
   normalizeConfig,
   peerDigits,
+  resolveForwardSourcePeer,
+  firstForwardedResult,
 };
