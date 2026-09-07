@@ -17,14 +17,17 @@ import {
 } from "./posting-engine-enhancements.js";
 import { syncUserGroups } from "./runtime-hooks.js";
 import { setPendingInput } from "./qol-store.js";
+import { recheckDestinationsV4 } from "./destination-membership-v4.js";
 
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || "/data";
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const INPUT_TTL_MS = 20 * 60_000;
 const REVIEW_TTL_MS = 30 * 60_000;
 const PAGE_SIZE = 8;
+const ROUTING_BATCH_SIZE = 200;
+const ROUTING_QUEUE_LIMIT = 100;
 
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function statePath(uid) { return path.join(userDir(uid), "destinations-v2.json"); }
@@ -38,6 +41,17 @@ function writeJsonAtomic(file, value) {
   fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
+function cleanRoutingQueue(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(item => item && typeof item === "object" && String(item.id || ""))
+    .map(item => ({
+      id: String(item.id),
+      destinationIds: [...new Set((Array.isArray(item.destinationIds) ? item.destinationIds : []).map(String).filter(Boolean))].slice(0, ROUTING_BATCH_SIZE),
+      accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String).filter(Boolean))],
+      createdAt: Number(item.createdAt || 0) || Date.now(),
+    }))
+    .slice(-ROUTING_QUEUE_LIMIT);
+}
 function cleanState(raw = {}) {
   const review = raw?.review && Date.now() - Number(raw.review.createdAt || 0) <= REVIEW_TTL_MS ? raw.review : null;
   const pendingInput = raw?.pendingInput && Date.now() - Number(raw.pendingInput.createdAt || 0) <= INPUT_TTL_MS ? raw.pendingInput : null;
@@ -46,6 +60,7 @@ function cleanState(raw = {}) {
     pendingInput,
     review,
     lastScan: raw?.lastScan && typeof raw.lastScan === "object" ? raw.lastScan : null,
+    routingQueue: cleanRoutingQueue(raw?.routingQueue),
   };
 }
 function readState(uid) { return cleanState(readJson(statePath(uid), {})); }
@@ -575,36 +590,7 @@ function deleteGroup(uid, groupId) {
 }
 
 export async function recheckDestinations(uid, limit = 40) {
-  const settings = readAppSettings(uid);
-  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
-  const accounts = selectedAccounts(uid);
-  if (!groups.length || !accounts.length) return { checked: 0, changed: 0 };
-  const contexts = [];
-  let checked = 0, changed = 0;
-  try {
-    for (const account of accounts) {
-      try { contexts.push(await buildAccountContext(uid, account)); } catch {}
-    }
-    for (let index = 0; index < groups.length && checked < Math.max(1, Number(limit) || 40); index++) {
-      const group = { ...groups[index], accountJoin: { ...(groups[index].accountJoin || {}) } };
-      const key = digits(group.id);
-      const before = JSON.stringify(group.accountJoin);
-      for (const ctx of contexts) {
-        const entity = ctx.dialogByKey.get(key);
-        group.accountJoin[String(ctx.account.id)] = entity ? membershipState(entity) : { status: "not_member", reason: "Join this group in Telegram first." };
-      }
-      group.joinStatus = normalizedJoinStatus(group);
-      group.lastCheckedAt = Date.now();
-      if (JSON.stringify(group.accountJoin) !== before) changed++;
-      groups[index] = group;
-      checked++;
-    }
-    if (checked) {
-      writeAppSettings(uid, { ...settings, version: Math.max(5, Number(settings.version || 0)), groups });
-      syncUserGroups(uid);
-    }
-    return { checked, changed };
-  } finally { for (const ctx of contexts) try { await ctx.client.disconnect(); } catch {} }
+  return recheckDestinationsV4(uid, { limit: Math.max(1, Number(limit) || 40) });
 }
 
 async function editOrReply(ctx, screen) {
@@ -727,5 +713,48 @@ export async function handleDestinationText(uid, text) {
     destinationIds: result.savedIds,
   };
 }
-export function queueRoutingSync() { return 0; }
-export async function processRoutingQueue() { return { processed: 0, changed: 0 }; }
+
+export function queueRoutingSync(uid, destinationId = "", accountIds = []) {
+  const settings = readAppSettings(uid);
+  const allIds = (Array.isArray(settings.groups) ? settings.groups : []).map(group => String(group?.id || "")).filter(Boolean);
+  const wanted = destinationId ? allIds.filter(id => id === String(destinationId)) : allIds;
+  if (!wanted.length) return 0;
+  const state = readState(uid);
+  const normalizedAccounts = [...new Set((Array.isArray(accountIds) ? accountIds : []).map(String).filter(Boolean))];
+  const requests = [];
+  for (let index = 0; index < wanted.length; index += ROUTING_BATCH_SIZE) {
+    const destinationIds = wanted.slice(index, index + ROUTING_BATCH_SIZE);
+    const duplicate = state.routingQueue.some(item =>
+      JSON.stringify(item.destinationIds) === JSON.stringify(destinationIds)
+      && JSON.stringify(item.accountIds) === JSON.stringify(normalizedAccounts)
+    );
+    if (duplicate) continue;
+    requests.push({ id: crypto.randomBytes(8).toString("hex"), destinationIds, accountIds: normalizedAccounts, createdAt: Date.now() });
+  }
+  if (!requests.length) return 0;
+  state.routingQueue = [...state.routingQueue, ...requests].slice(-ROUTING_QUEUE_LIMIT);
+  writeState(uid, state);
+  return requests.length;
+}
+
+export async function processRoutingQueue(uid, limit = 8) {
+  const max = Math.max(1, Math.min(20, Number(limit) || 8));
+  let processed = 0;
+  let changed = 0;
+  for (let index = 0; index < max; index++) {
+    const state = readState(uid);
+    const request = state.routingQueue[0];
+    if (!request) break;
+    const result = await recheckDestinationsV4(uid, {
+      destinationIds: request.destinationIds,
+      accountIds: request.accountIds,
+      limit: Math.max(1, request.destinationIds.length),
+    });
+    changed += Number(result?.changed || 0);
+    const latest = readState(uid);
+    latest.routingQueue = latest.routingQueue.filter(item => item.id !== request.id);
+    writeState(uid, latest);
+    processed++;
+  }
+  return { processed, changed };
+}
