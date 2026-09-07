@@ -253,6 +253,20 @@ export function installPostingReliabilityPre(TelegramClientClass) {
     };
   }
 
+  const originalForwardMessages = proto.forwardMessages;
+  if (typeof originalForwardMessages === "function") {
+    proto.forwardMessages = async function(entity, params, ...rest) {
+      const context = currentDispatchContext();
+      try {
+        return await originalForwardMessages.call(this, entity, withTopicRoute(context, params), ...rest);
+      } catch (err) {
+        rememberError(context, err);
+        clearBrokenTopic(context, err);
+        throw err;
+      }
+    };
+  }
+
   const originalGetForumTopics = proto.getForumTopics;
   if (typeof originalGetForumTopics === "function") {
     proto.getForumTopics = async function(...args) {

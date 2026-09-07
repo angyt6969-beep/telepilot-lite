@@ -211,6 +211,28 @@ function destinationFor(settings,context,entity) {
   const raw=String(entity?.id??entity??"").replace(/\D/g,"");
   return (settings.groups||[]).find(g=>String(g.id||"").replace(/\D/g,"")===raw) || null;
 }
+
+export async function prepareExternalPersonalDispatch(context, entity) {
+  const uid=String(context?.uid||"");
+  if(!uid || context?.senderType!=="personal" || !context?.cycleId)return{managed:false,skip:false};
+  const settings=readAppSettings(uid),destination=destinationFor(settings,context,entity);
+  if(!destination)return{managed:false,skip:false};
+  const pro=readV1(uid),cycle=cycleFor(uid,pro,context);cycle.index++;
+  const sender=String(context.senderLabel||"Personal account"),reason=skipReason(pro,cycle,destination);
+  if(reason){const result=fakeResult({text:""},reason);recordSkipped(uid,destination,sender,reason,context);return{managed:true,skip:true,result,uid,destination,sender,context};}
+  if(cycle.index>1&&Number(pro.staggerSeconds||0)>0)await new Promise(r=>setTimeout(r,Number(pro.staggerSeconds)*1000));
+  return{managed:true,skip:false,uid,destination,sender,context};
+}
+export function completeExternalPersonalDispatch(handle,result){
+  if(!handle?.managed||handle?.skip)return result;
+  try{recordSuccess(handle.uid,handle.destination,handle.sender,"",handle.context);}catch(err){console.warn(`TelePilot suppressed forwarding bookkeeping error after Telegram confirmed delivery for ${handle.uid}/${destinationId(handle.destination)}:`,err?.message||err);}
+  return result;
+}
+export function failExternalPersonalDispatch(handle,err){
+  if(handle?.managed&&!handle?.skip){try{recordFailure(handle.uid,handle.destination,handle.sender,err,handle.context);}catch(bookkeepingError){console.warn(`TelePilot could not record forwarding failure for ${handle.uid}/${destinationId(handle.destination)}:`,bookkeepingError?.message||bookkeepingError);}}
+  throw err;
+}
+
 function toMtEntities(entities=[]) {
   const out=[];
   for (const entity of entities) {
