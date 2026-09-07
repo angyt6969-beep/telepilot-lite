@@ -18,13 +18,28 @@ function setPaused(uid, paused) {
 }
 
 function isControlPage(text) {
-  const value = String(text || "");
-  return value.startsWith("✈️ TelePilot") || value.startsWith("⚙️ TelePilot Tools") || value.startsWith("⚡ TelePilot Power Tools");
+  const value = String(text || "").toLowerCase();
+  return value.startsWith("✈️ telepilot")
+    || value.startsWith("⚙️ telepilot tools")
+    || value.startsWith("⚡ telepilot power tools")
+    || value.startsWith("🛑 emergency stop");
+}
+
+function pausedPageText(text, paused) {
+  let value = String(text || "");
+  if (!paused) return value;
+  if (/^✈️\s*telepilot/i.test(value)) {
+    value = value.replace(/(?:🟢|🟡|⚪)\s*(?:running|live|ready|stopped)/i, "⏸ Paused");
+    value = value.replace(/status\s+[—-]\s+(?:ready|live|running|stopped)/i, "Status — PAUSED");
+  }
+  return value;
 }
 
 function controlButtonForState({ paused, postingEnabled, text }) {
   if (paused) return { text: "Resume posting", callback_data: "v7_resume", style: "success" };
-  if (postingEnabled || /\bLIVE\b/.test(String(text || ""))) return { text: "Pause posting", callback_data: "v7_pause" };
+  if (postingEnabled || /\b(?:LIVE|Running)\b/i.test(String(text || ""))) {
+    return { text: "Pause posting", callback_data: "v7_pause" };
+  }
   return null;
 }
 
@@ -36,14 +51,15 @@ function transformControlUi(chatId, text, other) {
   try { paused = readV1(uid).paused === true; } catch {}
   try { postingEnabled = readAppSettings(uid)?.postingEnabled === true; } catch {}
 
-  let value = String(text || "");
-  if (paused && value.startsWith("✈️ TelePilot")) {
-    value = value.replace(/Status\s+[—-]\s+(?:READY|LIVE)/i, "Status — PAUSED");
-  }
-
+  const value = pausedPageText(text, paused);
+  const emergency = String(text || "").toLowerCase().startsWith("🛑 emergency stop");
   const rows = other.reply_markup.inline_keyboard
-    .map(row => row.filter(button => !["v7_pause", "v7_resume"].includes(String(button?.callback_data || ""))).map(button => ({ ...button })))
+    .map(row => row
+      .filter(button => !["v7_pause", "v7_resume"].includes(String(button?.callback_data || "")))
+      .filter(button => !(emergency && paused && /resume in tools/i.test(String(button?.text || ""))))
+      .map(button => ({ ...button })))
     .filter(row => row.length);
+
   const control = controlButtonForState({ paused, postingEnabled, text: value });
   if (control) {
     const backIndex = rows.findIndex(row => row.some(button => ["home", "v1_dashboard_v13"].includes(String(button?.callback_data || ""))));
@@ -117,4 +133,4 @@ export function installPauseResumeUi(ApiClass) {
   return true;
 }
 
-export const __test = { controlButtonForState, isControlPage };
+export const __test = { controlButtonForState, isControlPage, pausedPageText };
