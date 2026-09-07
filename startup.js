@@ -45,6 +45,7 @@ import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { installPauseResumeBot, installPauseResumeUi } from "./pause-resume-control-v1.js";
 import { installForwardedPostBot, installForwardedPostSend, installForwardedPostUi } from "./forwarded-post-v1.js";
+import { installForwardedPostSchedulerCompat } from "./forwarded-post-scheduler-compat.js";
 import { prepareV1Engine, installV1Engine } from "./v1-engine.js";
 import { installV1Extras } from "./v1-extras.js";
 import { installV1Ui } from "./v1-ui.js";
@@ -142,6 +143,10 @@ installForwardedPostSend(TelegramClient);
 // Install this nearest the raw Bot API so it sees the final Message keyboard
 // after the general UI wrappers have applied their own polish.
 installForwardedPostUi(Api);
+// Keep the legacy scheduler satisfied when Forwarded Post is the only configured
+// post. The placeholder never reaches Telegram because personal sends are
+// replaced by forwardMessages before dispatch.
+installForwardedPostSchedulerCompat(Api);
 // Install this before the general UI wrappers. Because those wrappers are added
 // later, this transformer runs nearest the raw Telegram send and sees their final
 // keyboard, so Pause/Resume cannot be accidentally dropped by later polish.
