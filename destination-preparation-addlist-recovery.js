@@ -1,7 +1,6 @@
 import {
   enqueueJoinRecovery,
   joinQueueSummary,
-  runDestinationJoinTick,
 } from "./destination-join-queue-v1.js";
 
 export function buildRecoveryPlan(review, accounts) {
@@ -28,7 +27,6 @@ export async function recoverNotJoinedAddlistPeers(uid, initialResult) {
 
   const queued = enqueueJoinRecovery(uid, postReview);
   console.log(`TelePilot Addlist recovery queued for ${uid}: created=${queued.created}, requeued=${queued.requeued}, pending=${queued.pending}`);
-  void runDestinationJoinTick();
 
   return {
     ...initialResult,
