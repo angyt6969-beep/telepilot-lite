@@ -56,7 +56,27 @@ export function writeProSettings(uid, value) {
   return normalized;
 }
 export function readAppSettings(uid) { return readJson(settingsPath(uid), {}); }
-export function writeAppSettings(uid, value) { writeJsonAtomic(settingsPath(uid), value || {}); return value; }
+function preserveDestinationPeerMetadata(previousGroups, nextGroups) {
+  if (!Array.isArray(nextGroups)) return nextGroups;
+  const previousById = new Map((Array.isArray(previousGroups) ? previousGroups : []).map(group => [String(group?.id || ""), group]));
+  return nextGroups.map(group => {
+    if (!group || typeof group !== "object") return group;
+    const previous = previousById.get(String(group.id || ""));
+    if (!previous) return group;
+    const next = { ...group };
+    if ((next.accessHash === undefined || next.accessHash === null || next.accessHash === "") && previous.accessHash !== undefined && previous.accessHash !== null && String(previous.accessHash) !== "") {
+      next.accessHash = String(previous.accessHash);
+    }
+    return next;
+  });
+}
+export function writeAppSettings(uid, value) {
+  const previous = readAppSettings(uid);
+  const next = value && typeof value === "object" ? { ...value } : {};
+  if (Array.isArray(next.groups)) next.groups = preserveDestinationPeerMetadata(previous.groups, next.groups);
+  writeJsonAtomic(settingsPath(uid), next);
+  return next;
+}
 export function listUserIds() {
   try {
     return fs.readdirSync(USERS_DIR, { withFileTypes: true })
@@ -186,3 +206,5 @@ export function installPostingEngineEnhancements(ApiClass, TelegramClientClass) 
     }
   }
 }
+
+export const __test = { preserveDestinationPeerMetadata };

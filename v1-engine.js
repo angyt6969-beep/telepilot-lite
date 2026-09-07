@@ -15,6 +15,7 @@ import {
 
 const CYCLE_STALE_MS = 30 * 60_000;
 const HISTORY_LIMIT = 500;
+const MEDIA_CAPTION_LIMIT = 1024;
 const cycleRuntime = new Map();
 let rawApiSendMessage = null;
 let rawPersonalSendMessage = null;
@@ -229,20 +230,86 @@ function toMtEntities(entities=[]) {
   }
   return out;
 }
-async function sendBotMedia(api,chatId,media,rendered) {
-  const options={...(rendered.text?{caption:rendered.text}:{}),...(rendered.entities.length?{caption_entities:rendered.entities}:{})};
-  if (rendered.text.length>1024) {
-    if(media.kind==="photo")await api.sendPhoto(chatId,media.fileId,{}); else if(media.kind==="video")await api.sendVideo(chatId,media.fileId,{}); else if(media.kind==="animation")await api.sendAnimation(chatId,media.fileId,{}); else await api.sendDocument(chatId,media.fileId,{});
-    return rawApiSendMessage.call(api,chatId,rendered.text||"\u2063",rendered.entities.length?{entities:rendered.entities}:{});
+
+function markPartialDelivery(err) {
+  const value = err && typeof err === "object" ? err : new Error(String(err || "Media was delivered but the follow-up text failed."));
+  try { value.__telepilotPartialDelivery = true; } catch {}
+  return value;
+}
+function botMediaDeliveryOptions(other = {}) {
+  const out = {};
+  for (const key of [
+    "business_connection_id", "message_thread_id", "direct_messages_topic_id", "disable_notification",
+    "protect_content", "allow_paid_broadcast", "message_effect_id", "suggested_post_parameters",
+    "reply_parameters", "reply_markup",
+  ]) {
+    if (other?.[key] !== undefined) out[key] = other[key];
   }
+  return out;
+}
+async function sendBotMediaStage(api,chatId,media,options) {
   if(media.kind==="photo")return api.sendPhoto(chatId,media.fileId,options);
   if(media.kind==="video")return api.sendVideo(chatId,media.fileId,{...options,supports_streaming:true});
   if(media.kind==="animation")return api.sendAnimation(chatId,media.fileId,options);
   return api.sendDocument(chatId,media.fileId,options);
 }
-async function sendPersonalMedia(client,entity,media,rendered) {
-  if (!media.localPath || !fs.existsSync(media.localPath)) return rawPersonalSendMessage.call(client,entity,{message:rendered.text||"\u2063",formattingEntities:toMtEntities(rendered.entities)});
-  return client.sendFile(entity,{file:media.localPath,caption:rendered.text,...(rendered.entities.length?{formattingEntities:toMtEntities(rendered.entities)}:{}),forceDocument:media.kind==="document",supportsStreaming:media.kind==="video"});
+async function sendBotMedia(api,chatId,media,rendered,other={}) {
+  const deliveryOptions=botMediaDeliveryOptions(other);
+  if (rendered.text.length>MEDIA_CAPTION_LIMIT) {
+    await withRetry(()=>sendBotMediaStage(api,chatId,media,deliveryOptions));
+    try {
+      return await withRetry(()=>rawApiSendMessage.call(api,chatId,rendered.text||"\u2063",{
+        ...deliveryOptions,
+        ...(rendered.entities.length?{entities:rendered.entities}:{}),
+      }));
+    } catch (err) {
+      throw markPartialDelivery(err);
+    }
+  }
+  const options={
+    ...deliveryOptions,
+    ...(rendered.text?{caption:rendered.text}:{}),
+    ...(rendered.entities.length?{caption_entities:rendered.entities}:{}),
+  };
+  return withRetry(()=>sendBotMediaStage(api,chatId,media,options));
+}
+function personalMediaDeliveryOptions(params={}) {
+  const { message, formattingEntities, ...rest } = params || {};
+  return rest;
+}
+async function sendPersonalMedia(client,entity,media,rendered,params={}) {
+  const mtEntities=toMtEntities(rendered.entities);
+  if (!media.localPath || !fs.existsSync(media.localPath)) {
+    return withRetry(()=>rawPersonalSendMessage.call(client,entity,{
+      ...params,
+      message:rendered.text||"\u2063",
+      formattingEntities:mtEntities,
+    }));
+  }
+  const deliveryOptions=personalMediaDeliveryOptions(params);
+  const common={
+    ...deliveryOptions,
+    file:media.localPath,
+    forceDocument:media.kind==="document",
+    supportsStreaming:media.kind==="video",
+  };
+  if (rendered.text.length>MEDIA_CAPTION_LIMIT) {
+    await withRetry(()=>client.sendFile(entity,{...common,caption:""}));
+    try {
+      return await withRetry(()=>rawPersonalSendMessage.call(client,entity,{
+        ...params,
+        message:rendered.text||"\u2063",
+        formattingEntities:mtEntities,
+      }));
+    } catch (err) {
+      throw markPartialDelivery(err);
+    }
+  }
+  return withRetry(()=>client.sendFile(entity,{
+    ...common,
+    caption:rendered.text,
+    ...(mtEntities.length?{formattingEntities:mtEntities}:{}),
+  }));
 }
 
 export function prepareV1Engine(ApiClass,TelegramClientClass) {
@@ -267,7 +334,13 @@ export function installV1Engine(ApiClass,TelegramClientClass) {
       const content=selectContent(uid,settings,pro,destination,cycle,context,text,other?.entities||[]), rendered=renderV1(content,pro,destination,sender), reason=skipReason(pro,cycle,destination);
       if(reason){recordSkipped(uid,destination,sender,reason,context);return fakeResult(rendered,reason);}
       if(cycle.index>1&&Number(pro.staggerSeconds||0)>0)await new Promise(r=>setTimeout(r,Number(pro.staggerSeconds)*1000));
-      try{const result=await withRetry(()=>pro.media?.fileId?sendBotMedia(this,chatId,pro.media,rendered):rawApiSendMessage.call(this,chatId,rendered.text||"\u2063",{...(other||{}),...(rendered.entities.length?{entities:rendered.entities}:{entities:undefined})},...rest));recordSuccess(uid,destination,sender,content.templateId,context);return result;}
+      try{
+        const result=pro.media?.fileId
+          ? await sendBotMedia(this,chatId,pro.media,rendered,other||{})
+          : await withRetry(()=>rawApiSendMessage.call(this,chatId,rendered.text||"\u2063",{...(other||{}),...(rendered.entities.length?{entities:rendered.entities}:{entities:undefined})},...rest));
+        recordSuccess(uid,destination,sender,content.templateId,context);
+        return result;
+      }
       catch(err){recordFailure(uid,destination,sender,err,context);throw err;}
     };
   }
@@ -285,7 +358,13 @@ export function installV1Engine(ApiClass,TelegramClientClass) {
       const content=selectContent(uid,settings,pro,destination,cycle,context,String(params?.message||""),params?.formattingEntities||[]), rendered=renderV1(content,pro,destination,sender), reason=skipReason(pro,cycle,destination);
       if(reason){recordSkipped(uid,destination,sender,reason,context);return fakeResult(rendered,reason);}
       if(cycle.index>1&&Number(pro.staggerSeconds||0)>0)await new Promise(r=>setTimeout(r,Number(pro.staggerSeconds)*1000));
-      try{const result=await withRetry(()=>pro.media?sendPersonalMedia(this,entity,pro.media,rendered):rawPersonalSendMessage.call(this,entity,{...params,message:rendered.text||"\u2063",formattingEntities:toMtEntities(rendered.entities)},...rest));recordSuccess(uid,destination,sender,content.templateId,context);return result;}
+      try{
+        const result=pro.media
+          ? await sendPersonalMedia(this,entity,pro.media,rendered,params)
+          : await withRetry(()=>rawPersonalSendMessage.call(this,entity,{...params,message:rendered.text||"\u2063",formattingEntities:toMtEntities(rendered.entities)},...rest));
+        recordSuccess(uid,destination,sender,content.templateId,context);
+        return result;
+      }
       catch(err){recordFailure(uid,destination,sender,err,context);throw err;}
     };
   }
@@ -302,3 +381,10 @@ export function queuePreview(uid,now=Date.now()) {
   for(const rule of pro.exactTimes||[]){if(rule.enabled===false||!/^\d{2}:\d{2}$/.test(String(rule.time||"")))continue;const[h,m]=String(rule.time).split(":").map(Number);for(let add=0;add<8;add++){const local=new Date(Date.UTC(localNow.getUTCFullYear(),localNow.getUTCMonth(),localNow.getUTCDate()+add,h,m));const days=Array.isArray(rule.days)?rule.days.map(Number):[0,1,2,3,4,5,6];if(!days.includes(local.getUTCDay()))continue;const runAt=local.getTime()-offset*60_000;if(runAt>=now){items.push({runAt,label:`Exact — ${rule.time}`});break;}}}
   return items.sort((a,b)=>a.runAt-b.runAt).slice(0,20);
 }
+
+export const __test = {
+  MEDIA_CAPTION_LIMIT,
+  markPartialDelivery,
+  botMediaDeliveryOptions,
+  personalMediaDeliveryOptions,
+};
