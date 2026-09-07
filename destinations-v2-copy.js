@@ -35,15 +35,22 @@ function rewrite(chatId, text, other) {
 
   if (value.startsWith("📍 Step 2 of 5 — Destinations")) {
     value = value
-      .replace(/TelePilot automatically joins supported missing groups and Addlists with the selected personal senders\.?/g, "TelePilot only checks chats your connected personal accounts already have access to.")
-      .replace(/TelePilot automatically joins missing groups\.?/g, "TelePilot never joins groups for you. Join them in Telegram first, then add them here.");
+      .replace(/TelePilot automatically joins supported missing groups and Addlists with the selected personal senders\.?/g, "TelePilot scans first. On the review screen you can explicitly choose Join + prepare to join missing groups and queue mute + archive.")
+      .replace(/TelePilot automatically joins missing groups\.?/g, "TelePilot scans first, then Join + prepare performs the Telegram changes only after you confirm.")
+      .replace(/TelePilot only checks chats your connected personal accounts already have access to\.?/g, "TelePilot scans first. Join + prepare can then join missing groups and queue mute + archive after you confirm.")
+      .replace(/TelePilot never joins groups for you\. Join them in Telegram first, then add them here\.?/g, "TelePilot only joins from the explicit Join + prepare action on the review screen.");
   }
 
   if (value.startsWith("👤 Accounts")) {
-    value = value.replace(
-      /Connected personal accounts can join supported destinations, Addlists and request-only groups for you\. Readiness is tracked separately for each sender account\./g,
-      "Connected personal accounts are used to verify access to destinations you already joined. TelePilot never joins chats from this screen.",
-    );
+    value = value
+      .replace(
+        /Connected personal accounts can join supported destinations, Addlists and request-only groups for you\. Readiness is tracked separately for each sender account\./g,
+        "Connected personal accounts verify access and are used only when you explicitly run Join + prepare from Destination Hub.",
+      )
+      .replace(
+        /Connected personal accounts are used to verify access to destinations you already joined\. TelePilot never joins chats from this screen\./g,
+        "Connected personal accounts verify access. Telegram joins only run after you explicitly choose Join + prepare in Destination Hub.",
+      );
   }
 
   if (value.startsWith("⚙️ Settings")) {
@@ -52,14 +59,24 @@ function rewrite(chatId, text, other) {
       .replace(/Preferred topic words\s+[^\n]+\n?/g, "");
   }
 
-  if (value.startsWith("📥 Add / Import Destinations") || value.startsWith("📍 Add destination") || value.startsWith("📍 Add destinations")) {
+  if (
+    value.startsWith("＋ Add destinations")
+    || value.startsWith("📥 Add / Import Destinations")
+    || value.startsWith("📍 Add destination")
+    || value.startsWith("📍 Add destinations")
+  ) {
     value = [
       "＋ Add destinations",
       "",
-      "Send @usernames, public links, private invite links or t.me/addlist/... shared folders.",
+      "Send one or many Telegram sources, one per line:",
+      "• @groupname",
+      "• t.me/groupname",
+      "• https://t.me/groupname",
+      "• private t.me/+ invite links",
+      "• t.me/addlist/... shared folders",
       "",
-      "TelePilot scans access only. It never joins, mutes or archives chats.",
-      "If a group is not already joined, you will be asked to join it in Telegram first.",
+      "TelePilot scans first and changes nothing during the scan.",
+      "On Review, choose ⚡ Join + prepare to join missing groups. Confirmed groups are then queued for mute + archive. Forum topics are still chosen manually.",
     ].join("\n");
     options = { ...options, reply_markup: { inline_keyboard: [[{ text: "← Destination Hub", callback_data: "v1_destinations_v13" }]] } };
   }
