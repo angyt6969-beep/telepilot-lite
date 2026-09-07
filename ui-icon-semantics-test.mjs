@@ -22,6 +22,7 @@ ui.configureUiIconSemanticsStickers([
 const corrected = ui.correctUiIconPayload(
   "⚡ Preparing destinations…\n\n↻ Check access when ready.",
   {
+    entities: [{ type: "custom_emoji", offset: 0, length: "⚡".length, custom_emoji_id: "electric" }],
     reply_markup: {
       inline_keyboard: [
         [{ text: "◀", callback_data: "d2_browse:0" }, { text: "2/10", callback_data: "d2_noop" }, { text: "▶", callback_data: "d2_browse:2" }],
@@ -30,6 +31,7 @@ const corrected = ui.correctUiIconPayload(
         [{ text: "⚙️ Settings", callback_data: "v1_settings_v13" }],
         [{ text: "Cancel", callback_data: "cancel" }],
         [{ text: "Mystery action", callback_data: "mystery_action" }],
+        [{ text: "Settings", callback_data: "v1_settings_v13", icon_custom_emoji_id: "electric" }],
         [{ text: "Already premium", callback_data: "keep", icon_custom_emoji_id: "existing", style: "primary" }],
       ],
     },
@@ -49,11 +51,12 @@ assert.equal(buttons[5].text, "Settings");
 assert.equal(buttons[5].icon_custom_emoji_id, "idea");
 assert.equal(buttons[6].icon_custom_emoji_id, "danger");
 assert.equal(buttons[7].icon_custom_emoji_id, "idea", "Unknown actions use a neutral premium action icon, never electricity");
-assert.deepEqual(buttons[8], { text: "Already premium", callback_data: "keep", icon_custom_emoji_id: "existing", style: "primary" });
+assert.equal(buttons[8].icon_custom_emoji_id, "idea", "An inherited generic electricity icon must be replaced by the button's real meaning");
+assert.deepEqual(buttons[9], { text: "Already premium", callback_data: "keep", icon_custom_emoji_id: "existing", style: "primary" });
 assert.equal(buttons.some(button => button.icon_custom_emoji_id === "electric"), false, "Generic electricity icon must not leak into corrected buttons");
 
 const entities = corrected.other.entities || [];
-assert.ok(entities.some(entity => entity.type === "custom_emoji" && entity.offset === 0 && entity.custom_emoji_id === "fire"), "Preparing heading electricity glyph should render with action/fire premium semantics");
+assert.ok(entities.some(entity => entity.type === "custom_emoji" && entity.offset === 0 && entity.custom_emoji_id === "fire"), "Inherited electricity heading icon should be replaced by action/fire semantics");
 const refreshOffset = corrected.text.indexOf("↻");
 assert.equal(
   entities.some(entity => entity.type === "custom_emoji" && entity.offset === refreshOffset && entity.custom_emoji_id === "electric"),
