@@ -5,6 +5,10 @@ import {
   prepareReviewedSources,
 } from "./destination-preparation-v1.js";
 import { recoverNotJoinedAddlistPeers } from "./destination-preparation-addlist-recovery.js";
+import {
+  joinQueueSummary,
+  runDestinationJoinTick,
+} from "./destination-join-queue-v1.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const REVIEW_TTL_MS = 30 * 60_000;
@@ -57,7 +61,7 @@ function reviewScreen(review) {
       sample || "No accessible groups were found yet.",
       accessible > 6 ? `… and ${accessible - 6} more` : null,
       "",
-      canPrepare ? "Choose Join + prepare to join missing groups, then queue mute + archive for confirmed groups." : "Scan again to enable preparation.",
+      canPrepare ? "Choose Join + prepare. Missing Addlist groups are placed into a paced join queue; confirmed groups then enter mute + archive cleanup." : "Scan again to enable preparation.",
     ].filter(Boolean).join("\n"),
     rows: [
       canPrepare ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
@@ -78,6 +82,33 @@ function skippedScreen(review) {
     rows: [[inline("← Review", `d3_review:${review.token}`)]],
   };
 }
+function joinScreen(uid) {
+  const summary = joinQueueSummary(uid);
+  const wait = summary.nextAt > Date.now() ? Math.max(1, Math.ceil((summary.nextAt - Date.now()) / 1000)) : 0;
+  return {
+    text: [
+      "⚡ Destination join queue",
+      "",
+      `Queued  ${summary.total}`,
+      `Joined  ${summary.joined}/${summary.total}`,
+      `Waiting  ${summary.pending}`,
+      summary.requestPending ? `Approval required  ${summary.requestPending}` : null,
+      summary.failed ? `Needs attention  ${summary.failed}` : null,
+      wait ? `Telegram cooldown  ~${wait}s` : null,
+      "",
+      summary.pending
+        ? "TelePilot resumes automatically after Telegram cooldowns. Completed joins are saved and sent to mute + archive cleanup immediately."
+        : summary.requestPending
+          ? "Some groups require an admin to approve the Telegram join request."
+          : "No automatic join work is waiting.",
+    ].filter(Boolean).join("\n"),
+    rows: [
+      [inline("↻ Refresh", "d3_join_status")],
+      [inline("🧹 Cleanup status", "d3_cleanup_status")],
+      [inline("← Destination Hub", "v1_destinations_v13")],
+    ],
+  };
+}
 function cleanupScreen(uid) {
   const summary = cleanupSummary(uid);
   const wait = summary.nextAt > Date.now() ? Math.max(1, Math.ceil((summary.nextAt - Date.now()) / 1000)) : 0;
@@ -92,9 +123,9 @@ function cleanupScreen(uid) {
       summary.failed ? `Needs attention  ${summary.failed}` : null,
       wait ? `Telegram cooldown  ~${wait}s` : null,
       "",
-      summary.waiting ? "Cleanup continues automatically from the explicit preparation queue." : "No cleanup work is waiting.",
+      summary.waiting ? "Cleanup continues automatically from confirmed join jobs." : "No cleanup work is waiting.",
     ].filter(Boolean).join("\n"),
-    rows: [[inline("↻ Refresh", "d3_cleanup_status")], [inline("← Destination Hub", "v1_destinations_v13")]],
+    rows: [[inline("↻ Refresh", "d3_cleanup_status")], [inline("⚡ Join status", "d3_join_status")], [inline("← Destination Hub", "v1_destinations_v13")]],
   };
 }
 async function editOrReply(ctx, screen) {
@@ -126,38 +157,45 @@ export function installDestinationPreparationUi(BotClass) {
         running.add(uid);
         await ctx.answerCallbackQuery({ text: "Preparing destinations…" });
         await editOrReply(ctx, {
-          text: "⚡ Preparing destinations…\n\nJoining missing groups first. TelePilot will only save chats Telegram confirms as joined. Mute + archive are queued afterward.",
+          text: "⚡ Preparing destinations…\n\nTelegram membership is checked first. Addlist groups that still need joining are queued safely instead of being dropped on a flood wait.",
           rows: [],
         });
         try {
           const initial = await prepareReviewedSources(uid, review);
           const result = await recoverNotJoinedAddlistPeers(uid, initial);
           writeReview(uid, result.postReview);
+          void runDestinationJoinTick();
+
           const ready = result.postReview?.accessible?.length || 0;
           const notJoined = result.postReview?.notJoined?.length || 0;
           const failures = result.failures?.length || 0;
           const topics = Number(result.saved?.topics || 0);
-          const recovered = Number(result.recovery?.recoveredAccessible || 0);
+          const joinSummary = joinQueueSummary(uid);
+          const joinActive = joinSummary.pending > 0;
           await editOrReply(ctx, {
             text: [
-              "✅ Join stage finished",
+              joinActive ? "⏳ Join preparation started" : "✅ Join stage finished",
               "",
-              `Ready after verification  ${ready}`,
-              `Newly accessible  ${result.newlyAccessible}`,
-              recovered ? `Recovered from imported folder  ${recovered}` : null,
-              `New saved  ${result.saved?.added || 0}`,
+              `Ready immediately  ${ready}`,
+              `New saved immediately  ${result.saved?.added || 0}`,
               `Already saved  ${result.saved?.existing || 0}`,
               topics ? `Topics to choose  ${topics}` : null,
-              notJoined ? `Still not joined  ${notJoined}` : null,
-              result.pending?.length ? `Join requests pending  ${result.pending.length}` : null,
-              failures ? `Join errors  ${failures}` : null,
+              joinSummary.total ? `Join queue  ${joinSummary.joined}/${joinSummary.total}` : null,
+              joinSummary.pending ? `Waiting to join  ${joinSummary.pending}` : null,
+              joinSummary.requestPending ? `Join requests awaiting approval  ${joinSummary.requestPending}` : null,
+              joinSummary.failed ? `Join tasks needing attention  ${joinSummary.failed}` : null,
+              !joinSummary.total && notJoined ? `Still not joined  ${notJoined}` : null,
+              result.pending?.length ? `Folder-level join requests pending  ${result.pending.length}` : null,
+              failures ? `Folder-level join errors  ${failures}` : null,
               "",
-              `Cleanup queued  ${result.cleanup?.pending || 0}`,
-              "Mute and archive run from the separate paced queue only after Telegram confirms membership.",
-              failures ? `\nFirst error: ${result.failures[0]}` : null,
+              `Cleanup queued now  ${result.cleanup?.pending || 0}`,
+              joinActive
+                ? "The remaining joins continue automatically. Each confirmed group is saved, muted and archived without restarting the import."
+                : "Mute and archive run only for Telegram-confirmed members.",
+              failures ? `\nFirst folder-level error: ${result.failures[0]}` : null,
             ].filter(Boolean).join("\n"),
             rows: [
-              [inline("🧹 Cleanup status", "d3_cleanup_status")],
+              joinSummary.total ? [inline("⚡ Join status", "d3_join_status"), inline("🧹 Cleanup status", "d3_cleanup_status")] : [inline("🧹 Cleanup status", "d3_cleanup_status")],
               topics ? [inline("💬 Choose topics", "d2_topics:0")] : [],
               [inline("📚 Browse", "d2_browse:0")],
               [inline("← Destination Hub", "v1_destinations_v13")],
@@ -183,6 +221,11 @@ export function installDestinationPreparationUi(BotClass) {
         await ctx.answerCallbackQuery();
         const review = readReview(String(ctx.from?.id || ""));
         return editOrReply(ctx, review?.token === ctx.match[1] ? skippedScreen(review) : { text: "⌛ Scan expired", rows: [[inline("← Destination Hub", "v1_destinations_v13")]] });
+      });
+
+      this.callbackQuery("d3_join_status", async ctx => {
+        await ctx.answerCallbackQuery();
+        return editOrReply(ctx, joinScreen(String(ctx.from?.id || "")));
       });
 
       this.callbackQuery("d3_cleanup_status", async ctx => {
