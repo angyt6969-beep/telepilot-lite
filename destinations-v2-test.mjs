@@ -35,6 +35,15 @@ assert.equal(mod.parseDestinationInput("https://t.me/addlist/IdgqRZms8tQwZTEx")?
 assert.equal(mod.parseDestinationInput("[group](https://t.me/RareHandle)")?.kind, "public");
 assert.equal(mod.parseDestinationInput("https://example.com/nope"), null);
 
+// Only Telegram's explicit USER_NOT_PARTICIPANT result may be classified as
+// not joined during a scan. Other access failures stay inconclusive.
+assert.equal(mod.__test.membershipErrorState(new Error("USER_NOT_PARTICIPANT")).status, "not_member");
+assert.equal(mod.__test.membershipErrorState(new Error("CHANNEL_PRIVATE")).status, "issue");
+assert.equal(mod.__test.membershipErrorState(new Error("CHAT_ADMIN_REQUIRED")).status, "issue");
+assert.equal(mod.__test.candidateNotJoined({ accountJoin: { a: { status: "not_member" }, b: { status: "not_member" } } }), true);
+assert.equal(mod.__test.candidateNotJoined({ accountJoin: { a: { status: "not_member" }, b: { status: "issue" } } }), false);
+assert.equal(mod.__test.candidateIssue({ accountJoin: { a: { status: "issue" } } }), true);
+
 const review = {
   accessible: [
     {
@@ -82,19 +91,29 @@ assert.equal(duplicate.added, 0);
 assert.equal(duplicate.existing, 2);
 assert.equal(JSON.parse(fs.readFileSync(path.join(root, "users", "42", "settings.json"), "utf8")).groups.length, 2);
 
-// Routing refresh requests are persisted instead of silently returning zero.
+// Topic loading must prefer the account routed to this destination, not the
+// unrelated account selected globally.
+const topicAccounts = [{ id: "A" }, { id: "B" }];
+const routedForum = { accountMode: "selected", accountIds: ["B"], accountJoin: { A: { status: "ready" }, B: { status: "ready" } } };
+assert.equal(
+  mod.__test.topicAccountFor({ senderMode: "selected", selectedAccountIds: ["A"] }, routedForum, topicAccounts)?.id,
+  "B",
+);
+
+// Routing refresh requests are persisted separately from the interactive
+// destinations-v2 state, so a pending Add/Review write cannot erase them.
 const queued = mod.queueRoutingSync("42", "-1001001", ["acc2"]);
 assert.equal(queued, 1);
-const routingStatePath = path.join(root, "users", "42", "destinations-v2.json");
+const routingStatePath = path.join(root, "users", "42", "destination-routing-sync.json");
 const routingState = JSON.parse(fs.readFileSync(routingStatePath, "utf8"));
-assert.equal(routingState.routingQueue.length, 1);
-assert.deepEqual(routingState.routingQueue[0].destinationIds, ["-1001001"]);
-assert.deepEqual(routingState.routingQueue[0].accountIds, ["acc2"]);
-assert.equal(typeof routingState.routingQueue[0].id, "string");
-assert.ok(routingState.routingQueue[0].id.length > 0);
+assert.equal(routingState.length, 1);
+assert.deepEqual(routingState[0].destinationIds, ["-1001001"]);
+assert.deepEqual(routingState[0].accountIds, ["acc2"]);
+assert.equal(typeof routingState[0].id, "string");
+assert.ok(routingState[0].id.length > 0);
 
 // Repeating the exact pending refresh must not create duplicate work.
 assert.equal(mod.queueRoutingSync("42", "-1001001", ["acc2"]), 0);
-assert.equal(JSON.parse(fs.readFileSync(routingStatePath, "utf8")).routingQueue.length, 1);
+assert.equal(JSON.parse(fs.readFileSync(routingStatePath, "utf8")).length, 1);
 
 console.log("TelePilot Destinations v2 clean-slate checks passed");
