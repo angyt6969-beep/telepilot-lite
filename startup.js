@@ -95,9 +95,6 @@ installV1Controls(Bot);
 // Capture the established Start/Stop/Home callbacks so pause and resume use the
 // same validated posting loop rather than creating a second scheduler path.
 installPauseResumeBot(Bot);
-// Forwarded Post captures its own source-message input before app.js installs the
-// normal message:text handler. Existing Normal Post behavior remains untouched.
-installForwardedPostBot(Bot);
 installV1Extras(Bot);
 installSupportCenterEarly(Bot, installSupportCenter);
 installOnboarding(Bot);
@@ -120,6 +117,9 @@ installReviewIssuesIconCleanup(Bot);
 // Bind before app.js registers its legacy message:text handler so destination
 // input is captured by the scanner first.
 installDestinationsV2InputPriority(Bot);
+// Install after destination input priority so Forwarded Post's one-shot source
+// capture is registered first when app.js later binds its message:text handler.
+installForwardedPostBot(Bot);
 // Telegram mutations live in a separate explicit action layer. It owns only d3_*
 // callbacks and never replaces the working scanner callbacks.
 installDestinationPreparationUi(Bot);
