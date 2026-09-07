@@ -46,6 +46,11 @@ function firstId(candidates = []) {
   return null;
 }
 
+function isElectricPremiumId(id) {
+  const electricId = directId("⚡️");
+  return !!electricId && String(id || "") === String(electricId);
+}
+
 function candidatesForEmoji(emoji) {
   if (!emoji) return [];
   if (normalizeEmoji(emoji) === normalizeEmoji("⚡️")) return [];
@@ -128,11 +133,14 @@ function premiumizeButtons(other) {
   const next = cloneOther(other);
   next.reply_markup.inline_keyboard = next.reply_markup.inline_keyboard.map(row => row.map(source => {
     const button = { ...source };
-    if (button.icon_custom_emoji_id) return button;
-
     const originalLabel = String(button.text || "");
     const nav = navigationKind(originalLabel);
     const match = firstId(semanticCandidates(button));
+
+    // Preserve existing premium buttons unless the inherited icon is specifically
+    // the old generic electricity fallback. In that one case, replace it with the
+    // button's actual semantic icon.
+    if (button.icon_custom_emoji_id && !isElectricPremiumId(button.icon_custom_emoji_id)) return button;
     if (!match) return button;
 
     button.icon_custom_emoji_id = match.id;
@@ -166,10 +174,10 @@ function overlaps(ranges, offset, length) {
   return ranges.some(range => offset < range.end && end > range.start);
 }
 
-function hasCustomEmojiAt(entities, offset, length) {
-  return entities.some(entity => entity?.type === "custom_emoji"
+function customEmojiAt(entities, offset, length) {
+  return entities.find(entity => entity?.type === "custom_emoji"
     && Number(entity.offset) === offset
-    && Number(entity.length) === length);
+    && Number(entity.length) === length) || null;
 }
 
 function lineForOffset(text, offset) {
@@ -197,9 +205,16 @@ function premiumizeText(text, other) {
   for (const match of String(text || "").matchAll(EMOJI_RE)) {
     const emoji = match[0];
     const offset = Number(match.index || 0);
-    if (overlaps(ranges, offset, emoji.length) || hasCustomEmojiAt(entities, offset, emoji.length)) continue;
+    if (overlaps(ranges, offset, emoji.length)) continue;
     const resolved = firstId(textEmojiCandidates(emoji, lineForOffset(text, offset)));
     if (!resolved) continue;
+    const existing = customEmojiAt(entities, offset, emoji.length);
+    if (existing) {
+      if (isElectricPremiumId(existing.custom_emoji_id) && !isElectricPremiumId(resolved.id)) {
+        existing.custom_emoji_id = resolved.id;
+      }
+      continue;
+    }
     entities.push({ type: "custom_emoji", offset, length: emoji.length, custom_emoji_id: resolved.id });
   }
   if (entities.length) {
@@ -260,4 +275,4 @@ export function installUiIconSemantics(ApiClass) {
   console.log("TelePilot UI icon semantics enabled (meaning-first; no generic electricity fallback)");
 }
 
-export const __test = { navigationKind, semanticCandidates, styleForButton, textEmojiCandidates };
+export const __test = { navigationKind, semanticCandidates, styleForButton, textEmojiCandidates, isElectricPremiumId };
