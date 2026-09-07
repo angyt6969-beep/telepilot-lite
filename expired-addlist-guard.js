@@ -13,7 +13,13 @@ function unavailableRows(review) {
 
 function issueText(value) {
   if (typeof value === "string") return value;
-  return `${String(value?.code || "")} ${String(value?.reason || "")}`.trim();
+  return [
+    value?.code,
+    value?.reason,
+    value?.errorMessage,
+    value?.description,
+    value?.message,
+  ].map(part => String(part || "")).filter(Boolean).join(" ").trim();
 }
 
 export function isExpiredAddlistError(value) {
@@ -77,6 +83,7 @@ export function expiredAddlistMessage() {
 
 export const __test = {
   sourceCount,
+  issueText,
   EMPTY_SHARED_FOLDER_TEXT,
   EXPIRED_ADDLIST_CODE,
 };
