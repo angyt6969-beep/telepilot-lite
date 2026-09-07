@@ -18,6 +18,12 @@ import { startDestinationJoinWorker } from "./destination-join-queue-v1.js";
 import { startCleanupRejoinBridge } from "./destination-cleanup-rejoin-bridge.js";
 import { installPrivatePeerResolution } from "./private-peer-resolution.js";
 import { installTelegramRuntimeOptimizer } from "./telegram-runtime-optimizer.js";
+import {
+  installPostingReliabilityPre,
+  installPostingReliabilityPost,
+  installPostingReliabilityUi,
+  retireLegacyAttentionQueues,
+} from "./posting-reliability-v2.js";
 import { installUxNavigation, installUxV12 } from "./ux-v12.js";
 import { installUxV13Navigation, installUxV13, startQolV13Worker } from "./ux-v13.js";
 import { installUxV13PolishNavigation, installUxV13Polish } from "./ux-v13-polish.js";
@@ -64,6 +70,12 @@ const runtimeOptimizer = installTelegramRuntimeOptimizer(TelegramClient, {
 });
 console.log(`TelePilot Telegram runtime optimizer enabled (identity cache ${Math.round(runtimeOptimizer.getMeTtlMs / 60_000)}m; dialog gap ${Math.round(runtimeOptimizer.dialogMinGapMs / 1000)}s; connect gap ${runtimeOptimizer.connectMinGapMs}ms)`);
 
+installPostingReliabilityPre(TelegramClient);
+const retiredAttention = retireLegacyAttentionQueues();
+if (retiredAttention.unresolved || retiredAttention.routing) {
+  console.log(`TelePilot retired stale destination attention queues: unresolved=${retiredAttention.unresolved}, routing=${retiredAttention.routing}, users=${retiredAttention.users}`);
+}
+
 retireLegacyDestinationState();
 installLegalPages();
 installConnectUi();
@@ -99,6 +111,7 @@ installDestinationDeleteAll(Bot);
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
 installV1Engine(Api, TelegramClient);
+installPostingReliabilityPost(TelegramClient);
 installPrivatePeerResolution(TelegramClient);
 
 // The global gap-fill is innermost. Semantic icon correction sits directly
@@ -121,6 +134,9 @@ installDestinationsV2Copy(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
+// Reliability UI is outermost so generic legacy posting failures are replaced by
+// exact Telegram reasons after all other text/keyboard transforms finish.
+installPostingReliabilityUi(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
 
