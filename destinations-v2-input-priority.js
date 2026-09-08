@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { importDestinationBatch, importResultScreen } from "./destination-import-engine-v2.js";
+import { importDestinationBatch, importResultScreen } from "./destination-import-result-v3.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const INPUT_TTL_MS = 20 * 60_000;
@@ -65,10 +65,11 @@ async function destinationInputPriorityMiddleware(ctx, next) {
       text: [
         "⚡ <b><i>Adding destinations</i></b>",
         "",
-        "<i>TelePilot is checking the groups, joining eligible destinations, then starting mute + archive cleanup.</i>",
+        "<i>TelePilot is checking posting access first, joining eligible destinations, then starting mute + archive cleanup.</i>",
         "",
         "<b>Addlists:</b> — Telegram native shared-folder bulk import",
         "<b>Group lists:</b> — automatic individual joins",
+        "<b>Read-only groups:</b> — discarded before joining",
       ].join("\n"),
       parse_mode: "HTML",
       rows: [],
@@ -83,7 +84,8 @@ async function destinationInputPriorityMiddleware(ctx, next) {
     });
     console.log(
       `TelePilot destination import complete for ${uid}: ready=${result.postReview?.accessible?.length || 0}, `
-      + `notJoined=${result.postReview?.notJoined?.length || 0}, failures=${result.outcomes?.filter(row => row.status === "error").length || 0}`,
+      + `notJoined=${result.postReview?.notJoined?.length || 0}, discarded=${result.outcomes?.filter(row => row.status === "discarded").length || 0}, `
+      + `failures=${result.outcomes?.filter(row => row.status === "error").length || 0}`,
     );
     await editPrompt(ctx, pending, importResultScreen(result));
     return;
