@@ -41,7 +41,7 @@ function positivePrivateChat(chatId) {
 
 function plain(value) {
   return String(value || "")
-    .replace(/<tg-emoji[^>]*>.*?<\/tg-emoji>/gis, "")
+    .replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gis, "$1")
     .replace(/<[^>]+>/g, "")
     .trim();
 }
@@ -173,9 +173,8 @@ export function installSingleMessageUiApi(ApiClass = Api) {
 
   ApiClass.prototype.sendMessage = async function(chatId, text, other, ...rest) {
     const prepared = transformTelePilotOutgoing(chatId, text, other);
-    const privateChat = positivePrivateChat(chatId);
-    const uiScreen = privateChat && isTelePilotScreen(prepared.text, prepared.other) && !isStandaloneError(prepared.text);
-    const activeId = uiScreen ? ACTIVE_UI.get(String(chatId)) : null;
+    const singlePanel = positivePrivateChat(chatId) && !isStandaloneError(prepared.text);
+    const activeId = singlePanel ? ACTIVE_UI.get(String(chatId)) : null;
 
     if (activeId) {
       try {
@@ -189,7 +188,7 @@ export function installSingleMessageUiApi(ApiClass = Api) {
     }
 
     const response = await originalSendMessage.call(this, chatId, prepared.text, prepared.other, ...rest);
-    if (uiScreen) remember(chatId, response?.message_id);
+    if (singlePanel) remember(chatId, response?.message_id);
     return response;
   };
 
@@ -197,7 +196,7 @@ export function installSingleMessageUiApi(ApiClass = Api) {
     const prepared = transformTelePilotOutgoing(chatId, text, other);
     try {
       const response = await originalEditMessageText.call(this, chatId, messageId, prepared.text, prepared.other, ...rest);
-      if (positivePrivateChat(chatId) && isTelePilotScreen(prepared.text, prepared.other) && !isStandaloneError(prepared.text)) {
+      if (positivePrivateChat(chatId) && !isStandaloneError(prepared.text)) {
         remember(chatId, response?.message_id || messageId);
       }
       return response;
