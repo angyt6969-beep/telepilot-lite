@@ -1,12 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { scanDestinationSources } from "./destinations-v2.js";
-import {
-  canPrepareReview,
-  expiredAddlistMessage,
-  expiredAddlistOnly,
-  reviewCouldNotUseCount,
-} from "./expired-addlist-guard.js";
+import { importDestinationBatch, importResultScreen } from "./destination-import-engine-v2.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const INPUT_TTL_MS = 20 * 60_000;
@@ -37,49 +31,15 @@ function cleanState(raw = {}) {
 }
 function readState(uid) { return cleanState(readJson(statePath(uid), {})); }
 function writeState(uid, value) { writeJsonAtomic(statePath(uid), cleanState(value)); }
-function errorText(err) { return String(err?.errorMessage || err?.description || err?.message || err || "Unknown Telegram error").slice(0, 180); }
+function errorText(err) { return String(err?.errorMessage || err?.description || err?.message || err || "Unknown Telegram error").slice(0, 220); }
 function inline(text, callback_data) { return { text, callback_data }; }
 function keyboard(rows) { return { inline_keyboard: rows.filter(row => Array.isArray(row) && row.length) }; }
 
-function reviewScreen(review) {
-  const accessible = review?.accessible?.length || 0;
-  const notJoined = review?.notJoined?.length || 0;
-  const unsupported = review?.unsupported?.length || 0;
-  const invalid = reviewCouldNotUseCount(review);
-  const forums = (review?.accessible || []).filter(item => item.forum).length;
-  const sample = (review?.accessible || []).slice(0, 6).map(item => `✅ ${item.username || item.label}`).join("\n");
-  const expiredOnly = expiredAddlistOnly(review);
-  const canPrepare = canPrepareReview(review);
-  return {
-    text: [
-      "🔎 Review scan",
-      "",
-      `Ready now  ${accessible}`,
-      forums ? `Forum groups  ${forums}` : null,
-      notJoined ? `Not joined yet  ${notJoined}` : null,
-      unsupported ? `Unsupported  ${unsupported}` : null,
-      invalid ? `Could not use  ${invalid}` : null,
-      "",
-      sample || (expiredOnly ? "The shared-folder link is no longer usable." : "No accessible groups were found yet."),
-      accessible > 6 ? `… and ${accessible - 6} more` : null,
-      "",
-      expiredOnly
-        ? expiredAddlistMessage()
-        : canPrepare
-          ? "Nothing has been changed yet. Join + prepare will join missing groups, then queue mute + archive only for Telegram-confirmed members."
-          : "Scan again to enable preparation.",
-    ].filter(Boolean).join("\n"),
-    rows: [
-      expiredOnly ? [inline("🔄 Scan fresh Addlist", "d2_add")] : canPrepare ? [inline("⚡ Join + prepare all", `d3_prepare:${review.token}`)] : [],
-      accessible ? [inline(`Add ${accessible} accessible only`, `d2_confirm:${review.token}`)] : [],
-      notJoined || invalid || unsupported ? [inline("View not added", `d3_skipped:${review.token}`)] : [],
-      [inline("Cancel", "v1_destinations_v13")],
-    ],
-  };
-}
-
 async function editPrompt(ctx, pending, screen) {
-  const options = { reply_markup: keyboard(screen.rows || []) };
+  const options = {
+    reply_markup: keyboard(screen.rows || []),
+    ...(screen.parse_mode ? { parse_mode: screen.parse_mode } : {}),
+  };
   try {
     return await ctx.api.editMessageText(Number(pending.chatId), Number(pending.messageId), screen.text, options);
   } catch {
@@ -97,30 +57,48 @@ async function destinationInputPriorityMiddleware(ctx, next) {
   try { await ctx.deleteMessage(); } catch {}
   const rawText = String(ctx.message.text || "").slice(0, MAX_SOURCE_TEXT);
   const sourceCount = rawText.split(/\r?\n/).map(line => line.trim()).filter(Boolean).length;
-  console.log(`TelePilot Destinations v2 captured destination input for ${uid}: ${sourceCount} source line(s)`);
+  console.log(`TelePilot captured destination import for ${uid}: ${sourceCount} source line(s)`);
 
+  writeState(uid, { ...state, pendingInput: null, review: null });
   try {
     await editPrompt(ctx, pending, {
-      text: "🔎 Scanning Telegram access…\n\nChecking current membership first. No Telegram changes are made during this scan.",
+      text: [
+        "⚡ <b><i>Adding destinations</i></b>",
+        "",
+        "<i>TelePilot is checking the groups, joining eligible destinations, then starting mute + archive cleanup.</i>",
+        "",
+        "<b>Addlists:</b> — Telegram native shared-folder bulk import",
+        "<b>Group lists:</b> — automatic individual joins",
+      ].join("\n"),
+      parse_mode: "HTML",
       rows: [],
     });
-    const scanned = await scanDestinationSources(uid, rawText);
-    const review = { ...scanned, sourceText: rawText };
+
+    const result = await importDestinationBatch(uid, rawText);
     writeState(uid, {
-      ...state,
+      ...readState(uid),
       pendingInput: null,
-      review,
-      lastScan: { at: Date.now(), token: review.token },
+      review: result.postReview,
+      lastScan: { at: Date.now(), token: result.postReview?.token || "" },
     });
-    console.log(`TelePilot Destinations v2 scan complete for ${uid}: ${review.accessible?.length || 0} accessible, ${review.notJoined?.length || 0} not joined`);
-    await editPrompt(ctx, pending, reviewScreen(review));
+    console.log(
+      `TelePilot destination import complete for ${uid}: ready=${result.postReview?.accessible?.length || 0}, `
+      + `notJoined=${result.postReview?.notJoined?.length || 0}, failures=${result.outcomes?.filter(row => row.status === "error").length || 0}`,
+    );
+    await editPrompt(ctx, pending, importResultScreen(result));
     return;
   } catch (err) {
-    writeState(uid, { ...state, pendingInput: null });
-    console.warn(`TelePilot Destinations v2 scan failed for ${uid}: ${errorText(err)}`);
+    console.warn(`TelePilot destination import failed for ${uid}: ${errorText(err)}`);
     await editPrompt(ctx, pending, {
-      text: `❌ Could not scan destinations\n\n${errorText(err)}`,
-      rows: [[inline("Try again", "d2_add")], [inline("← Destination Hub", "v1_destinations_v13")]],
+      text: [
+        "❌ <b><i>Destination import failed</i></b>",
+        "",
+        `<b>Reason:</b> — ${String(errorText(err)).replace(/[&<>]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]))}`,
+        "",
+        "<i>No hidden retry is running. Fix the stated reason and send the destinations again.</i>",
+      ].join("\n"),
+      parse_mode: "HTML",
+      rows: [[inline("Try again", "d2_add")], [inline("𝙂𝙤 𝙗𝙖𝙘𝙠", "v1_destinations_v13")]],
     });
     return;
   }
@@ -146,5 +124,5 @@ export function installDestinationsV2InputPriority(BotClass) {
     }
     return originalOn.call(this, filter, ...middleware);
   };
-  console.log("TelePilot Destinations v2 text-input priority enabled");
+  console.log("TelePilot destination auto-import input priority enabled");
 }
