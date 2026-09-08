@@ -7,7 +7,7 @@ function plain(value) {
     .replace(/<[^>]+>/g, "")
     .trim();
 }
-function firstLine(value) { return plain(value).split("\n", 1)[0].replace(/^[^\p{L}\p{N}＋]+/u, "").trim(); }
+function firstLine(value) { return plain(value).split("\n", 1)[0].replace(/^[^\p{L}\p{N}]+/u, "").trim(); }
 function cloneOther(other) {
   const next = other && typeof other === "object" ? { ...other } : {};
   if (other?.reply_markup?.inline_keyboard) {
