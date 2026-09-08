@@ -166,26 +166,40 @@ export function installSingleMessageUiApi(ApiClass = Api) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotSingleMessageUiApiInstalled) return false;
   const originalSendMessage = ApiClass.prototype.sendMessage;
   const originalEditMessageText = ApiClass.prototype.editMessageText;
+  const originalDeleteMessage = ApiClass.prototype.deleteMessage;
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") {
     throw new Error("Unsupported grammY Api shape for single-message UI");
   }
   Object.defineProperty(ApiClass.prototype, "__telepilotSingleMessageUiApiInstalled", { value: true });
+
+  async function retireActivePanel(api, chatId, activeId) {
+    let removed = false;
+    if (typeof originalDeleteMessage === "function") {
+      try {
+        await originalDeleteMessage.call(api, chatId, activeId);
+        removed = true;
+      } catch {}
+    }
+    if (!removed) {
+      try {
+        await originalEditMessageText.call(api, chatId, activeId, "\u2063", {
+          reply_markup: { inline_keyboard: [] },
+        });
+      } catch {}
+    }
+    forget(chatId, activeId);
+  }
 
   ApiClass.prototype.sendMessage = async function(chatId, text, other, ...rest) {
     const prepared = transformTelePilotOutgoing(chatId, text, other);
     const singlePanel = positivePrivateChat(chatId) && !isStandaloneError(prepared.text);
     const activeId = singlePanel ? ACTIVE_UI.get(String(chatId)) : null;
 
-    if (activeId) {
-      try {
-        const edited = await originalEditMessageText.call(this, chatId, activeId, prepared.text, prepared.other);
-        remember(chatId, edited?.message_id || activeId);
-        return edited || syntheticMessage(chatId, activeId, prepared.text);
-      } catch (err) {
-        if (isMessageNotModified(err)) return syntheticMessage(chatId, activeId, prepared.text);
-        forget(chatId, activeId);
-      }
-    }
+    // A sendMessage call follows a fresh user action or a flow that intentionally
+    // creates a new screen. Editing a persisted panel can make the reply appear
+    // far above the user's newest message, which looks like the bot did nothing.
+    // Retire the previous UI panel and send the replacement at the bottom instead.
+    if (activeId) await retireActivePanel(this, chatId, activeId);
 
     const response = await originalSendMessage.call(this, chatId, prepared.text, prepared.other, ...rest);
     if (singlePanel) remember(chatId, response?.message_id);
