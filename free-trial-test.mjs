@@ -17,7 +17,10 @@ try {
   const now = Date.now();
   const token = mod.createFreeTrialToken(uid, { now });
   assert.deepEqual(mod.readFreeTrialToken(token, { now: now + 1000 })?.uid, uid, "signed free-trial token should round-trip");
-  assert.equal(mod.readFreeTrialToken(`${token.slice(0, -1)}x`, { now: now + 1000 }), null, "tampered token must be rejected");
+  const tokenParts = token.split(".");
+  const signature = tokenParts[3];
+  tokenParts[3] = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+  assert.equal(mod.readFreeTrialToken(tokenParts.join("."), { now: now + 1000 }), null, "tampered token must be rejected");
   assert.equal(mod.readFreeTrialToken(token, { now: now + 3 * 60 * 60_000 }), null, "expired token must be rejected");
 
   assert.equal(mod.readFreeTrialTutorial(uid).eligible, false, "new users must not start eligible");
