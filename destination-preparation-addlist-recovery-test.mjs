@@ -21,6 +21,9 @@ for (const forbidden of [".joinChannel(", "joinChatlistInvite(", "UpdateNotifySe
 assert.match(recoverySource, /enqueueJoinRecovery/);
 assert.equal(recoverySource.includes("stopping this account recovery batch"), false);
 assert.equal(recoverySource.includes("client.joinChannel"), false);
+assert.match(recoverySource, /FILTER_INCLUDE_TOO_MUCH/);
+assert.match(recoverySource, /DEFAULT_FOLDER_CHAT_LIMIT\s*=\s*100/);
+assert.match(recoverySource, /limited-retry=true/);
 
 assert.match(queueSource, /client\.joinChannel/);
 assert.match(queueSource, /Api\.channels\.JoinChannel/);
@@ -73,6 +76,55 @@ const plan = recovery.buildRecoveryPlan(review, accounts);
 assert.equal(plan.length, 1, "Only accounts with not-member Addlist candidates should get recovery work");
 assert.equal(plan[0].accountId, "acc1");
 assert.equal(plan[0].candidates.length, 2, "Manual/public scan rows must not be pulled into Addlist recovery");
+
+assert.deepEqual(recovery.safeBulkRetrySizes(137, 7).slice(0, 3), [88, 44, 22]);
+assert.deepEqual(recovery.safeBulkRetrySizes(1, 0), []);
+assert.equal(recovery.__test.isFilterIncludeTooMuch({ errorMessage: "FILTER_INCLUDE_TOO_MUCH" }), true);
+assert.equal(recovery.__test.isFilterIncludeTooMuch({ errorMessage: "FLOOD_WAIT_3" }), false);
+
+// A large fresh Addlist must not immediately fall back to one-by-one channel joins
+// just because the recipient account cannot fit every shared chat into one folder.
+// The first oversized RPC is allowed to fail, then TelePilot retries one safe subset.
+const largeCount = 137;
+const largePeers = [];
+const largeChats = [];
+const largeCandidates = [];
+for (let index = 1; index <= largeCount; index++) {
+  const id = 10_000 + index;
+  largePeers.push({ channelId: id });
+  largeChats.push({ className: "Channel", id, accessHash: 50_000 + index, megagroup: true });
+  largeCandidates.push({
+    id: `-100${id}`,
+    accessHash: String(50_000 + index),
+    sourceKind: "addlist",
+    sourceSlug: "large-folder",
+  });
+}
+const bulkAttempts = [];
+const fakeClient = {
+  api: {
+    chatlists: {
+      checkChatlistInvite: async () => ({
+        className: "ChatlistInvite",
+        peers: largePeers,
+        chats: largeChats,
+      }),
+      joinChatlistInvite: async ({ peers }) => {
+        bulkAttempts.push(peers.length);
+        if (peers.length > 90) {
+          const err = new Error("FILTER_INCLUDE_TOO_MUCH");
+          err.errorMessage = "FILTER_INCLUDE_TOO_MUCH";
+          throw err;
+        }
+      },
+    },
+  },
+};
+const largeResult = await recovery.__test.bulkJoinSlug(fakeClient, "large-folder", largeCandidates, 7);
+assert.deepEqual(bulkAttempts, [137, 88], "137-group Addlist should retry as one safe bulk subset, not individual joins");
+assert.equal(largeResult.accepted, 88);
+assert.equal(largeResult.requested, 137);
+assert.equal(largeResult.limited, true);
 
 const channel = queue.__test.inputChannelFromCandidate({ id: "-1001001", accessHash: "9001" });
 assert.equal(channel?.className, "InputChannel");
