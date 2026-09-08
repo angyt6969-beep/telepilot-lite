@@ -7,7 +7,7 @@ import {
   intervalSecondsFromSettings,
   parseCustomInterval,
 } from "./interval-settings.js";
-import { parseReferralPayload, recordStart, referralCount } from "./referral-system.js";
+import { __test as referralTest, parseReferralPayload, recordStart, referralCount } from "./referral-system.js";
 
 {
   assert.equal(intervalSecondsFromSettings({ intervalMinutes: 30 }), 1800, "legacy minute settings should migrate to seconds");
@@ -54,6 +54,35 @@ import { parseReferralPayload, recordStart, referralCount } from "./referral-sys
   assert.equal(self.credited, false, "self-referrals must be blocked");
   assert.equal(self.reason, "self_referral");
   assert.equal(self.db.attributions["400"], undefined);
+}
+
+{
+  const settingsMarkup = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🔔 Notifications", callback_data: "v1_notifications" }],
+        [{ text: "📊 Dashboard", callback_data: "v1_dashboard_v13" }],
+      ],
+    },
+  };
+  const placed = referralTest.addReferralButton("⚙️ Settings", settingsMarkup);
+  assert.deepEqual(
+    placed.reply_markup.inline_keyboard[0].map(button => button.callback_data),
+    ["v1_notifications", "referrals"],
+    "Referrals should sit directly beside Notifications in Settings",
+  );
+
+  const dashboardMarkup = {
+    reply_markup: {
+      inline_keyboard: [[{ text: "⚙️ Settings", callback_data: "v1_settings_v13" }]],
+    },
+  };
+  const untouched = referralTest.addReferralButton("✈️ TelePilot", dashboardMarkup);
+  assert.equal(
+    untouched.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "referrals"),
+    false,
+    "Referrals should no longer be injected on the dashboard",
+  );
 }
 
 {
