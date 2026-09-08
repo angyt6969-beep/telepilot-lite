@@ -37,8 +37,8 @@ assert.doesNotMatch(normalized[0].reason, /@example/);
 const reviewScreen = preparationUiTest.reviewScreen(expiredReview);
 assert.match(reviewScreen.text, /Addlist|shared-folder/i);
 assert.match(reviewScreen.text, /fresh t\.me\/addlist/i);
-assert.equal(reviewScreen.rows.flat().some(button => button.callback_data?.startsWith("d3_prepare:")), false, "expired-only review must not offer Join + prepare");
-assert.equal(reviewScreen.rows.flat().some(button => button.callback_data === "d2_add"), true, "expired-only review must offer a fresh scan");
+assert.equal(reviewScreen.rows.flat().some(button => button.callback_data?.startsWith("d3_prepare:")), false, "expired-only legacy review must not offer Join + prepare");
+assert.equal(reviewScreen.rows.flat().some(button => button.callback_data === "d2_add"), true, "expired-only legacy review must offer a fresh scan");
 
 const skippedScreen = preparationUiTest.skippedScreen(expiredReview);
 assert.match(skippedScreen.text, /expired in Telegram/i);
@@ -59,12 +59,15 @@ const regularUnavailable = {
   unavailable: [{ original: "Private invite", reason: "Join this private group in Telegram first." }],
 };
 assert.equal(expiredAddlistOnly(regularUnavailable), false);
-assert.equal(canPrepareReview(regularUnavailable), true, "non-expired preparation behavior must remain unchanged");
+assert.equal(canPrepareReview(regularUnavailable), true, "non-expired legacy preparation behavior must remain unchanged");
 
 const inputPrioritySource = fs.readFileSync(new URL("./destinations-v2-input-priority.js", import.meta.url), "utf8");
-assert.match(inputPrioritySource, /reviewCouldNotUseCount\(review\)/);
-assert.match(inputPrioritySource, /expiredAddlistOnly\(review\)/);
-assert.match(inputPrioritySource, /Scan fresh Addlist/);
+const importSource = fs.readFileSync(new URL("./destination-import-engine-v2.js", import.meta.url), "utf8");
+assert.match(inputPrioritySource, /importDestinationBatch/);
+assert.match(inputPrioritySource, /Destination import failed/);
+assert.match(importSource, /chatlists\.joinChatlistInvite/);
+assert.match(importSource, /No partial folder import was attempted/);
+assert.match(importSource, /did not switch to individual joins/);
 
 const reimportSource = fs.readFileSync(new URL("./destination-addlist-reimport-bulk.js", import.meta.url), "utf8");
 assert.match(reimportSource, /leaveChatlist\(\{ chatlist, peers: \[\] \}\)/, "stale-folder detach-only behavior must remain intact");
