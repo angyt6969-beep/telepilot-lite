@@ -70,6 +70,8 @@ import {
   installUiIconSemantics,
 } from "./ui-icon-semantics.js";
 
+import { installUiClutterNavigationV2 } from "./ui-clutter-cleanup-v2.js";
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 
@@ -138,6 +140,9 @@ installAddlistBulkReimport(Bot);
 // Delete-all is a focused d4_* destructive-control layer. It registers after
 // Destinations v2 so its enhanced d2_manage renderer gets callback priority.
 installDestinationDeleteAll(Bot);
+// Final navigation cleanup registers last so retired Smart Preview callbacks and
+// compact destination disclosure routes get callback priority.
+installUiClutterNavigationV2(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);

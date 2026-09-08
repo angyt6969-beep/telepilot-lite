@@ -101,7 +101,13 @@ assert.match(plain(destinations.text), /Open Issues to fix them/);
 assert.ok(actionCount(destinations) <= 5);
 assert.equal(lastRow(destinations)[0]?.text, __test.BACK_TEXT);
 
-const cleanDestinations = cleanupUiClutterV2(42, "🗂 Destination Hub\n\nSaved: — 12\nReady: — 12", destinationOther);
+const cleanDestinationOther = other([
+  [button("＋ Add destinations", "d2_add"), button("📚 Browse", "d2_browse:0")],
+  [button("💬 Topics", "d2_topics:0"), button("↻ Check access", "d2_refresh")],
+  [button("🗑 Manage", "d2_manage:0")],
+  [button("📊 Dashboard", "v1_dashboard_v13")],
+]);
+const cleanDestinations = cleanupUiClutterV2(42, "🗂 Destination Hub\n\nSaved: — 12\nReady: — 12", cleanDestinationOther);
 assert.deepEqual(callbacks(cleanDestinations), ["d2_add", "d2_browse:0", "v1_dest_more_v2", "v1_dashboard_v13"]);
 assert.equal(callbacks(cleanDestinations).includes("d2_topics:0"), false, "Topics hides when no topic needs selection");
 assert.equal(callbacks(cleanDestinations).includes("d5_issues:0"), false, "Issues hides when nothing needs attention");
