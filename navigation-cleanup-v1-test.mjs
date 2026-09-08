@@ -42,6 +42,30 @@ const root = applyGoBackButton("✈️ TelePilot\n\nStatus: — READY", {
 }, false);
 assert.equal(root.other.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "telepilot_nav_back"), false);
 
+// A completion/success action that intentionally opens the Dashboard is a forward
+// action, not a fake bottom back link. This reproduces the post-key activation bug.
+const activation = applyGoBackButton("✅ Access activated\n\nPlan: — 90 days\nAccess: — Active", {
+  reply_markup: {
+    inline_keyboard: [[{
+      text: "Dashboard",
+      callback_data: "v1_dashboard_v13",
+      style: "success",
+      icon_custom_emoji_id: "5206607081334906820",
+    }]],
+  },
+}, false);
+const activationButtons = activation.other.reply_markup.inline_keyboard.flat();
+assert.equal(activationButtons.length, 1, "activation must retain its Dashboard completion action");
+assert.equal(activationButtons[0].callback_data, "v1_dashboard_v13");
+assert.equal(activationButtons[0].style, "success");
+assert.equal(__test.isExplicitForwardNavigationButton(activationButtons[0]), true);
+
+// A normal hardcoded Dashboard footer is still treated as parent navigation and removed.
+const ordinaryFooter = applyGoBackButton("⚙️ Settings", {
+  reply_markup: { inline_keyboard: [[{ text: "Dashboard", callback_data: "v1_dashboard_v13" }]] },
+}, false);
+assert.equal(ordinaryFooter.other.reply_markup.inline_keyboard.length, 0);
+
 const tutorial = applyGoBackButton(
   '<tg-emoji emoji-id="5231361378748472914">✈️</tg-emoji> <b><i>Build your post</i></b>\n<i>Slide 4 of 5</i>',
   { reply_markup: { inline_keyboard: [[{ text: "Back", callback_data: "linear_tutorial:3" }, { text: "Next", callback_data: "linear_tutorial:5" }]] } },
