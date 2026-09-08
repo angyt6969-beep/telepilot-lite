@@ -45,6 +45,7 @@ try {
     constructor() {
       this.sent = [];
       this.edits = [];
+      this.deleted = [];
       this.nextId = 100;
       this.throwNotModified = false;
     }
@@ -63,6 +64,10 @@ try {
       this.edits.push({ chatId, messageId: Number(messageId), text, other, message });
       return message;
     }
+    async deleteMessage(chatId, messageId) {
+      this.deleted.push({ chatId, messageId: Number(messageId) });
+      return true;
+    }
   }
 
   mod.__test.forget("222222222");
@@ -78,25 +83,29 @@ try {
   const second = await api.sendMessage(222222222, "📁 Destinations", {
     reply_markup: { inline_keyboard: [[{ text: "Back", callback_data: "home" }]] },
   });
-  assert.equal(api.sent.length, 1, "second private UI screen must not stack a new bot message");
-  assert.equal(api.edits.length, 1, "second private UI screen must edit the existing panel");
-  assert.equal(api.edits[0].messageId, 100);
-  assert.equal(second.message_id, 100);
+  assert.equal(api.deleted.length, 1, "old UI panel should be retired before a fresh send");
+  assert.equal(api.deleted[0].messageId, 100);
+  assert.equal(api.sent.length, 2, "replacement UI should be sent at the bottom so it remains visible after user input");
+  assert.equal(second.message_id, 101);
+  assert.equal(mod.__test.ACTIVE_UI.get("222222222"), 101);
 
   await api.sendMessage(222222222, "Plain private status update without buttons.");
-  assert.equal(api.sent.length, 1, "plain non-error private bot messages must also reuse the single panel");
-  assert.equal(api.edits.length, 2);
+  assert.equal(api.deleted.length, 2, "each non-error replacement should retire the previous panel");
+  assert.equal(api.deleted[1].messageId, 101);
+  assert.equal(api.sent.length, 3);
+  assert.equal(mod.__test.ACTIVE_UI.get("222222222"), 102);
 
   await api.sendMessage(222222222, "❌ Destination import failed.");
-  assert.equal(api.sent.length, 2, "standalone errors are the only private messages allowed to stack");
-  assert.equal(api.edits.length, 2);
+  assert.equal(api.sent.length, 4, "standalone errors are allowed to stack separately");
+  assert.equal(api.deleted.length, 2, "standalone errors must not retire the active UI panel");
+  assert.equal(mod.__test.ACTIVE_UI.get("222222222"), 102, "active panel should survive a standalone error");
 
   api.throwNotModified = true;
-  const same = await api.editMessageText(222222222, 100, "Plain private status update without buttons.", {});
-  assert.equal(same.message_id, 100, "message-not-modified must be swallowed so legacy catch blocks cannot create duplicates");
+  const same = await api.editMessageText(222222222, 102, "Plain private status update without buttons.", {});
+  assert.equal(same.message_id, 102, "message-not-modified must be swallowed so legacy catch blocks cannot create duplicates");
 
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "ui-message-state.json"), "utf8"));
-  assert.equal(Number(persisted.messages["222222222"]), 100, "active UI message ID should survive process restarts");
+  assert.equal(Number(persisted.messages["222222222"]), 102, "latest visible UI message ID should survive process restarts");
 
   console.log("single-message UI regression: ok");
 } finally {
