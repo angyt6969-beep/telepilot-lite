@@ -96,6 +96,7 @@ import { __test as referralTest, parseReferralPayload, recordStart, referralCoun
   const ux = fs.readFileSync(new URL("./ux-v13.js", import.meta.url), "utf8");
   assert.match(ux, /intervalSeconds:\s*intervalSecondsFromSettings\(settings\)/, "saved posting setups should preserve canonical seconds");
   assert.match(ux, /intervalSeconds:\s*intervalSecondsFromSettings\(snapshot\)/, "saved posting setups should restore canonical seconds");
+  assert.match(ux, /\[inline\("🔔 Notifications", "v1_notifications"\), inline\("🔥 Referrals", "referrals"\)\]/, "Settings should render Referrals directly beside Notifications");
 }
 
 console.log("Referral + custom interval regression tests passed");
