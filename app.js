@@ -26,6 +26,12 @@ import { withDispatchContext } from "./dispatch-context.js";
 import { isFatalSessionError, readProSettings } from "./posting-engine-enhancements.js";
 import { setReloadUserStateHandler, setSyncUserGroupsHandler } from "./runtime-hooks.js";
 import {
+  formatIntervalSeconds,
+  intervalMinutesForCompatibility,
+  intervalSecondsFromSettings,
+  parseCustomInterval,
+} from "./interval-settings.js";
+import {
   destinationAccountReady,
   destinationMenu,
   handleDestinationText,
@@ -216,12 +222,14 @@ function createState(uid) {
   const saved = loadUserSettings(uid);
   const accounts = listAccounts(uid);
   const selection = normalizeAccountSelection(saved, accounts);
+  const intervalSeconds = intervalSecondsFromSettings(saved);
   const state = {
     uid: Number(uid),
     adMessage: typeof saved.adMessage === "string" ? saved.adMessage : "",
     adEntities: Array.isArray(saved.adEntities) ? saved.adEntities : [],
     groups: normalizeSavedGroups(saved.groups),
-    intervalMinutes: INTERVAL_VALUES.includes(Number(saved.intervalMinutes)) ? Number(saved.intervalMinutes) : 30,
+    intervalSeconds,
+    intervalMinutes: intervalMinutesForCompatibility(intervalSeconds),
     totalSent: Number.isFinite(Number(saved.totalSent)) ? Number(saved.totalSent) : 0,
     lastRunAt: Number.isFinite(Number(saved.lastRunAt)) ? Number(saved.lastRunAt) : null,
     lastCycleSuccess: Number.isFinite(Number(saved.lastCycleSuccess)) ? Number(saved.lastCycleSuccess) : 0,
@@ -285,7 +293,8 @@ function saveState(state) {
     adMessage: state.adMessage,
     adEntities: state.adEntities,
     groups: state.groups,
-    intervalMinutes: state.intervalMinutes,
+    intervalSeconds: state.intervalSeconds,
+    intervalMinutes: intervalMinutesForCompatibility(state.intervalSeconds),
     totalSent: state.totalSent,
     lastRunAt: state.lastRunAt,
     lastCycleSuccess: state.lastCycleSuccess,
@@ -509,10 +518,7 @@ function clearAwaiting(state) {
 function privateOnly(ctx) { return ctx.chat?.type === "private"; }
 function stateFromCtx(ctx) { const uid = ctx.from?.id; return uid ? getState(uid) : null; }
 function formatInterval(m) {
-  const v = Number(m);
-  if (v < 60) return `${v} min`;
-  if (v % 60 === 0) return `${v / 60}h`;
-  return `${Math.floor(v / 60)}h ${v % 60}m`;
+  return formatIntervalSeconds(Math.max(1, Math.round(Number(m || 0) * 60)));
 }
 function formatAgo(ts) {
   if (!ts) return "Never";
@@ -1045,7 +1051,7 @@ function runCycle(state, cycleId) {
 function scheduleCycleAt(state, runAt) {
   if (state.postingTimer) clearTimeout(state.postingTimer);
   if (!state.posting || !hasAccess(state)) { stopPostingLoop(state); return; }
-  const delayMs = state.intervalMinutes * 60_000;
+  const delayMs = state.intervalSeconds * 1000;
   let target = Number(runAt || 0) || Date.now() + delayMs;
   while (target <= Date.now()) target += delayMs;
   state.nextRunAt = target; saveState(state);
@@ -1059,13 +1065,13 @@ function scheduleCycleAt(state, runAt) {
     scheduleCycleAt(state, next);
   }, Math.max(1, target - Date.now()));
 }
-function scheduleNextCycle(state) { scheduleCycleAt(state, Date.now() + state.intervalMinutes * 60_000); }
+function scheduleNextCycle(state) { scheduleCycleAt(state, Date.now() + state.intervalSeconds * 1000); }
 function startPostingLoop(state) {
   if (!hasAccess(state)) return;
   if (state.posting && (state.postingTimer || state.cyclePromise)) return;
   state.posting = true;
-  const startedAt = Date.now(); state.nextRunAt = startedAt + state.intervalMinutes * 60_000; saveState(state);
-  void (async () => { await runCycle(state, `interval:${state.uid}:${startedAt}`); if (state.posting && !state.postingTimer) scheduleCycleAt(state, state.nextRunAt || startedAt + state.intervalMinutes*60_000); })();
+  const startedAt = Date.now(); state.nextRunAt = startedAt + state.intervalSeconds * 1000; saveState(state);
+  void (async () => { await runCycle(state, `interval:${state.uid}:${startedAt}`); if (state.posting && !state.postingTimer) scheduleCycleAt(state, state.nextRunAt || startedAt + state.intervalSeconds * 1000); })();
 }
 function restorePostingLoops() {
   for (const entry of fs.readdirSync(USERS_DIR, { withFileTypes:true })) {
@@ -1077,7 +1083,7 @@ function restorePostingLoops() {
     state.posting = true;
     const due = Number(saved.nextRunAt || 0);
     if (due && due > Date.now()) scheduleCycleAt(state, due);
-    else void (async () => { const now=Date.now(); await runCycle(state, `interval:${state.uid}:restore:${now}`); if (state.posting) scheduleCycleAt(state, now + state.intervalMinutes*60_000); })();
+    else void (async () => { const now=Date.now(); await runCycle(state, `interval:${state.uid}:restore:${now}`); if (state.posting) scheduleCycleAt(state, now + state.intervalSeconds * 1000); })();
   }
 }
 
@@ -2480,26 +2486,89 @@ bot.callbackQuery("clear_groups_confirm", async ctx => {
   await showGroups(ctx, state);
 });
 
-bot.callbackQuery("interval", async ctx => {
-  await ctx.answerCallbackQuery();
-  const state = stateFromCtx(ctx);
-  const kb = new InlineKeyboard()
+function intervalKeyboard() {
+  return new InlineKeyboard()
     .text("1m", "i1").text("5m", "i5").text("10m", "i10").row()
     .text("15m", "i15").text("30m", "i30").text("45m", "i45").row()
     .text("1h", "i60").text("1h 30m", "i90").text("2h", "i120").row()
+    .text("⏱ Seconds", "interval_custom_seconds").text("📆 Minutes", "interval_custom_minutes").row()
     .text("⬅️ Back", "home");
-  await ctx.editMessageText(
-    `⏱ INTERVAL\n\nCurrent: ${formatInterval(state.intervalMinutes)}\n\nChoose how often TelePilot should post.`,
-    { reply_markup: kb },
-  );
+}
+function italicLineEntity(text, line) {
+  const offset = text.indexOf(line);
+  return offset >= 0 ? [{ type: "italic", offset, length: line.length }] : [];
+}
+function intervalScreen(state) {
+  const instruction = "Choose a preset — or set an exact custom interval.";
+  const text = [
+    "📆 SCHEDULE",
+    "",
+    `Current: ${formatIntervalSeconds(state.intervalSeconds)}`,
+    "",
+    instruction,
+    "",
+    "Custom interval:",
+  ].join("\n");
+  return { text, other: { reply_markup: intervalKeyboard(), entities: italicLineEntity(text, instruction) } };
+}
+async function showIntervalScreen(ctx, state) {
+  const screen = intervalScreen(state);
+  return ctx.editMessageText(screen.text, screen.other);
+}
+function customIntervalPrompt(unit) {
+  const isSeconds = unit === "seconds";
+  const instruction = isSeconds
+    ? "Send a positive whole number of seconds — up to 7 days total."
+    : "Send a positive whole number of minutes — up to 7 days total.";
+  const text = [
+    "📆 CUSTOM INTERVAL",
+    "",
+    `Unit: ${isSeconds ? "Seconds" : "Minutes"}`,
+    "",
+    instruction,
+    `Example: ${isSeconds ? "45" : "20"}`,
+  ].join("\n");
+  return {
+    text,
+    other: {
+      entities: italicLineEntity(text, instruction),
+      reply_markup: new InlineKeyboard().text("⬅️ Cancel", "interval"),
+    },
+  };
+}
+
+bot.callbackQuery("interval", async ctx => {
+  await ctx.answerCallbackQuery();
+  const state = stateFromCtx(ctx);
+  clearAwaiting(state);
+  await showIntervalScreen(ctx, state);
+});
+bot.callbackQuery("interval_custom_seconds", async ctx => {
+  await ctx.answerCallbackQuery();
+  const state = stateFromCtx(ctx);
+  state.awaiting = "interval_custom_seconds";
+  state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  state.awaitingPromptChatId = ctx.chat?.id || null;
+  const prompt = customIntervalPrompt("seconds");
+  await ctx.editMessageText(prompt.text, prompt.other);
+});
+bot.callbackQuery("interval_custom_minutes", async ctx => {
+  await ctx.answerCallbackQuery();
+  const state = stateFromCtx(ctx);
+  state.awaiting = "interval_custom_minutes";
+  state.awaitingPromptMessageId = ctx.callbackQuery.message?.message_id || null;
+  state.awaitingPromptChatId = ctx.chat?.id || null;
+  const prompt = customIntervalPrompt("minutes");
+  await ctx.editMessageText(prompt.text, prompt.other);
 });
 for (const minutes of INTERVAL_VALUES) {
   bot.callbackQuery(`i${minutes}`, async ctx => {
     const state = stateFromCtx(ctx);
-    state.intervalMinutes = minutes;
+    state.intervalSeconds = minutes * 60;
+    state.intervalMinutes = intervalMinutesForCompatibility(state.intervalSeconds);
     saveState(state);
     if (state.posting) scheduleNextCycle(state);
-    await ctx.answerCallbackQuery({ text: `Set to ${formatInterval(minutes)}` });
+    await ctx.answerCallbackQuery({ text: `Set to ${formatIntervalSeconds(state.intervalSeconds)}` });
     const tutorialScreen = advanceTutorialAfterAction(state.uid, 5, 6);
     if (tutorialScreen) {
       await ctx.editMessageText(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard });
@@ -2590,6 +2659,36 @@ bot.on("message:text", async ctx => {
   }
 
   if (!hasAccess(state)) return showAccess(ctx, state, true);
+
+  if (state.awaiting === "interval_custom_seconds" || state.awaiting === "interval_custom_minutes") {
+    const unit = state.awaiting === "interval_custom_seconds" ? "seconds" : "minutes";
+    const promptMessageId = state.awaitingPromptMessageId;
+    const promptChatId = state.awaitingPromptChatId || ctx.chat.id;
+    const parsed = parseCustomInterval(ctx.message.text, unit);
+    await safeDelete(ctx.chat.id, ctx.message.message_id);
+    if (!parsed.ok) {
+      const notice = await ctx.reply(`${parsed.error}\n\nUse a whole number — no decimals.`);
+      setTimeout(() => void safeDelete(ctx.chat.id, notice.message_id), 7000);
+      return;
+    }
+    state.intervalSeconds = parsed.seconds;
+    state.intervalMinutes = intervalMinutesForCompatibility(parsed.seconds);
+    clearAwaiting(state);
+    saveState(state);
+    if (state.posting) scheduleNextCycle(state);
+
+    const tutorialScreen = advanceTutorialAfterAction(state.uid, 5, 6);
+    if (tutorialScreen) {
+      try { await bot.api.editMessageText(promptChatId, promptMessageId, tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      catch { await ctx.reply(tutorialScreen.text, { reply_markup: tutorialScreen.keyboard }); }
+      return;
+    }
+
+    const screen = intervalScreen(state);
+    try { await bot.api.editMessageText(promptChatId, promptMessageId, screen.text, screen.other); }
+    catch { await ctx.reply(screen.text, screen.other); }
+    return;
+  }
 
   if (state.awaiting === "phone") {
     const phone = cleanPhone(ctx.message.text);
