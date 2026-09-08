@@ -23,7 +23,7 @@ const activity = cleanActivityControls("📊 Activity\n\nPosting: — Running", 
   },
 });
 const activityButtons = activity.other.reply_markup.inline_keyboard.flat();
-const postingHistory = activityButtons.find(button => button.callback_data === "v1_history");
+const postingHistory = activityButtons.find(button => button.callback_data === "history");
 assert.ok(postingHistory);
 assert.equal(postingHistory.text, "Posting History");
 assert.equal(postingHistory.style, undefined, "Posting History must not be blue/primary");
@@ -31,6 +31,22 @@ assert.equal(postingHistory.icon_custom_emoji_id, "history-icon", "existing prem
 assert.equal(activityButtons.some(button => button.callback_data === "v1_accounts_v13"), false);
 assert.equal(activityButtons.some(button => button.callback_data === "v1_destinations_v13"), false);
 assert.equal(activityButtons.some(button => button.callback_data === "v1_pause_menu_v13"), true);
+assert.equal(activityButtons.filter(button => button.callback_data === "history").length, 1, "Activity must show exactly one Posting History button");
+
+const duplicateHistory = cleanActivityControls("📊 Activity\n\nPosting: — Running", {
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: "📜 History", callback_data: "v1_history", style: "primary" }],
+      [{ text: "Posting History", callback_data: "history" }],
+      [{ text: "History", callback_data: "history" }],
+      [{ text: "Dashboard", callback_data: "v1_dashboard_v13" }],
+    ],
+  },
+});
+const duplicateHistoryButtons = duplicateHistory.other.reply_markup.inline_keyboard.flat();
+assert.equal(duplicateHistoryButtons.filter(button => button.callback_data === "history").length, 1, "duplicate Activity history controls must collapse to one working button");
+assert.equal(duplicateHistoryButtons.find(button => button.callback_data === "history")?.text, "Posting History");
+assert.equal(duplicateHistoryButtons.some(button => button.callback_data === "v1_history"), false, "the stale unhandled v1_history route must not remain");
 
 const withBack = applyGoBackButton(activity.text, activity.other, true);
 const withBackRows = withBack.other.reply_markup.inline_keyboard;
@@ -137,8 +153,8 @@ const state = __test.stateFor(__test.keyOf(chatId, messageId));
 assert.equal(state.stack.length, 1);
 assert.match(state.stack[0].text, /TelePilot/);
 const renderedButtons = activityRendered.other.reply_markup.inline_keyboard.flat();
-assert.equal(renderedButtons.find(button => button.callback_data === "v1_history")?.text, "Posting History");
-assert.equal(renderedButtons.find(button => button.callback_data === "v1_history")?.style, undefined);
+assert.equal(renderedButtons.find(button => button.callback_data === "history")?.text, "Posting History");
+assert.equal(renderedButtons.find(button => button.callback_data === "history")?.style, undefined);
 assert.equal(renderedButtons.some(button => button.callback_data === "v1_accounts_v13"), false);
 assert.equal(renderedButtons.some(button => button.callback_data === "v1_destinations_v13"), false);
 assert.deepEqual(activityRendered.other.reply_markup.inline_keyboard.at(-1)[0], { text: BACK_LABEL, callback_data: "v1_dashboard_v13" });

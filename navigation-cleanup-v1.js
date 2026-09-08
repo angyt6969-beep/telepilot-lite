@@ -159,13 +159,25 @@ export function cleanActivityControls(text, other) {
   if (!next?.reply_markup?.inline_keyboard) return { text, other: next };
 
   const rows = [];
+  let historyKept = false;
   for (const row of next.reply_markup.inline_keyboard) {
     const kept = [];
     for (const source of row) {
       const button = { ...source };
       const data = String(button.callback_data || "");
+      const label = String(button.text || "").replace(LEADING_DECORATION_RE, "").trim();
       if (data === "v1_accounts_v13" || data === "v1_destinations_v13") continue;
-      if (data === "v1_history" || /^History$/i.test(String(button.text || ""))) {
+
+      const isPostingHistory = data === "history"
+        || data === "v1_history"
+        || /^(?:Posting\s+)?History$/i.test(label);
+      if (isPostingHistory) {
+        if (historyKept) continue;
+        historyKept = true;
+        // The production history page is registered on the legacy-but-active
+        // "history" callback in pro-controls.js. Canonicalize every Activity
+        // history button to that known working route while removing duplicates.
+        button.callback_data = "history";
         button.text = "Posting History";
         delete button.style;
       }
