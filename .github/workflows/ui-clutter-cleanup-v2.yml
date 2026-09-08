@@ -19,7 +19,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Apply guarded startup and test wiring
+      - name: Apply guarded startup, test, and package wiring
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -51,11 +51,21 @@ jobs:
               assert old_test in s, 'v13 test tail changed'
               s = s.replace(old_test, new_test, 1)
           p.write_text(s)
+
+          p = Path('ui-clutter-cleanup-v2-test.mjs')
+          s = p.read_text()
+          old = '''const cleanDestinations = cleanupUiClutterV2(42, "🗂 Destination Hub\\n\\nSaved: — 12\\nReady: — 12", destinationOther);'''
+          new = '''const cleanDestinationOther = other([\n  [button("＋ Add destinations", "d2_add"), button("📚 Browse", "d2_browse:0")],\n  [button("💬 Topics", "d2_topics:0"), button("↻ Check access", "d2_refresh")],\n  [button("🗑 Manage", "d2_manage:0")],\n  [button("📊 Dashboard", "v1_dashboard_v13")],\n]);\nconst cleanDestinations = cleanupUiClutterV2(42, "🗂 Destination Hub\\n\\nSaved: — 12\\nReady: — 12", cleanDestinationOther);'''
+          if 'const cleanDestinationOther = other([' not in s:
+              assert old in s, 'clean destinations fixture changed'
+              s = s.replace(old, new, 1)
+          p.write_text(s)
           PY
       - name: Syntax checks
         run: |
           node --check ui-clutter-cleanup-v2.js
           node --check startup.js
+          node --check ui-clutter-cleanup-v2-test.mjs
       - name: Targeted UI cleanup test
         run: node ui-clutter-cleanup-v2-test.mjs
       - name: Full regression suite
@@ -69,8 +79,8 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add startup.js package.json
+          git add startup.js package.json ui-clutter-cleanup-v2-test.mjs
           if ! git diff --cached --quiet; then
-            git commit -m 'Wire compact UI cleanup layer'
+            git commit -m 'Wire compact UI cleanup layer and correct clean-state fixture'
             git push origin HEAD:fix/ui-clutter-cleanup-v2
           fi
