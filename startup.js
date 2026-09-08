@@ -69,6 +69,7 @@ import {
   configureUiIconSemanticsStickers,
   installUiIconSemantics,
 } from "./ui-icon-semantics.js";
+import { installSingleMessageUiApi, installSingleMessageUiBot } from "./single-message-ui.js";
 
 import { installUiClutterNavigationV2 } from "./ui-clutter-cleanup-v2.js";
 
@@ -143,6 +144,10 @@ installDestinationDeleteAll(Bot);
 // Final navigation cleanup registers last so retired Smart Preview callbacks and
 // compact destination disclosure routes get callback priority.
 installUiClutterNavigationV2(Bot);
+// Capture the currently pressed TelePilot message before app.js handlers run.
+// This lets every subsequent UI send replace that exact message instead of
+// stacking another panel beneath it.
+installSingleMessageUiBot(Bot);
 
 prepareV1Engine(Api, TelegramClient);
 installPostingEngineEnhancements(Api, TelegramClient);
@@ -198,6 +203,11 @@ installReferralUi(Api);
 // Reliability UI remains outermost so generic legacy posting failures are
 // replaced by exact Telegram reasons after all other transforms finish.
 installPostingReliabilityUi(Api);
+// Final outbound UI shell. It sees the fully-polished payload, preserves premium
+// emoji markup, suppresses duplicate "message is not modified" fallbacks and
+// reuses one private-chat UI message for navigation. Standalone errors are left
+// alone so they can still appear separately.
+installSingleMessageUiApi(Api);
 
 const profileBot = new Bot(BOT_TOKEN);
 
