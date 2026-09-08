@@ -1,6 +1,7 @@
 import { Api, Bot } from "grammy";
 
 const NAV_BACK = "telepilot_nav_back";
+const BACK_LABEL = "𝙂𝙤 𝙗𝙖𝙘𝙠";
 const MAX_HISTORY = 20;
 const stateByMessage = new Map();
 const restoring = new Set();
@@ -37,6 +38,10 @@ function allButtons(other) {
 function isTutorial(text, other) {
   if (/Slide\s+[1-5]\s+of\s+5/i.test(plain(text))) return true;
   return allButtons(other).some(button => /^linear_tutorial:/.test(String(button?.callback_data || "")));
+}
+
+function isDashboardRoot(text) {
+  return /^TelePilot$/i.test(firstLine(text));
 }
 
 function isTelePilotUi(text, other) {
@@ -80,13 +85,26 @@ function isExplicitForwardNavigationButton(button) {
   return String(button?.style || "") === "success" || /^open\s+dashboard$/i.test(label.trim());
 }
 
+function normalizedButtonLabel(button) {
+  return String(button?.text || "").replace(LEADING_DECORATION_RE, "").trim();
+}
+
+function isBackLabel(button) {
+  const label = normalizedButtonLabel(button);
+  return label === BACK_LABEL || /^(?:go\s+back|back)$/i.test(label);
+}
+
 function isParentNavigationButton(button) {
   const data = String(button?.callback_data || "");
   const label = String(button?.text || "");
   if (isExplicitForwardNavigationButton(button)) return false;
-  if (data === NAV_BACK) return true;
+  if (data === NAV_BACK || isBackLabel(button)) return true;
   if (/back|go back|dashboard|home|posting setup|accounts|destinations|settings|activity|admin|keys|topics|cancel/i.test(label)) return true;
   return /^(?:home|v1_dashboard_v13|v1_posting_setup_v13|v1_accounts_v13|v1_destinations_v13|v1_settings_v13|v1_activity_v13|admin|admin_keys|v1_topics_v13)$/i.test(data);
+}
+
+function cleanBackButton(callbackData) {
+  return { text: BACK_LABEL, callback_data: callbackData };
 }
 
 export function applyGoBackButton(text, other, hasHistory) {
@@ -94,20 +112,42 @@ export function applyGoBackButton(text, other, hasHistory) {
   const next = cloneOther(other);
   const rows = next?.reply_markup?.inline_keyboard ? [...next.reply_markup.inline_keyboard] : [];
 
-  const lastRow = rows.at(-1);
-  const parentButton = lastRow?.length === 1 && isParentNavigationButton(lastRow[0]) ? lastRow[0] : null;
-
-  if (parentButton) {
-    const data = String(parentButton.callback_data || "");
-    if (data === NAV_BACK) {
-      if (!hasHistory) rows.pop();
-    } else {
-      // Keep the real parent callback so Back survives process restarts/deploys.
-      parentButton.text = "Go back";
-    }
-  } else if (hasHistory) {
-    rows.push([{ text: "Go back", callback_data: NAV_BACK }]);
+  // The dashboard is the root page. It must never render a Back control, even if
+  // an old message still carries one or the in-memory history stack is populated.
+  if (isDashboardRoot(text)) {
+    const rootRows = rows.filter(row => !(row.length === 1 && (String(row[0]?.callback_data || "") === NAV_BACK || isBackLabel(row[0]))));
+    next.reply_markup = { ...(next.reply_markup || {}), inline_keyboard: rootRows };
+    return { text, other: next };
   }
+
+  let parentCallback = "";
+
+  // Find the real parent from the bottom upward, remove it from its old position,
+  // and rebuild it as the final row. This keeps Back deterministic across restarts
+  // and also guarantees that inherited premium icons/styles cannot leak into it.
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row?.length !== 1) continue;
+    const button = row[0];
+    const data = String(button?.callback_data || "");
+    if (data === NAV_BACK) continue;
+    if (!isParentNavigationButton(button)) continue;
+    parentCallback = data;
+    rows.splice(index, 1);
+    break;
+  }
+
+  // Remove any stale Back rows left by older renders so exactly one clean Back
+  // control can be appended at the very bottom.
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row?.length !== 1) continue;
+    const button = row[0];
+    if (String(button?.callback_data || "") === NAV_BACK || isBackLabel(button)) rows.splice(index, 1);
+  }
+
+  if (parentCallback) rows.push([cleanBackButton(parentCallback)]);
+  else if (hasHistory) rows.push([cleanBackButton(NAV_BACK)]);
 
   next.reply_markup = { ...(next.reply_markup || {}), inline_keyboard: rows };
   return { text, other: next };
@@ -252,8 +292,10 @@ export function installNavigationHistoryApi(ApiClass = Api) {
 
 export const __test = {
   NAV_BACK,
+  BACK_LABEL,
   identity,
   isTutorial,
+  isDashboardRoot,
   isTelePilotUi,
   isExplicitForwardNavigationButton,
   prepareOutgoing,
