@@ -1,14 +1,12 @@
 import { Api } from "grammy";
 import { checkoutUrlForUid } from "./crypto-checkout-web.js";
 import { FREE_TRIAL_EMOJI_ID, freeTrialUrlForUid } from "./free-trial.js";
-import {
-  TUTORIAL_ACTION_EMOJI_ID,
-  TUTORIAL_CHECK_EMOJI_ID,
-} from "./linear-onboarding-v4.js";
-import { TUTORIAL_GET_KEY_EMOJI_ID } from "./tutorial-ui-isolation.js";
 
 const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
 const SUPPORT_URL = `https://t.me/${SUPPORT_USERNAME}`;
+const TUTORIAL_GET_KEY_EMOJI_ID = "5307843983102204243";
+const TUTORIAL_CHECK_EMOJI_ID = "5206607081334906820";
+const TUTORIAL_ACTION_EMOJI_ID = "5411590687663608498";
 
 function cloneOther(other) {
   const next = other && typeof other === "object" ? { ...other } : {};
