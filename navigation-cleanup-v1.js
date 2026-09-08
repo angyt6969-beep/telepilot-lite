@@ -72,9 +72,18 @@ function stateFor(key) {
   return state;
 }
 
+function isExplicitForwardNavigationButton(button) {
+  const data = String(button?.callback_data || "");
+  const label = String(button?.text || "");
+  const dashboardTarget = data === "v1_dashboard_v13" || data === "home" || /dashboard/i.test(label);
+  if (!dashboardTarget) return false;
+  return String(button?.style || "") === "success" || /^open\s+dashboard$/i.test(label.trim());
+}
+
 function isParentNavigationButton(button) {
   const data = String(button?.callback_data || "");
   const label = String(button?.text || "");
+  if (isExplicitForwardNavigationButton(button)) return false;
   if (data === NAV_BACK) return true;
   if (/back|go back|dashboard|home|posting setup|accounts|destinations|settings|activity|admin|keys|topics|cancel/i.test(label)) return true;
   return /^(?:home|v1_dashboard_v13|v1_posting_setup_v13|v1_accounts_v13|v1_destinations_v13|v1_settings_v13|v1_activity_v13|admin|admin_keys|v1_topics_v13)$/i.test(data);
@@ -234,6 +243,7 @@ export const __test = {
   identity,
   isTutorial,
   isTelePilotUi,
+  isExplicitForwardNavigationButton,
   prepareOutgoing,
   snapshot,
   stateFor,
