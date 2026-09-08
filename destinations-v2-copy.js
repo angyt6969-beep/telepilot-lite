@@ -14,7 +14,7 @@ function rewriteButtons(other) {
   for (const row of next?.reply_markup?.inline_keyboard || []) {
     for (const button of row) {
       if (["v1_topic_preferences_v13", "v1_topics_v13", "dest_topics"].includes(String(button.callback_data || ""))) {
-        button.text = "💬 Destination Topics";
+        button.text = "💬 Topics";
         button.callback_data = "d2_topics:0";
       }
       if (["groups"].includes(String(button.callback_data || ""))) button.callback_data = "v1_destinations_v13";
