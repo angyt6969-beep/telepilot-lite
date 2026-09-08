@@ -230,6 +230,21 @@ async function joinPrivate(client, parsed) {
   }
 }
 
+async function joinDirect(client, source) {
+  return source.kind === "invite" ? joinPrivate(client, source) : joinPublic(client, source);
+}
+
+export async function joinDirectWithFloodWaitRetry(client, source, wait = delay) {
+  try {
+    return await joinDirect(client, source);
+  } catch (err) {
+    const explained = explainJoinError(err);
+    if (explained.kind !== "cooldown") throw err;
+    await wait(Math.max(1, Number(explained.cooldownSeconds || 1)) * 1000 + 250);
+    return joinDirect(client, source);
+  }
+}
+
 function retireLegacyAddlistFallback(uid) {
   const file = path.join(DATA_DIR, "users", String(uid), "destination-join-v1.json");
   let state;
@@ -305,7 +320,7 @@ export async function importDestinationBatch(uid, sourceText) {
       for (let index = 0; index < direct.length; index++) {
         const source = direct[index];
         try {
-          const result = source.kind === "invite" ? await joinPrivate(client, source) : await joinPublic(client, source);
+          const result = await joinDirectWithFloodWaitRetry(client, source);
           outcomes.push({
             account: accountDisplayLabel(account),
             source: sourceLabel(source),
@@ -319,15 +334,16 @@ export async function importDestinationBatch(uid, sourceText) {
           maxCooldownSeconds = Math.max(maxCooldownSeconds, Number(explained.cooldownSeconds || 0));
           outcomes.push({ account: accountDisplayLabel(account), source: sourceLabel(source), sourceKind: source.kind, status: "error", ...explained });
           if (explained.kind === "cooldown") {
-            for (const remaining of direct.slice(index + 1)) {
+            const remainingCount = direct.length - index - 1;
+            if (remainingCount > 0) {
               outcomes.push({
                 account: accountDisplayLabel(account),
-                source: sourceLabel(remaining),
-                sourceKind: remaining.kind,
+                source: "Remaining groups",
+                sourceKind: "batch",
                 status: "not_attempted",
                 kind: "cooldown",
                 cooldownSeconds: explained.cooldownSeconds,
-                reason: `Not attempted — Telegram join cooldown is active for ${formatDuration(explained.cooldownSeconds)}.`,
+                reason: `Stopped after Telegram returned another join cooldown — ${remainingCount} group${remainingCount === 1 ? "" : "s"} remaining.`,
               });
             }
             break;

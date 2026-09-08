@@ -5,6 +5,7 @@ import {
   explainJoinError,
   formatDuration,
   importResultScreen,
+  joinDirectWithFloodWaitRetry,
   parseBatchSources,
 } from "./destination-import-engine-v2.js";
 import { __test as copyTest } from "./destination-import-ui-copy.js";
@@ -24,6 +25,42 @@ const batch = parseBatchSources([
 ].join("\n"));
 assert.equal(batch.parsed.length, 2, "duplicate group and Addlist sources must be deduplicated");
 assert.deepEqual(batch.parsed.map(row => row.kind), ["public", "addlist"]);
+
+// Test double: first join attempt gets Telegram FLOOD_WAIT_3, then succeeds.
+let joinAttempts = 0;
+const waited = [];
+const retryClient = {
+  async joinChannel() {
+    joinAttempts++;
+    if (joinAttempts === 1) throw new Error("FLOOD_WAIT_3");
+  },
+};
+const retried = await joinDirectWithFloodWaitRetry(
+  retryClient,
+  { kind: "public", username: "examplegroup" },
+  async ms => { waited.push(ms); },
+);
+assert.equal(retried.status, "joined");
+assert.equal(joinAttempts, 2, "a short Telegram cooldown should retry the same group exactly once");
+assert.deepEqual(waited, [3250], "retry must wait for Telegram's stated cooldown plus a small timing margin");
+
+// Test double: Telegram returns another cooldown on the single retry.
+let repeatedAttempts = 0;
+const repeatedCooldownClient = {
+  async joinChannel() {
+    repeatedAttempts++;
+    throw new Error("FLOOD_WAIT_3");
+  },
+};
+await assert.rejects(
+  joinDirectWithFloodWaitRetry(
+    repeatedCooldownClient,
+    { kind: "public", username: "examplegroup" },
+    async () => {},
+  ),
+  /FLOOD_WAIT_3/,
+);
+assert.equal(repeatedAttempts, 2, "TelePilot must stop after one cooldown retry instead of looping indefinitely");
 
 // Test doubles: model the minimal peer/chat shapes returned by Telegram's
 // chatlists preview. The production function must reconstruct every offered peer
