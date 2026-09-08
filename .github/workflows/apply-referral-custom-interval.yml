@@ -26,7 +26,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Apply guarded source patch
         run: node scripts/apply-referral-custom-interval-patch.mjs
@@ -38,9 +38,14 @@ jobs:
           node --check interval-settings.js
           node --check referral-system.js
           node --check ux-v13.js
+          node --check referral-custom-interval-test.mjs
 
-      - name: Regression suite
-        run: npm test
+      - name: Full regression suite
+        run: |
+          export TELEPILOT_SECURITY_SECRET="$(node -p "'x'.repeat(48)")"
+          export TELEPILOT_SESSION_KEY_B64="$(node -p "Buffer.alloc(32, 11).toString('base64')")"
+          export DATA_DIR=/tmp/telepilot-referral-interval-ci
+          npm test
 
       - name: Diff check
         run: git diff --check
