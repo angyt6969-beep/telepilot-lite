@@ -29,11 +29,12 @@ assert.match(queueSource, /client\.joinChannel/);
 assert.match(queueSource, /Api\.channels\.JoinChannel/);
 assert.match(queueSource, /applyFloodWait/);
 assert.match(queueSource, /WORKER_INTERVAL_MS\s*=\s*500/);
-assert.match(queueSource, /BASE_JOIN_GAP_MS\s*=\s*750/);
+assert.match(queueSource, /BASE_JOIN_GAP_MS\s*=\s*5_000/);
+assert.match(queueSource, /RECOVERY_JOIN_GAP_MS\s*=\s*12_000/);
 assert.match(queueSource, /INITIAL_JOIN_DELAY_MS\s*=\s*200/);
-assert.match(queueSource, /MAX_JOINS_PER_SESSION\s*=\s*4/);
-assert.match(queueSource, /for \(let slot = 0; slot < MAX_JOINS_PER_SESSION; slot\+\+\)/);
-assert.match(queueSource, /fast burst/);
+assert.match(queueSource, /MAX_JOINS_PER_SESSION\s*=\s*1/);
+assert.match(queueSource, /Telegram asked to wait before fallback/);
+assert.match(queueSource, /paced fallback/);
 assert.match(queueSource, /startDestinationJoinWorker/);
 assert.match(startupSource, /startDestinationJoinWorker\(\)/);
 assert.match(uiSource, /d3_join_status/);
@@ -135,17 +136,19 @@ assert.equal(queue.__test.candidateNeedsJoin(review.notJoined[0], "acc2"), false
 assert.equal(queue.floodWaitSeconds({ errorMessage: "FLOOD_WAIT_3" }), 3);
 assert.equal(queue.floodWaitSeconds({ seconds: 7 }), 7);
 
-// Faster local pacing must never weaken Telegram's own cooldown. A FLOOD_WAIT_3
-// still pauses all pending work for the account for 4 seconds including margin.
+// Local pacing must never weaken Telegram's own cooldown. A FLOOD_WAIT_3 still
+// pauses all pending work for the account for 4 seconds including margin, and
+// once it expires the account switches to the slower recovery pacing.
 const now = 1_000_000;
 const synthetic = {
   tasks: {
-    "acc1:-1001": { accountId: "acc1", status: "pending", nextAt: 0, createdAt: 1 },
-    "acc1:-1002": { accountId: "acc1", status: "pending", nextAt: 0, createdAt: 2 },
-    "acc2:-1003": { accountId: "acc2", status: "pending", nextAt: 0, createdAt: 3 },
+    "acc1:-1001": { accountId: "acc1", status: "pending", nextAt: 0, createdAt: 1, lastError: "" },
+    "acc1:-1002": { accountId: "acc1", status: "pending", nextAt: 0, createdAt: 2, lastError: "" },
+    "acc2:-1003": { accountId: "acc2", status: "pending", nextAt: 0, createdAt: 3, lastError: "" },
   },
   accountNextAt: {},
 };
+assert.equal(queue.__test.accountJoinGapMs(synthetic, "acc1"), 5_000);
 const resumeAt = queue.applyFloodWait(synthetic, "acc1", 3, now);
 assert.equal(resumeAt, now + 4_000);
 assert.equal(synthetic.tasks["acc1:-1001"].status, "pending");
@@ -153,6 +156,8 @@ assert.equal(synthetic.tasks["acc1:-1002"].status, "pending");
 assert.equal(synthetic.tasks["acc1:-1001"].nextAt, resumeAt);
 assert.equal(synthetic.tasks["acc1:-1002"].nextAt, resumeAt);
 assert.equal(synthetic.tasks["acc2:-1003"].nextAt, 0);
+assert.equal(queue.__test.accountJoinGapMs(synthetic, "acc1"), 12_000);
+assert.equal(queue.__test.accountJoinGapMs(synthetic, "acc2"), 5_000);
 assert.equal(queue.pickDueTask(synthetic, "acc1", resumeAt - 1), null);
 assert.equal(queue.pickDueTask(synthetic, "acc1", resumeAt)?.createdAt, 1);
 assert.equal(queue.pickDueTask(synthetic, "acc2", now)?.createdAt, 3);
@@ -176,4 +181,4 @@ assert.deepEqual(
   { total: 5, joined: 1, pending: 2, requestPending: 1, failed: 1 },
 );
 
-console.log("TelePilot fast durable Addlist join queue checks passed");
+console.log("TelePilot paced durable Addlist join queue checks passed");

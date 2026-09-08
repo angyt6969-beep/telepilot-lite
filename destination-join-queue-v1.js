@@ -13,13 +13,14 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
 const STATE_VERSION = 1;
 
-// Fast path: reuse one authenticated Telegram connection for a few joins instead
-// of reconnecting for every group. Telegram FLOOD_WAIT always overrides these
-// local timings and pauses every pending task for that account durably.
+// One-by-one joining is only the fallback after Addlist bulk recovery could not
+// finish the work. Keep it deliberately paced: Telegram FLOOD_WAIT always wins,
+// and any account that already hit a flood wait uses the slower recovery gap.
 const WORKER_INTERVAL_MS = 500;
-const BASE_JOIN_GAP_MS = 750;
+const BASE_JOIN_GAP_MS = 5_000;
+const RECOVERY_JOIN_GAP_MS = 12_000;
 const INITIAL_JOIN_DELAY_MS = 200;
-const MAX_JOINS_PER_SESSION = 4;
+const MAX_JOINS_PER_SESSION = 1;
 const REQUEST_PENDING_RETRY_MS = 24 * 60 * 60_000;
 const MAX_ATTEMPTS = 6;
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60_000;
@@ -122,6 +123,7 @@ export function enqueueJoinRecovery(uid, review) {
     const candidates = (review?.notJoined || [])
       .filter(candidate => candidateNeedsJoin(candidate, account.id))
       .slice(0, MAX_RECOVERY_PER_ACCOUNT);
+    const coolingDown = Number(state.accountNextAt[String(account.id)] || 0) > now;
 
     for (const candidate of candidates) {
       const key = taskKey(account.id, candidate.id);
@@ -133,7 +135,7 @@ export function enqueueJoinRecovery(uid, review) {
           existing.status = "pending";
           existing.attempts = 0;
           existing.nextAt = now + INITIAL_JOIN_DELAY_MS;
-          existing.lastError = "";
+          existing.lastError = coolingDown ? "Telegram asked to wait before fallback" : "";
           requeued++;
         }
         existing.updatedAt = now;
@@ -148,7 +150,7 @@ export function enqueueJoinRecovery(uid, review) {
         status: "pending",
         attempts: 0,
         nextAt: now + INITIAL_JOIN_DELAY_MS,
-        lastError: "",
+        lastError: coolingDown ? "Telegram asked to wait before fallback" : "",
         createdAt: now,
         updatedAt: now,
       };
@@ -314,6 +316,14 @@ export function pickDueTask(state, accountId, now = Date.now()) {
 function hasPendingForAccount(state, accountId) {
   return Object.values(state?.tasks || {}).some(task => String(task.accountId) === String(accountId) && task.status === "pending");
 }
+function accountJoinGapMs(state, accountId) {
+  const hadFloodWait = Object.values(state?.tasks || {}).some(task =>
+    String(task?.accountId || "") === String(accountId)
+      && task?.status === "pending"
+      && /^Telegram asked to wait/i.test(String(task?.lastError || "")),
+  );
+  return hadFloodWait ? RECOVERY_JOIN_GAP_MS : BASE_JOIN_GAP_MS;
+}
 
 async function processAccount(uid, account, state) {
   const firstTask = pickDueTask(state, account.id);
@@ -350,7 +360,7 @@ async function processAccount(uid, account, state) {
           task.lastError = outcome.reason || "This Addlist chat cannot be joined automatically.";
           task.updatedAt = Date.now();
         }
-        state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+        state.accountNextAt[String(account.id)] = Date.now() + accountJoinGapMs(state, account.id);
       } catch (err) {
         const wait = floodWaitSeconds(err);
         if (wait) {
@@ -360,7 +370,7 @@ async function processAccount(uid, account, state) {
           break;
         }
         failTask(task, err);
-        state.accountNextAt[String(account.id)] = Date.now() + BASE_JOIN_GAP_MS;
+        state.accountNextAt[String(account.id)] = Date.now() + accountJoinGapMs(state, account.id);
       }
 
       writeState(uid, state);
@@ -423,7 +433,7 @@ export function startDestinationJoinWorker() {
   workerTimer = setInterval(() => void runDestinationJoinTick(), WORKER_INTERVAL_MS);
   workerTimer.unref?.();
   setTimeout(() => void runDestinationJoinTick(), 250).unref?.();
-  console.log("TelePilot destination join queue enabled (durable, flood-aware, fast burst)");
+  console.log("TelePilot destination join queue enabled (durable, flood-aware, paced fallback)");
   return workerTimer;
 }
 
@@ -431,4 +441,5 @@ export const __test = {
   candidateNeedsJoin,
   inputChannelFromCandidate,
   cleanCandidate,
+  accountJoinGapMs,
 };
