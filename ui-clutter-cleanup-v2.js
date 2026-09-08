@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Api } from "grammy";
+import { checkoutUrlForUid } from "./crypto-checkout-web.js";
+import { CHECKOUT_GET_KEY_EMOJI_ID } from "./crypto-checkout-bot-ui.js";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const ADMIN_FILE = path.join(DATA_DIR, "telepilot-admin.json");
@@ -64,6 +66,15 @@ function cleanActionButton(template, text, callbackData, style) {
 
 function backButton(callbackData) {
   return { text: BACK_TEXT, callback_data: callbackData };
+}
+
+function checkoutButton(chatId) {
+  return {
+    text: "Buy / Renew Key",
+    url: checkoutUrlForUid(String(chatId || "")),
+    icon_custom_emoji_id: CHECKOUT_GET_KEY_EMOJI_ID,
+    style: "primary",
+  };
 }
 
 function replaceRows(other, rows) {
@@ -150,7 +161,7 @@ function compactDashboard(text, other) {
     rows.push([control]);
   }
 
-  const posting = cleanActionButton(buttonByData(other, "v1_posting_setup_v13", "posting_setup"), "Posting Setup", "v1_posting_setup_v13", "primary");
+  const posting = cleanActionButton(buttonByData(other, "v1_posting_setup_v13", "posting_setup"), "Posting Setup", "v1_posting_setup_v13");
   const activityTemplate = buttonByData(other, "v1_activity_v13", "activity");
   const activity = inactiveAccess ? null : cleanActionButton(activityTemplate, "Activity", "v1_activity_v13");
   rows.push(activity ? [posting, activity] : [posting]);
@@ -275,6 +286,7 @@ function compactSettings(chatId, text, other) {
       cleanActionButton(buttonByData(other, "access"), "Access", "access", "primary"),
       cleanActionButton(buttonByData(other, "v1_notifications"), "Notifications", "v1_notifications"),
     ],
+    [checkoutButton(chatId)],
     [
       cleanActionButton(buttonByData(other, "referrals"), "Referrals", "referrals"),
       cleanActionButton(buttonByData(other, "support"), "Support", "support"),
@@ -284,6 +296,32 @@ function compactSettings(chatId, text, other) {
   if (isAdminChat(chatId)) rows.push([cleanActionButton(buttonByData(other, "admin"), "Admin", "admin", "primary")]);
   rows.push([backButton("v1_dashboard_v13")]);
   return htmlPage(text, other, "⚙️", "Settings", body, rows);
+}
+
+
+function compactNotifications(text, other) {
+  const lines = plainLines(text);
+  const mode = (metric(lines, "Mode") || "important").toLowerCase();
+  const weekly = metric(lines, "Weekly recap") || "Disabled";
+  const modeButton = (value, label) => cleanActionButton(
+    buttonByData(other, `v1_notify:${value}`),
+    mode === value ? `✓ ${label}` : label,
+    `v1_notify:${value}`,
+    mode === value ? "primary" : undefined,
+  );
+  const weeklyTemplate = buttonByData(other, "v1_weekly_toggle");
+  const rows = [
+    [modeButton("all", "All"), modeButton("important", "Important"), modeButton("silent", "Silent")],
+    [cleanActionButton(weeklyTemplate, /enabled/i.test(weekly) ? "Disable Weekly Recap" : "Enable Weekly Recap", "v1_weekly_toggle")],
+    [backButton("v1_settings_v13")],
+  ];
+  const body = [
+    `<b>Mode:</b> — ${esc(mode.charAt(0).toUpperCase() + mode.slice(1))}`,
+    `<b>Weekly recap:</b> — ${esc(weekly)}`,
+    "",
+    "<i>Choose how much TelePilot should notify you.</i>",
+  ];
+  return htmlPage(text, other, "🔔", "Notifications", body, rows);
 }
 
 function destinationMoreRows() {
@@ -325,6 +363,7 @@ export function cleanupUiClutterV2(chatId, text, other) {
   if (/^Activity$/i.test(title)) return compactActivity(text, ensureNoSmartPreview(other));
   if (/^(?:Destination Hub|Destinations)$/i.test(title)) return compactDestinations(text, ensureNoSmartPreview(other));
   if (/^Settings$/i.test(title)) return compactSettings(chatId, text, ensureNoSmartPreview(other));
+  if (/^Notifications$/i.test(title)) return compactNotifications(text, ensureNoSmartPreview(other));
   if (/^Destination More$/i.test(title)) return compactDestinationMore(text, ensureNoSmartPreview(other), false);
   if (/^Destination Advanced$/i.test(title)) return compactDestinationMore(text, ensureNoSmartPreview(other), true);
   return { text, other: ensureNoSmartPreview(other) };
@@ -399,6 +438,7 @@ export const __test = {
   compactActivity,
   compactDestinations,
   compactSettings,
+  compactNotifications,
   destinationMoreRows,
   destinationAdvancedRows,
 };
