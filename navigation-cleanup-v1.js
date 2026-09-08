@@ -94,8 +94,20 @@ export function applyGoBackButton(text, other, hasHistory) {
   const next = cloneOther(other);
   const rows = next?.reply_markup?.inline_keyboard ? [...next.reply_markup.inline_keyboard] : [];
 
-  if (rows.length && rows.at(-1)?.length === 1 && isParentNavigationButton(rows.at(-1)[0])) rows.pop();
-  if (hasHistory) rows.push([{ text: "Go back", callback_data: NAV_BACK }]);
+  const lastRow = rows.at(-1);
+  const parentButton = lastRow?.length === 1 && isParentNavigationButton(lastRow[0]) ? lastRow[0] : null;
+
+  if (parentButton) {
+    const data = String(parentButton.callback_data || "");
+    if (data === NAV_BACK) {
+      if (!hasHistory) rows.pop();
+    } else {
+      // Keep the real parent callback so Back survives process restarts/deploys.
+      parentButton.text = "Go back";
+    }
+  } else if (hasHistory) {
+    rows.push([{ text: "Go back", callback_data: NAV_BACK }]);
+  }
 
   next.reply_markup = { ...(next.reply_markup || {}), inline_keyboard: rows };
   return { text, other: next };

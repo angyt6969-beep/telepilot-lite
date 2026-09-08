@@ -439,7 +439,7 @@ function settingsScreen(uid) {
     rows: [
       [inline("🔑 Access", "access"), inline("💬 Support", "support")],
       [inline("❓ Tutorial", "tutorial_restart"), inline("💬 Topic Preferences", "v1_topic_preferences_v13")],
-      [inline("🔔 Notifications", "v1_notifications")],
+      [inline("🔔 Notifications", "v1_notifications"), inline("🔥 Referrals", "referrals")],
       [inline("📊 Dashboard", "v1_dashboard_v13")],
     ],
   };

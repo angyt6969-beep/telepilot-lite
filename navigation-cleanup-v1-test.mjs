@@ -34,8 +34,8 @@ const withBack = applyGoBackButton(activity.text, activity.other, true);
 const withBackRows = withBack.other.reply_markup.inline_keyboard;
 const bottom = withBackRows.at(-1);
 assert.equal(bottom.length, 1);
-assert.deepEqual(bottom[0], { text: "Go back", callback_data: "telepilot_nav_back" });
-assert.equal(withBackRows.flat().some(button => button.callback_data === "v1_dashboard_v13"), false, "hardcoded bottom Dashboard must be replaced");
+assert.deepEqual(bottom[0], { text: "Go back", callback_data: "v1_dashboard_v13" });
+assert.equal(withBackRows.flat().some(button => button.callback_data === "telepilot_nav_back"), false, "a real parent callback should be preserved instead of replaced with volatile history");
 
 const root = applyGoBackButton("✈️ TelePilot\n\nStatus: — READY", {
   reply_markup: { inline_keyboard: [[{ text: "Go back", callback_data: "telepilot_nav_back" }]] },
@@ -60,11 +60,16 @@ assert.equal(activationButtons[0].callback_data, "v1_dashboard_v13");
 assert.equal(activationButtons[0].style, "success");
 assert.equal(__test.isExplicitForwardNavigationButton(activationButtons[0]), true);
 
-// A normal hardcoded Dashboard footer is still treated as parent navigation and removed.
+// A normal parent footer becomes Go back but keeps its deterministic callback.
 const ordinaryFooter = applyGoBackButton("⚙️ Settings", {
   reply_markup: { inline_keyboard: [[{ text: "Dashboard", callback_data: "v1_dashboard_v13" }]] },
 }, false);
-assert.equal(ordinaryFooter.other.reply_markup.inline_keyboard.length, 0);
+assert.deepEqual(ordinaryFooter.other.reply_markup.inline_keyboard.at(-1)[0], { text: "Go back", callback_data: "v1_dashboard_v13" });
+
+const settingsParent = applyGoBackButton("💬 Topic Preferences", {
+  reply_markup: { inline_keyboard: [[{ text: "Settings", callback_data: "v1_settings_v13" }]] },
+}, false);
+assert.deepEqual(settingsParent.other.reply_markup.inline_keyboard.at(-1)[0], { text: "Go back", callback_data: "v1_settings_v13" });
 
 const tutorial = applyGoBackButton(
   '<tg-emoji emoji-id="5231361378748472914">✈️</tg-emoji> <b><i>Build your post</i></b>\n<i>Slide 4 of 5</i>',
@@ -108,7 +113,7 @@ assert.equal(renderedButtons.find(button => button.callback_data === "v1_history
 assert.equal(renderedButtons.find(button => button.callback_data === "v1_history")?.style, undefined);
 assert.equal(renderedButtons.some(button => button.callback_data === "v1_accounts_v13"), false);
 assert.equal(renderedButtons.some(button => button.callback_data === "v1_destinations_v13"), false);
-assert.deepEqual(activityRendered.other.reply_markup.inline_keyboard.at(-1)[0], { text: "Go back", callback_data: "telepilot_nav_back" });
+assert.deepEqual(activityRendered.other.reply_markup.inline_keyboard.at(-1)[0], { text: "Go back", callback_data: "v1_dashboard_v13" });
 
 // Same-page updates must not create duplicate history entries.
 __test.captureIncoming({
