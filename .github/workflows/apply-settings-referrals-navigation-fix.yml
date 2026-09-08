@@ -1,0 +1,66 @@
+name: Apply Settings referrals and navigation fix
+
+on:
+  push:
+    branches:
+      - fix/settings-referrals-navigation
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/settings-referrals-navigation
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Apply guarded source patch
+        run: node scripts/apply-settings-referrals-navigation-fix.mjs
+
+      - name: Syntax checks
+        run: |
+          node --check ux-v13.js
+          node --check navigation-cleanup-v1.js
+          node --check navigation-cleanup-v1-test.mjs
+          node --check referral-custom-interval-test.mjs
+
+      - name: Targeted regressions
+        run: |
+          export TELEPILOT_SECURITY_SECRET="$(node -p "'x'.repeat(48)")"
+          export TELEPILOT_SESSION_KEY_B64="$(node -p "Buffer.alloc(32, 11).toString('base64')")"
+          export DATA_DIR=/tmp/telepilot-settings-nav-ci
+          node navigation-cleanup-v1-test.mjs
+          node referral-custom-interval-test.mjs
+
+      - name: Full regression suite
+        run: |
+          export TELEPILOT_SECURITY_SECRET="$(node -p "'x'.repeat(48)")"
+          export TELEPILOT_SESSION_KEY_B64="$(node -p "Buffer.alloc(32, 11).toString('base64')")"
+          export DATA_DIR=/tmp/telepilot-settings-nav-ci-full
+          npm test
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Commit verified fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix Settings referrals and deterministic back navigation"
+          git push origin HEAD:fix/settings-referrals-navigation
