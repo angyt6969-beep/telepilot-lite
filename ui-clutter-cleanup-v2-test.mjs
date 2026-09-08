@@ -6,6 +6,8 @@ import path from "node:path";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-ui-cleanup-v2-"));
 process.env.DATA_DIR = root;
 process.env.TELEPILOT_ADMIN_ID = "42";
+process.env.PUBLIC_URL = "https://telepilot.example";
+process.env.TELEPILOT_SECURITY_SECRET = "test-only-ui-key-notification-secret-0123456789abcdef";
 
 const mod = await import(`./ui-clutter-cleanup-v2.js?test=${Date.now()}`);
 const { cleanupUiClutterV2, __test } = mod;
@@ -33,6 +35,7 @@ assert.equal(actionCount(activeDashboard), 6, "active dashboard should have six 
 assert.equal(callbacks(activeDashboard).includes("admin"), false, "Admin must leave Dashboard");
 assert.equal(callbacks(activeDashboard).includes("v1_preview"), false, "Smart Preview must never survive cleanup");
 assert.equal(buttons(activeDashboard).find(item => item.callback_data === "v1_settings_v13")?.style, "primary", "Settings should use blue primary styling");
+assert.equal(buttons(activeDashboard).find(item => item.callback_data === "v1_posting_setup_v13")?.style, undefined, "Posting Setup should stay neutral");
 
 const liveDashboard = cleanupUiClutterV2(42, "✈️ TelePilot\n\nStatus: — LIVE\nAccess: — Active\nSender: — @sender\nDestinations: — 4 ready", dashboardOther);
 assert.equal(callbacks(liveDashboard).includes("stop"), true);
@@ -124,10 +127,27 @@ assert.equal(callbacks(settings).includes("v1_topic_preferences_v13"), false, "t
 assert.equal(buttons(settings).find(item => item.callback_data === "admin")?.style, "primary");
 assert.equal(lastRow(settings)[0]?.text, __test.BACK_TEXT);
 assert.equal(lastRow(settings)[0]?.style, undefined);
+const buyKey = buttons(settings).find(item => item.text === "Buy / Renew Key");
+assert.ok(buyKey, "Settings should expose Buy / Renew Key");
+assert.match(String(buyKey.url || ""), /^https:\/\/telepilot\.example\/checkout\?t=/);
+assert.equal(buyKey.icon_custom_emoji_id, "5307843983102204243");
+assert.equal(buyKey.style, "primary");
 
 const normalSettings = cleanupUiClutterV2(99, "⚙️ Settings\n\nAccess: — Active", settingsOther);
 assert.equal(callbacks(normalSettings).includes("admin"), false);
-assert.ok(actionCount(normalSettings) <= 5);
+assert.ok(actionCount(normalSettings) <= 6);
+
+const notificationOther = other([
+  [button("All", "v1_notify:all"), button("✓ Important", "v1_notify:important"), button("Silent", "v1_notify:silent")],
+  [button("Disable weekly recap", "v1_weekly_toggle")],
+  [button("Advanced", "v1_tools", { style: "primary" })],
+]);
+const notifications = cleanupUiClutterV2(42, "🔔 Notifications\nMode — important\nWeekly recap — Enabled", notificationOther);
+assert.deepEqual(callbacks(notifications), ["v1_notify:all", "v1_notify:important", "v1_notify:silent", "v1_weekly_toggle", "v1_settings_v13"]);
+assert.equal(callbacks(notifications).includes("v1_tools"), false, "Notifications must not expose Advanced");
+assert.equal(buttons(notifications).find(item => item.callback_data === "v1_notify:important")?.style, "primary");
+assert.equal(lastRow(notifications)[0]?.text, __test.BACK_TEXT);
+assert.equal(lastRow(notifications)[0]?.callback_data, "v1_settings_v13");
 
 const moreRows = __test.destinationMoreRows();
 assert.deepEqual(moreRows.flat().map(item => item.callback_data), ["d2_refresh", "d2_manage:0", "v1_dest_filters_v13", "v1_destination_presets_v13", "v1_import_history_v13", "v1_dest_advanced_v2", "v1_destinations_v13"]);
@@ -136,7 +156,7 @@ const advancedRows = __test.destinationAdvancedRows();
 assert.deepEqual(advancedRows.flat().map(item => item.callback_data), ["route_groups:0", "v1_topic_preferences_v13", "v1_dest_more_v2"]);
 assert.equal(advancedRows.at(-1)[0].text, __test.BACK_TEXT);
 
-for (const result of [posting, activity, cleanActivity, destinations, cleanDestinations, settings, normalSettings]) {
+for (const result of [posting, activity, cleanActivity, destinations, cleanDestinations, settings, normalSettings, notifications]) {
   const back = lastRow(result)[0];
   assert.equal(back?.text, __test.BACK_TEXT, "Back must always be the final row on cleaned subpages");
   assert.equal(back?.style, undefined, "Back must stay neutral");
