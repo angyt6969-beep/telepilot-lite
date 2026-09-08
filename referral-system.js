@@ -122,19 +122,20 @@ async function showReferral(ctx) {
     .row()
     .text("🔄 Refresh", "referrals")
     .row()
-    .text("⬅️ Dashboard", "v1_dashboard_v13");
+    .text("⬅️ Settings", "v1_settings_v13");
   const other = { reply_markup: keyboard, entities: italicEntity(text) };
   try { await ctx.editMessageText(text, other); }
   catch { await ctx.reply(text, other); }
 }
 
 function addReferralButton(text, other) {
-  if (!String(text || "").startsWith("✈️ TelePilot") || !other?.reply_markup?.inline_keyboard) return other;
-  const rows = other.reply_markup.inline_keyboard.map(row => row.map(button => ({ ...button })));
-  if (rows.some(row => row.some(button => button?.callback_data === "referrals"))) return other;
-  const adminIndex = rows.findIndex(row => row.some(button => String(button?.callback_data || "").startsWith("admin")));
-  const row = [{ text: "🔥 Referrals", callback_data: "referrals" }];
-  rows.splice(adminIndex >= 0 ? adminIndex : rows.length, 0, row);
+  if (!other?.reply_markup?.inline_keyboard) return other;
+  const rows = other.reply_markup.inline_keyboard.map(row => row
+    .filter(button => button?.callback_data !== "referrals")
+    .map(button => ({ ...button })));
+  const notificationsRowIndex = rows.findIndex(row => row.some(button => button?.callback_data === "v1_notifications"));
+  if (notificationsRowIndex < 0) return other;
+  rows[notificationsRowIndex].push({ text: "🔥 Referrals", callback_data: "referrals" });
   return { ...other, reply_markup: { ...other.reply_markup, inline_keyboard: rows } };
 }
 
