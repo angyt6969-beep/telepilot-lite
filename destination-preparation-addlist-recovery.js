@@ -22,6 +22,13 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const BULK_SETTLE_MS = 900;
 const FALLBACK_PAUSE_MS = 30_000;
 
+// Telegram currently documents dialog_filters_chats_limit_default=100 and
+// dialog_filters_chats_limit_premium=200. We only use this conservative cap
+// after Telegram itself returns FILTER_INCLUDE_TOO_MUCH, and leave a small
+// headroom for chats from the same shared folder that are already joined.
+const DEFAULT_FOLDER_CHAT_LIMIT = 100;
+const BULK_RETRY_HEADROOM = 5;
+
 function userDir(uid) { return path.join(DATA_DIR, "users", String(uid)); }
 function queuePath(uid) { return path.join(userDir(uid), "destination-join-v1.json"); }
 function readJson(file, fallback) {
@@ -131,7 +138,60 @@ async function openClient(uid, account) {
   return client;
 }
 
-async function bulkJoinSlug(client, slug, candidates) {
+function isFilterIncludeTooMuch(err) {
+  return errorCode(err).includes("FILTER_INCLUDE_TOO_MUCH");
+}
+
+function readyCountForSlug(review, accountId, slug) {
+  return (Array.isArray(review?.accessible) ? review.accessible : []).filter(candidate =>
+    candidate?.sourceKind === "addlist"
+      && String(candidate?.sourceSlug || "") === String(slug)
+      && candidate?.accountJoin?.[String(accountId)]?.status === "ready"
+  ).length;
+}
+
+export function safeBulkRetrySizes(totalInputs, knownReady = 0) {
+  const total = Math.max(0, Math.floor(Number(totalInputs) || 0));
+  if (total <= 1) return [];
+  const ready = Math.max(0, Math.floor(Number(knownReady) || 0));
+  let size = Math.min(
+    total - 1,
+    Math.max(1, DEFAULT_FOLDER_CHAT_LIMIT - BULK_RETRY_HEADROOM - Math.min(ready, DEFAULT_FOLDER_CHAT_LIMIT - 1)),
+  );
+  const sizes = [];
+  while (size >= 1) {
+    if (!sizes.includes(size)) sizes.push(size);
+    if (size === 1) break;
+    size = Math.max(1, Math.floor(size / 2));
+  }
+  return sizes;
+}
+
+async function joinFreshWithLimitFallback(client, slug, inputs, knownReady = 0) {
+  try {
+    await client.api.chatlists.joinChatlistInvite({ slug, peers: inputs });
+    return { accepted: inputs.length, limited: false, attempts: [inputs.length] };
+  } catch (err) {
+    if (!isFilterIncludeTooMuch(err) || inputs.length <= 1) throw err;
+
+    let lastError = err;
+    const attempts = [inputs.length];
+    for (const size of safeBulkRetrySizes(inputs.length, knownReady)) {
+      const subset = inputs.slice(0, size);
+      attempts.push(subset.length);
+      try {
+        await client.api.chatlists.joinChatlistInvite({ slug, peers: subset });
+        return { accepted: subset.length, limited: true, attempts };
+      } catch (retryErr) {
+        lastError = retryErr;
+        if (!isFilterIncludeTooMuch(retryErr)) throw retryErr;
+      }
+    }
+    throw lastError;
+  }
+}
+
+async function bulkJoinSlug(client, slug, candidates, knownReady = 0) {
   const invite = await client.api.chatlists.checkChatlistInvite({ slug });
   const className = String(invite?.className || "");
   const filterId = Number(invite?.filterId);
@@ -141,22 +201,29 @@ async function bulkJoinSlug(client, slug, candidates) {
   if (!alreadyImported) {
     const peers = Array.isArray(invite?.peers) ? invite.peers : [];
     const inputs = buildBulkInputs(invite?.chats, peers, candidates);
-    if (!inputs.length) return { mode: "fresh", accepted: 0, offered: peers.length };
-    await client.api.chatlists.joinChatlistInvite({ slug, peers: inputs });
-    return { mode: "fresh", accepted: inputs.length, offered: peers.length };
+    if (!inputs.length) return { mode: "fresh", accepted: 0, offered: peers.length, requested: 0, limited: false };
+    const joined = await joinFreshWithLimitFallback(client, slug, inputs, knownReady);
+    return {
+      mode: "fresh",
+      accepted: joined.accepted,
+      offered: peers.length,
+      requested: inputs.length,
+      limited: joined.limited,
+      attempts: joined.attempts,
+    };
   }
 
   if (!Number.isInteger(filterId) || filterId <= 0) {
-    return { mode: "updates", accepted: 0, offered: 0 };
+    return { mode: "updates", accepted: 0, offered: 0, requested: 0, limited: false };
   }
 
   const chatlist = new Api.InputChatlistDialogFilter({ filterId });
   const updates = await client.api.chatlists.getChatlistUpdates({ chatlist });
   const missingPeers = Array.isArray(updates?.missingPeers) ? updates.missingPeers : [];
   const inputs = buildBulkInputs(updates?.chats, missingPeers, candidates);
-  if (!inputs.length) return { mode: "updates", accepted: 0, offered: missingPeers.length };
+  if (!inputs.length) return { mode: "updates", accepted: 0, offered: missingPeers.length, requested: 0, limited: false };
   await client.api.chatlists.joinChatlistUpdates({ chatlist, peers: inputs });
-  return { mode: "updates", accepted: inputs.length, offered: missingPeers.length };
+  return { mode: "updates", accepted: inputs.length, offered: missingPeers.length, requested: inputs.length, limited: false };
 }
 
 function pauseFallbackQueue(uid, accountIds, now = Date.now()) {
@@ -269,9 +336,13 @@ export async function recoverNotJoinedAddlistPeers(uid, initialResult) {
       for (const [slug, candidates] of bySlug) {
         bulkRequests++;
         try {
-          const result = await bulkJoinSlug(client, slug, candidates);
+          const knownReady = readyCountForSlug(postReview, row.accountId, slug);
+          const result = await bulkJoinSlug(client, slug, candidates, knownReady);
           bulkAccepted += Number(result.accepted || 0);
-          console.log(`TelePilot Addlist bulk join ${uid}/${row.accountId}/${slug}: mode=${result.mode}, offered=${result.offered}, accepted=${result.accepted}`);
+          console.log(
+            `TelePilot Addlist bulk join ${uid}/${row.accountId}/${slug}: mode=${result.mode}, offered=${result.offered}, `
+            + `requested=${result.requested || 0}, accepted=${result.accepted}${result.limited ? ", limited-retry=true" : ""}`,
+          );
         } catch (err) {
           const wait = floodWaitSeconds(err);
           if (wait) {
@@ -335,4 +406,8 @@ export const __test = {
   candidatePeerKey,
   peerKey,
   entityKey,
+  isFilterIncludeTooMuch,
+  readyCountForSlug,
+  bulkJoinSlug,
+  joinFreshWithLimitFallback,
 };
