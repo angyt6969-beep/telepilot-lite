@@ -44,6 +44,8 @@ import { installSupportCenterEarly } from "./support-bootstrap.js";
 import { installSupportUi } from "./support-ui.js";
 import { installV1Controls } from "./v1-controls.js";
 import { installPauseResumeBot, installPauseResumeUi } from "./pause-resume-control-v1.js";
+import { installIntervalDisplayUi } from "./interval-settings.js";
+import { installReferralSystem, installReferralUi } from "./referral-system.js";
 import { installForwardedPostBot, installForwardedPostSend, installForwardedPostUi } from "./forwarded-post-v1.js";
 import { installForwardedPostV13UiFix } from "./forwarded-post-v13-ui-fix.js";
 import { installForwardedPostSchedulerCompat } from "./forwarded-post-scheduler-compat.js";
@@ -89,6 +91,7 @@ installLegalPages();
 installConnectUi();
 
 installOwnerControlsBot(Bot);
+installReferralSystem(Bot);
 installEmojiIdTool(Bot);
 installInteractionEnhancements(Bot);
 installProControls(Bot);
@@ -184,6 +187,9 @@ installUiEnhancements(Api);
 // UI stack has been built. It keeps the v1.3 dashboard intact and only appends
 // access/community controls or replaces the legacy post-redemption tutorial fork.
 installLinearOnboardingV4Ui(Api);
+// Referral and canonical interval display sit outside the standard UI stack so their new controls flow through the existing premium emoji/typography layers.
+installIntervalDisplayUi(Api);
+installReferralUi(Api);
 // Reliability UI remains outermost so generic legacy posting failures are
 // replaced by exact Telegram reasons after all other transforms finish.
 installPostingReliabilityUi(Api);

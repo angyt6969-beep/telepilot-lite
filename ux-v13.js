@@ -25,6 +25,7 @@ import {
   writeAppSettings,
 } from "./posting-engine-enhancements.js";
 import { advanceTutorialAfterAction } from "./onboarding.js";
+import { intervalMinutesForCompatibility, intervalSecondsFromSettings } from "./interval-settings.js";
 import { reloadUserState, syncUserGroups } from "./runtime-hooks.js";
 import { queuePreview, readV1, v1Stats, writeV1 } from "./v1-engine.js";
 import {
@@ -766,7 +767,8 @@ function setupSnapshot(uid) {
   return {
     adMessage: String(settings.adMessage || ""),
     adEntities: Array.isArray(settings.adEntities) ? settings.adEntities : [],
-    intervalMinutes: Number(settings.intervalMinutes || 30),
+    intervalSeconds: intervalSecondsFromSettings(settings),
+    intervalMinutes: intervalMinutesForCompatibility(intervalSecondsFromSettings(settings)),
     senderMode: selection.mode,
     selectedAccountIds: selection.selected,
     activeDestinationIds: activeIds(settings, pro),
@@ -795,7 +797,8 @@ function applySetupPreset(uid, preset) {
     version: Math.max(5, Number(settings.version || 0)),
     adMessage: String(snapshot.adMessage || ""),
     adEntities: Array.isArray(snapshot.adEntities) ? snapshot.adEntities : [],
-    intervalMinutes: Number(snapshot.intervalMinutes || 30),
+    intervalSeconds: intervalSecondsFromSettings(snapshot),
+    intervalMinutes: intervalMinutesForCompatibility(intervalSecondsFromSettings(snapshot)),
     senderMode: mode,
     selectedAccountIds: mode === "selected" ? selected : [],
   });
