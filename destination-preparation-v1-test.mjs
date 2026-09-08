@@ -12,10 +12,11 @@ process.env.API_HASH ||= "test-hash";
 const source = fs.readFileSync(new URL("./destination-preparation-v1.js", import.meta.url), "utf8");
 const scannerSource = fs.readFileSync(new URL("./destinations-v2.js", import.meta.url), "utf8");
 const inputSource = fs.readFileSync(new URL("./destinations-v2-input-priority.js", import.meta.url), "utf8");
+const importSource = fs.readFileSync(new URL("./destination-import-engine-v2.js", import.meta.url), "utf8");
 const startupSource = fs.readFileSync(new URL("./startup.js", import.meta.url), "utf8");
 
-// The working scanner remains read-only. Telegram mutations must live only in the
-// isolated preparation module.
+// The scanner remains read-only. Telegram mutations live in the import and
+// cleanup modules, not in the scanner itself.
 for (const forbidden of [
   ".joinChannel(",
   ".importChatInvite(",
@@ -32,7 +33,10 @@ assert.match(source, /joinChatlistUpdates/);
 assert.match(source, /UpdateNotifySettings/);
 assert.match(source, /EditPeerFolders/);
 assert.match(source, /archiveReady\.length >= ARCHIVE_BATCH_SIZE/);
-assert.match(inputSource, /d3_prepare:/);
+assert.match(inputSource, /importDestinationBatch/);
+assert.match(importSource, /chatlists\.joinChatlistInvite/);
+assert.match(importSource, /chatlists\.joinChatlistUpdates/);
+assert.match(importSource, /No partial folder import was attempted/);
 assert.match(startupSource, /installDestinationPreparationUi\(Bot\)/);
 assert.match(startupSource, /runDestinationPreparationTick/);
 assert.match(startupSource, /startOptimizedDestinationPreparationWorker\(\)/);
