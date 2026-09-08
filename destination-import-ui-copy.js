@@ -18,7 +18,19 @@ function cloneOther(other) {
   }
   return next;
 }
+function isTutorialPayload(text, other) {
+  if (/\bSlide\s+[1-5]\s+of\s+5\b/i.test(plain(text))) return true;
+  return (other?.reply_markup?.inline_keyboard || []).flat().some(button => {
+    const data = String(button?.callback_data || "");
+    return data.startsWith("linear_tutorial:") || data === "linear_onboarding_complete";
+  });
+}
 function transform(text, other) {
+  // Tutorial slide 3 is intentionally titled "Add destinations". Do not let
+  // the destination import copy transformer mistake that tutorial screen for
+  // the real Add / Import screen and replace its navigation.
+  if (isTutorialPayload(text, other)) return { text, other };
+
   const title = firstLine(text);
   if (!/^Add destinations$/i.test(title) && !/^Add \/ Import$/i.test(title)) return { text, other };
   const next = cloneOther(other);
@@ -59,5 +71,5 @@ export function installDestinationImportUiCopy(ApiClass = Api) {
   };
 }
 
-export const __test = { transform };
+export const __test = { transform, isTutorialPayload };
 installDestinationImportUiCopy(Api);
