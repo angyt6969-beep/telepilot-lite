@@ -1,0 +1,97 @@
+name: TelePilot UI Small Cleanup
+
+on:
+  push:
+    paths:
+      - .github/workflows/ui-small-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rewrite owning UI code
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          # 1) Keep Advanced and Add / Import neutral (gray) in the global style owner.
+          path = Path('global-ui-polish.js')
+          text = path.read_text()
+          old = '''function buttonStyle(button) {
+            if (button?.style) return button.style;
+            const haystack = `${button?.callback_data || ""} ${button?.text || ""}`.toLowerCase();
+            if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard/.test(haystack)) return "danger";
+            if (/confirm|save|done|apply|approve|start|launch|redeem|finish|complete/.test(haystack)) return "success";
+            if (/add|create|new|connect|join|prepare|settings|tools|advanced|open|browse|preview/.test(haystack)) return "primary";
+            return undefined;
+          }
+          '''
+          new = '''function buttonStyle(button) {
+            if (button?.style) return button.style;
+            const callback = String(button?.callback_data || "").toLowerCase();
+            // These are ordinary navigation/setup controls, not primary calls to action.
+            if (callback === "v1_tools" || callback === "v1_dest_add_v13") return undefined;
+            const haystack = `${button?.callback_data || ""} ${button?.text || ""}`.toLowerCase();
+            if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard/.test(haystack)) return "danger";
+            if (/confirm|save|done|apply|approve|start|launch|redeem|finish|complete/.test(haystack)) return "success";
+            if (/add|create|new|connect|join|prepare|settings|tools|advanced|open|browse|preview/.test(haystack)) return "primary";
+            return undefined;
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'global-ui-polish.js buttonStyle match count: {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+
+          # 2) Make today's Activity counts explicit in the actual v1.3 activity screen.
+          path = Path('ux-v13.js')
+          text = path.read_text()
+          old = '''      `Today  ✅ ${stats.today.sent} · ❌ ${stats.today.failed} · ↷ ${stats.today.skipped}`,
+            `7 days  ✅ ${stats.week.sent} · ❌ ${stats.week.failed} · ↷ ${stats.week.skipped}`,
+          '''
+          new = '''      `Sent today  ✅ ${stats.today.sent}`,
+            `Failed today  ❌ ${stats.today.failed}`,
+            stats.today.skipped ? `Skipped today  ↷ ${stats.today.skipped}` : null,
+            `7 days  ✅ ${stats.week.sent} · ❌ ${stats.week.failed} · ↷ ${stats.week.skipped}`,
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'ux-v13.js Activity match count: {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Validate rewritten source
+        shell: bash
+        run: |
+          node --check global-ui-polish.js
+          node --check ux-v13.js
+          python3 <<'PY'
+          from pathlib import Path
+          polish = Path('global-ui-polish.js').read_text()
+          ux = Path('ux-v13.js').read_text()
+          assert 'callback === "v1_tools" || callback === "v1_dest_add_v13"' in polish
+          assert '`Sent today  ✅ ${stats.today.sent}`' in ux
+          assert '`Failed today  ❌ ${stats.today.failed}`' in ux
+          print('Targeted UI assertions passed')
+          PY
+
+      - name: Commit direct source changes and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/ui-small-cleanup.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add global-ui-polish.js ux-v13.js .github/workflows/ui-small-cleanup.yml
+          git commit -m "Refine neutral buttons and Activity daily counts"
+          git push origin HEAD:main
