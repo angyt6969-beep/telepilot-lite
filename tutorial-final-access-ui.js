@@ -24,7 +24,7 @@ function callbackSet(other) {
 export function isInactiveAccessScreen(text, other) {
   const callbacks = callbackSet(other);
   if (!callbacks.has("redeem_key") || callbacks.has("home")) return false;
-  return /(?:^|\n)\s*🔑\s*ACCESS\b/i.test(String(text || ""));
+  return /(?:^|\n)\s*(?:🔑\s*ACCESS|🔐\s*TELEPILOT\s+ACCESS)\b/i.test(String(text || ""));
 }
 
 export function accessStartPayload(chatId, text, other, options = {}) {
