@@ -1,0 +1,322 @@
+name: Core TelePilot reliability rewrite
+
+on:
+  push:
+    paths:
+      - .github/workflows/core-audit-rewrite.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rewrite audited core paths
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 match, found {count}")
+              return text.replace(old, new, 1)
+
+          app_path = Path("app.js")
+          app = app_path.read_text()
+
+          app = replace_once(
+              app,
+              '      username: item.username ? String(item.username) : "",\n      accountMode:',
+              '      username: item.username ? String(item.username) : "",\n      accessHash: String(item.accessHash || "").slice(0, 100),\n      accountMode:',
+              "preserve destination accessHash",
+          )
+
+          old_resolver = '''async function resolvePersonalTarget(client, destination, uid, accountId) {
+            if (destination.username) return destination.username;
+            const cacheKey = `${uid}:${accountId}:${destination.id}`;
+            const cached = personalTargetCache.get(cacheKey);
+            if (cached && Date.now() - cached.at < PERSONAL_TARGET_CACHE_MS) return cached.entity;
+            const dialogs = await client.getDialogs({});
+            for (const dialog of dialogs) {
+              const candidates = [dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v));
+              const target = String(destination.id).replace(/^-100/, "").replace(/^-/, "");
+              if (candidates.includes(String(destination.id)) || candidates.some(value => value.replace(/\\D/g, "") === target)) {
+                personalTargetCache.set(cacheKey, { at: Date.now(), entity: dialog }); return dialog;
+              }
+            }
+            throw new Error("This account could not resolve that private destination. Open the group in Telegram and try again.");
+          }'''
+          new_resolver = '''async function resolvePersonalTarget(client, destination, uid, accountId) {
+            const cacheKey = `${uid}:${accountId}:${destination.id}`;
+            const cached = personalTargetCache.get(cacheKey);
+            if (cached && Date.now() - cached.at < PERSONAL_TARGET_CACHE_MS) return cached.entity;
+
+            const id = String(destination?.id || "").trim();
+            const accessHash = String(destination?.accessHash || "").trim();
+            if (/^-100\\d+$/.test(id) && /^-?\\d+$/.test(accessHash) && accessHash) {
+              const entity = new Api.InputPeerChannel({
+                channelId: bigInt(id.slice(4)),
+                accessHash: bigInt(accessHash),
+              });
+              personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+              return entity;
+            }
+            if (/^-(?!100)\\d+$/.test(id)) {
+              const entity = new Api.InputPeerChat({ chatId: bigInt(id.slice(1)) });
+              personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+              return entity;
+            }
+
+            if (destination?.username) {
+              try {
+                const entity = await client.getInputEntity(destination.username);
+                personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+                return entity;
+              } catch {}
+            }
+
+            const dialogs = await client.getDialogs({ limit: 1000 });
+            const target = id.replace(/^-100/, "").replace(/^-/, "");
+            for (const dialog of dialogs) {
+              const candidates = [dialog?.id, dialog?.entity?.id, dialog?.inputEntity?.chatId, dialog?.inputEntity?.channelId]
+                .filter(value => value !== undefined && value !== null)
+                .map(value => String(value));
+              if (candidates.includes(id) || candidates.some(value => value.replace(/\\D/g, "") === target)) {
+                const entity = dialog?.inputEntity || dialog?.entity || dialog;
+                personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+                return entity;
+              }
+            }
+            throw new Error("This sender account could not resolve the saved Telegram destination.");
+          }'''
+          app = replace_once(app, old_resolver, new_resolver, "stable live posting peer resolver")
+
+          app = replace_once(
+              app,
+              '    for (const accountId of ids) {\n      const account = accountById.get(String(accountId));',
+              '    for (const accountId of ids) {\n      if (!state.posting || !hasAccess(state)) break;\n      const account = accountById.get(String(accountId));',
+              "stop between routed personal senders",
+          )
+
+          app = replace_once(
+              app,
+              '  target.intervalMinutes = 30;\n  target.lastRunAt = null;',
+              '  target.intervalSeconds = 30 * 60;\n  target.intervalMinutes = 30;\n  target.lastRunAt = null;',
+              "admin interval reset",
+          )
+          app_path.write_text(app)
+
+          worker_path = Path("v1-worker.js")
+          worker = worker_path.read_text()
+
+          old_target = 'async function personalTarget(client,destination,dialogCache){if(destination?.username)return destination.username;const direct=savedInputPeer(destination);if(direct)return direct;if(!dialogCache.value)dialogCache.value=await client.getDialogs({limit:1000});const wanted=String(destination?.id||"").replace(/^-100/,"").replace(/^-/,"");for(const dialog of dialogCache.value){const ids=[dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v).replace(/\\D/g,""));if(wanted&&ids.includes(wanted))return dialog;}throw new Error(`Could not resolve ${destination?.label||destination?.id||"destination"}.`);}'
+          new_target = '''async function personalTarget(client, destination, dialogCache) {
+            const direct = savedInputPeer(destination);
+            if (direct) return direct;
+            if (destination?.username) {
+              try { return await client.getInputEntity(destination.username); } catch {}
+            }
+            if (!dialogCache.value) dialogCache.value = await client.getDialogs({ limit: 1000 });
+            const wanted = String(destination?.id || "").replace(/^-100/, "").replace(/^-/, "");
+            for (const dialog of dialogCache.value) {
+              const ids = [dialog?.id, dialog?.entity?.id, dialog?.inputEntity?.chatId, dialog?.inputEntity?.channelId]
+                .filter(value => value !== undefined && value !== null)
+                .map(value => String(value).replace(/\\D/g, ""));
+              if (wanted && ids.includes(wanted)) return dialog?.inputEntity || dialog?.entity || dialog;
+            }
+            throw new Error(`Could not resolve ${destination?.label || destination?.id || "destination"}.`);
+          }'''
+          worker = replace_once(worker, old_target, new_target, "stable scheduled posting peer resolver")
+
+          old_delivery = 'if(result?.__telepilotSkipped)skipped++;else sent++;rememberDelivered(newlyDelivered,key);'
+          if worker.count(old_delivery) != 2:
+              raise SystemExit(f"delivery bookkeeping: expected 2 matches, found {worker.count(old_delivery)}")
+          worker = worker.replace(old_delivery, 'if(result?.__telepilotSkipped)skipped++;else{sent++;rememberDelivered(newlyDelivered,key);}')
+
+          schedule_pattern = re.compile(r'async function processExact\(.*?(?=async function flushAlerts)', re.S)
+          match = schedule_pattern.search(worker)
+          if not match:
+              raise SystemExit("scheduler rewrite: source block not found")
+          schedule_rewrite = '''function exactCycleComplete(result) {
+            return Number(result?.failed || 0) === 0 && Number(result?.skipped || 0) === 0;
+          }
+          function applyOneTimeOutcome(stored, job, result, now = Date.now()) {
+            stored.delivered = [...new Set([...(job.delivered || []), ...(result.delivered || [])])];
+            stored.error = result.errors?.[0] || (result.skipped ? `${result.skipped} delivery${result.skipped === 1 ? " is" : "ies are"} waiting to become ready.` : "");
+
+            if (Number(result.failed || 0) === 0 && Number(result.skipped || 0) === 0) {
+              stored.status = "done";
+              stored.completedAt = now;
+              stored.nextAttemptAt = 0;
+              stored.delivered = [];
+              return stored;
+            }
+
+            if (Number(result.failed || 0) === 0) {
+              stored.attempts = Number(job.attempts || 0);
+              stored.status = "pending";
+              stored.completedAt = 0;
+              stored.nextAttemptAt = now + 60_000;
+              return stored;
+            }
+
+            stored.attempts = Number(job.attempts || 0) + 1;
+            if (stored.attempts >= 3) {
+              stored.status = "failed";
+              stored.completedAt = now;
+              stored.nextAttemptAt = 0;
+            } else {
+              stored.status = "pending";
+              stored.completedAt = 0;
+              stored.nextAttemptAt = now + Math.min(10 * 60_000, 60_000 * (2 ** (stored.attempts - 1)));
+            }
+            return stored;
+          }
+          async function processExact(uid, settings, bot, now) {
+            const pro = readV1(uid);
+            for (const rule of pro.exactTimes || []) {
+              const due = scheduledRun(pro, rule, now);
+              if (!due || String(rule.lastRunKey || "") === due.key) continue;
+              const oldDelivered = String(rule.deliveryKey || "") === due.key && Array.isArray(rule.delivered) ? rule.delivered : [];
+              const result = await sendCycle(uid, settings, bot, {
+                templateId: rule.templateId,
+                cycleId: `exact:${rule.id}:${due.key}`,
+                delivered: oldDelivered,
+              });
+              const latest = readV1(uid);
+              const stored = latest.exactTimes.find(item => String(item.id) === String(rule.id));
+              if (!stored) continue;
+              stored.deliveryKey = due.key;
+              stored.delivered = [...new Set([...oldDelivered, ...(result.delivered || [])])];
+              stored.lastAttemptAt = Date.now();
+              stored.lastError = result.errors[0] || (result.skipped ? `${result.skipped} delivery${result.skipped === 1 ? " is" : "ies are"} waiting to become ready.` : "");
+              if (exactCycleComplete(result)) {
+                stored.lastRunKey = due.key;
+                stored.delivered = [];
+              }
+              writeV1(uid, latest);
+            }
+          }
+          async function processOneTime(uid, settings, bot, now) {
+            const due = (readV1(uid).oneTimeJobs || [])
+              .filter(job => (!job.status || job.status === "pending") && Number(job.runAt || 0) > 0 && Number(job.runAt) <= now && Number(job.nextAttemptAt || 0) <= now)
+              .map(job => ({
+                id: String(job.id),
+                templateId: String(job.templateId || ""),
+                delivered: Array.isArray(job.delivered) ? job.delivered : [],
+                attempts: Number(job.attempts || 0),
+              }));
+            for (const job of due) {
+              const result = await sendCycle(uid, settings, bot, {
+                templateId: job.templateId,
+                cycleId: `once:${job.id}`,
+                delivered: job.delivered,
+              });
+              const latest = readV1(uid);
+              const stored = latest.oneTimeJobs.find(item => String(item.id) === job.id);
+              if (!stored) continue;
+              applyOneTimeOutcome(stored, job, result);
+              writeV1(uid, latest);
+            }
+          }
+          '''
+          worker = worker[:match.start()] + schedule_rewrite + worker[match.end():]
+
+          worker = replace_once(
+              worker,
+              'export const __test={savedInputPeer,isPartialDeliveryError,accountStatusPatchForSendError};',
+              'export const __test={savedInputPeer,isPartialDeliveryError,accountStatusPatchForSendError,exactCycleComplete,applyOneTimeOutcome};',
+              "worker test exports",
+          )
+          worker_path.write_text(worker)
+
+          test_path = Path("core-audit-regression-test.mjs")
+          test_path.write_text(r'''import assert from "node:assert/strict";
+          import fs from "node:fs";
+
+          process.env.TELEPILOT_SECURITY_SECRET ||= "core-audit-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz";
+          process.env.TELEPILOT_SESSION_KEY_B64 ||= Buffer.alloc(32, 17).toString("base64");
+
+          const worker = await import(`./v1-worker.js?audit=${Date.now()}`);
+          const { exactCycleComplete, applyOneTimeOutcome } = worker.__test;
+
+          assert.equal(exactCycleComplete({ failed: 0, skipped: 0 }), true);
+          assert.equal(exactCycleComplete({ failed: 0, skipped: 1 }), false, "an exact run with skipped deliveries must remain retryable");
+          assert.equal(exactCycleComplete({ failed: 1, skipped: 0 }), false);
+
+          const waiting = { status: "pending" };
+          applyOneTimeOutcome(waiting, { attempts: 2, delivered: ["already"] }, { failed: 0, skipped: 1, delivered: ["new"], errors: [] }, 1_000);
+          assert.equal(waiting.status, "pending");
+          assert.equal(waiting.attempts, 2, "a skip must not consume a hard retry attempt");
+          assert.equal(waiting.nextAttemptAt, 61_000);
+          assert.deepEqual(waiting.delivered, ["already", "new"]);
+
+          const failed = { status: "pending" };
+          applyOneTimeOutcome(failed, { attempts: 2, delivered: [] }, { failed: 1, skipped: 0, delivered: [], errors: ["boom"] }, 2_000);
+          assert.equal(failed.status, "failed");
+          assert.equal(failed.attempts, 3);
+
+          const done = { status: "pending" };
+          applyOneTimeOutcome(done, { attempts: 1, delivered: ["old"] }, { failed: 0, skipped: 0, delivered: ["last"], errors: [] }, 3_000);
+          assert.equal(done.status, "done");
+          assert.deepEqual(done.delivered, []);
+
+          const app = fs.readFileSync(new URL("./app.js", import.meta.url), "utf8");
+          assert.match(app, /accessHash: String\(item\.accessHash \|\| ""\)\.slice\(0, 100\)/, "app state must preserve Telegram access hashes");
+          const resolverStart = app.indexOf("async function resolvePersonalTarget");
+          const resolverEnd = app.indexOf("function isFatalPersonalSessionError", resolverStart);
+          const resolver = app.slice(resolverStart, resolverEnd);
+          assert.ok(resolver.indexOf("new Api.InputPeerChannel") >= 0);
+          assert.ok(resolver.indexOf("new Api.InputPeerChannel") < resolver.indexOf("destination?.username"), "live posting must prefer the saved peer before username fallback");
+          assert.match(app, /for \(const accountId of ids\) \{\n\s*if \(!state\.posting \|\| !hasAccess\(state\)\) break;/, "Stop/Pause must interrupt multi-account delivery before the next sender");
+          assert.match(app, /target\.intervalSeconds = 30 \* 60;\n\s*target\.intervalMinutes = 30;/, "admin reset must reset the scheduler's real interval field");
+
+          const workerSource = fs.readFileSync(new URL("./v1-worker.js", import.meta.url), "utf8");
+          const targetStart = workerSource.indexOf("async function personalTarget");
+          const targetEnd = workerSource.indexOf("function isPartialDeliveryError", targetStart);
+          const targetResolver = workerSource.slice(targetStart, targetEnd);
+          assert.ok(targetResolver.indexOf("savedInputPeer(destination)") < targetResolver.indexOf("destination?.username"), "scheduled posting must prefer the saved Telegram peer");
+
+          console.log("TelePilot core audit regression checks passed");
+          ''').replace("          ", "")
+
+          package_path = Path("package.json")
+          package_text = package_path.read_text()
+          marker = 'destination-import-result-v3-test.mjs"'
+          replacement = 'destination-import-result-v3-test.mjs && node core-audit-regression-test.mjs"'
+          package_text = replace_once(package_text, marker, replacement, "register core audit regression test")
+          package_path.write_text(package_text)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate rewritten source
+        run: |
+          node --check app.js
+          node --check v1-worker.js
+          node core-audit-regression-test.mjs
+          npm test
+
+      - name: Commit clean source rewrite
+        run: |
+          rm .github/workflows/core-audit-rewrite.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js v1-worker.js core-audit-regression-test.mjs package.json .github/workflows/core-audit-rewrite.yml
+          git commit -m "Rewrite core posting reliability after audit"
+          git push origin HEAD:main
