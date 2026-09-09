@@ -303,7 +303,7 @@ function buttonStyle(button) {
   if (button?.style) return button.style;
   const callback = String(button?.callback_data || "").toLowerCase();
   // Ordinary navigation/setup controls stay neutral gray.
-  if (callback === "v1_tools" || callback === "v1_dest_add_v13") return undefined;
+  if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") return undefined;
   const haystack = `${button?.callback_data || ""} ${button?.text || ""}`.toLowerCase();
   if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard/.test(haystack)) return "danger";
   if (/confirm|save|done|apply|approve|start|launch|redeem|finish|complete/.test(haystack)) return "success";
@@ -316,7 +316,11 @@ function premiumizeButtons(other) {
   const next = cloneOther(other);
   next.reply_markup.inline_keyboard = next.reply_markup.inline_keyboard.map(row => row.map(source => {
     const button = { ...source };
-    // Existing premium buttons are deliberately preserved byte-for-byte.
+    const callback = String(button?.callback_data || "").toLowerCase();
+    if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") {
+      delete button.style;
+    }
+    // Existing premium buttons keep their premium icon after neutral style is enforced.
     if (button.icon_custom_emoji_id) return button;
 
     const semantic = semanticEmojiForButton(button);
