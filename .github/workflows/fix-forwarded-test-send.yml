@@ -35,7 +35,6 @@ jobs:
                   raise SystemExit(f"{label}: expected exactly 1 match, found {count}")
               return text.replace(old, new, 1)
 
-          # forwarded-post-v1.js owns mode state and the real Telegram forward operation.
           path = Path("forwarded-post-v1.js")
           text = path.read_text()
 
@@ -124,7 +123,6 @@ jobs:
           text = replace_once(text, old_forward_body, new_forward_body, "share production forward operation")
           path.write_text(text)
 
-          # v1.3 must reuse the same idempotent mode renderer instead of maintaining a second regex.
           path = Path("forwarded-post-v13-ui-fix.js")
           text = path.read_text()
           text = replace_once(
@@ -151,7 +149,6 @@ jobs:
           text = replace_once(text, old_v13_mode, new_v13_mode, "remove duplicate v13 mode implementation")
           path.write_text(text)
 
-          # pro-controls.js owns Test send. Make it explicitly respect the selected post mode.
           path = Path("pro-controls.js")
           text = path.read_text()
           text = replace_once(
@@ -241,8 +238,6 @@ jobs:
               return;
             }
 
-            // Bot-mode test sends remain normal posts. Forwarded Post never silently
-            // falls back to the bot because Telegram forwarding requires a personal sender.
             const rendered = renderDynamicMessage(settings.adMessage, settings.adEntities || [], {
               pro,
               destination,
@@ -270,7 +265,6 @@ jobs:
           text = text[:match.start()] + send_test + text[match.end():]
           path.write_text(text)
 
-          # Extend existing forwarding tests with the two regressions from the screenshots.
           path = Path("forwarded-post-v1-test.mjs")
           text = path.read_text()
           text = replace_once(
@@ -359,6 +353,7 @@ jobs:
 
       - name: Validate rewritten forwarding paths
         run: |
+          export TELEPILOT_SECURITY_SECRET="test-only-$(printf 'x%.0s' {1..64})"
           node --check forwarded-post-v1.js
           node --check forwarded-post-v13-ui-fix.js
           node --check pro-controls.js
