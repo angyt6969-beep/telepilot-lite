@@ -4,11 +4,13 @@ import { accessStartPayload, isInactiveAccessScreen, TELEPILOT_OWNER_USERNAME } 
 const inactiveOther = {
   reply_markup: { inline_keyboard: [[{ text: "Redeem Key", callback_data: "redeem_key" }]] },
 };
-assert.equal(isInactiveAccessScreen("🔑 ACCESS\n\nInactive", inactiveOther), true);
+const realInactiveText = "🔐 TELEPILOT ACCESS\n\nAn access key is required to use TelePilot.\n\nNeed a key? Message @vvschrome to get yours.";
+assert.equal(isInactiveAccessScreen(realInactiveText, inactiveOther), true, "the renderer must recognize app.js's real inactive /start screen");
+assert.equal(isInactiveAccessScreen("🔑 ACCESS\n\nInactive", inactiveOther), true, "legacy inactive access wording remains supported");
 
 const screen = accessStartPayload(
   "123456789",
-  "🔑 ACCESS\n\n🔒 Access inactive. Redeem a key to continue.",
+  realInactiveText,
   inactiveOther,
   {
     checkoutUrl: "https://telepilot.example/checkout?t=signed-checkout",
