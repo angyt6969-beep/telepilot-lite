@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const SECURITY_STATE_FILE = path.join(DATA_DIR, "security-state.json");
@@ -275,10 +276,28 @@ export function installConsoleRedaction() {
   }
 }
 
+function normalizedIp(value) {
+  let candidate = String(value || "").trim();
+  if (!candidate) return "";
+  if (candidate.startsWith("::ffff:")) {
+    const mapped = candidate.slice(7);
+    if (isIP(mapped) === 4) return mapped;
+  }
+  return isIP(candidate) ? candidate : "";
+}
+
 export function requestAddress(req) {
+  const rawReal = req?.headers?.["x-real-ip"];
+  const realHeader = Array.isArray(rawReal) ? rawReal[0] : rawReal;
+  const real = normalizedIp(realHeader);
+  if (real) return real;
+
+  const socket = normalizedIp(req?.socket?.remoteAddress);
+  if (socket) return socket;
+
   const forwarded = String(req?.headers?.["x-forwarded-for"] || "")
     .split(",")
-    .map(value => value.trim())
-    .filter(Boolean);
-  return forwarded[forwarded.length - 1] || String(req?.socket?.remoteAddress || "unknown");
+    .map(normalizedIp)
+    .find(Boolean);
+  return forwarded || "unknown";
 }
