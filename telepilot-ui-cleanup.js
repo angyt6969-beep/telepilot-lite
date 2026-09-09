@@ -196,6 +196,8 @@ function buttonFallbackLabel(data, current = "") {
 }
 
 function buttonStyle(button) {
+  const callback = String(button?.callback_data || "").toLowerCase();
+  if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") return undefined;
   if (button?.style) return button.style;
   const value = `${button?.text || ""} ${button?.callback_data || ""}`.toLowerCase();
   if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard|disable|emergency/.test(value)) return "danger";
@@ -205,6 +207,8 @@ function buttonStyle(button) {
 }
 
 function cleanButtonText(button) {
+  const callback = String(button?.callback_data || "").toLowerCase();
+  if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") delete button.style;
   let text = String(button?.text || "");
   text = text
     .replace(/Power Tools/ig, "Advanced")
