@@ -35,7 +35,12 @@ jobs:
           node --check free-trial.js
           node --check tutorial-final-access-ui.js
       - name: Run full regression suite
-        run: npm test
+        run: |
+          export DATA_DIR=/tmp/telepilot-access-rebrand-ci
+          export TELEPILOT_SECURITY_SECRET=$(node -e "process.stdout.write('x'.repeat(48))")
+          export TELEPILOT_SESSION_KEY_B64=$(node -e "process.stdout.write(Buffer.alloc(32,11).toString('base64'))")
+          export TELEPILOT_SUPPORT_USERNAME=vvschrome
+          npm test
       - name: Commit verified rewrite
         run: |
           rm -f scripts/apply-vvschrome-access-rebrand.mjs .github/workflows/apply-vvschrome-access-rebrand.yml
