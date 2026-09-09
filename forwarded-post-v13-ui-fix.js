@@ -1,4 +1,4 @@
-import { readForwardedPostConfig } from "./forwarded-post-v1.js";
+import { normalizeForwardedModeLine, readForwardedPostConfig } from "./forwarded-post-v1.js";
 
 function copyRows(markup) {
   return (markup?.inline_keyboard || [])
@@ -29,14 +29,7 @@ function controlRows(cfg) {
 }
 
 function withModeLine(text, cfg) {
-  const value = String(text || "");
-  const mode = cfg?.enabled
-    ? `Forwarded Post · ${cfg.sourceLabel || cfg.sourcePeer}`
-    : "Normal Post";
-  if (/\nMode\s+[—-]\s*[^\n]*/i.test(value)) {
-    return value.replace(/\nMode\s+[—-]\s*[^\n]*/i, `\nMode — ${mode}`);
-  }
-  return `${value}\n\nMode — ${mode}`;
+  return normalizeForwardedModeLine(text, cfg);
 }
 
 export function decorateV13ForwardedPostMenu(uid, payload, options = {}) {

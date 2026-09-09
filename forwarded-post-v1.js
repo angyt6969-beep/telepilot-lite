@@ -134,6 +134,25 @@ export function sourceFromForwardedMessage(message) {
   return null;
 }
 
+function isForwardedModeLine(line) {
+  const plain = String(line || "")
+    .replace(/<tg-emoji[^>]*>.*?<\/tg-emoji>/gis, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/[*_`~]/g, "")
+    .trim();
+  return /^Mode\s*:?\s*[—-]\s*/i.test(plain);
+}
+
+export function normalizeForwardedModeLine(text, cfg) {
+  const mode = cfg?.enabled
+    ? `Forwarded Post · ${cfg.sourceLabel || cfg.sourcePeer}`
+    : "Normal Post";
+  const lines = String(text || "").split("\n").filter(line => !isForwardedModeLine(line));
+  while (lines.length && !lines.at(-1).trim()) lines.pop();
+  const base = lines.join("\n");
+  return base ? `${base}\n\nMode — ${mode}` : `Mode — ${mode}`;
+}
+
 function messageMenuPayload(uid, payload) {
   const markup = payload?.reply_markup;
   if (!markup || !Array.isArray(markup.inline_keyboard)) return payload;
@@ -167,13 +186,7 @@ function messageMenuPayload(uid, payload) {
   }
   rows.splice(insertAt, 0, ...controls);
 
-  let text = String(payload.text || "");
-  if (text && !/\nMode\s+[—-]/i.test(text)) {
-    const mode = cfg.enabled
-      ? `Forwarded Post · ${cfg.sourceLabel || cfg.sourcePeer}`
-      : "Normal Post";
-    text += `\n\nMode — ${mode}`;
-  }
+  const text = normalizeForwardedModeLine(payload.text, cfg);
   return {
     ...payload,
     text,
@@ -303,6 +316,21 @@ function firstForwardedResult(value) {
   return value || null;
 }
 
+export async function forwardConfiguredPost(client, cfg, entity, params = {}, options = {}) {
+  if (!cfg?.enabled || !cfg?.sourcePeer || Number(cfg?.sourceMessageId || 0) < 1) return null;
+  const resolveSource = typeof options.resolveSource === "function" ? options.resolveSource : resolveForwardSourcePeer;
+  const source = await resolveSource(client, cfg);
+  const threadId = threadIdFromSendParams(params);
+  const forwarded = await client.forwardMessages(entity, {
+    messages: Number(cfg.sourceMessageId),
+    fromPeer: source,
+    ...(threadId > 1 ? { topMsgId: threadId, replyTo: params?.replyTo || threadId } : {}),
+  });
+  const result = firstForwardedResult(forwarded);
+  if (!result) throw new Error("Telegram did not confirm the forwarded post.");
+  return result;
+}
+
 export function installForwardedPostSend(TelegramClientClass, options = {}) {
   if (!TelegramClientClass?.prototype || TelegramClientClass.prototype.__telepilotForwardedPostSendInstalled) return false;
   const originalSendMessage = TelegramClientClass.prototype.sendMessage;
@@ -325,15 +353,7 @@ export function installForwardedPostSend(TelegramClientClass, options = {}) {
     const dispatchHandle = await prepareExternalPersonalDispatch(dispatch, entity);
     if (dispatchHandle?.skip) return dispatchHandle.result;
     try {
-      const source = await resolveSource(this, cfg);
-      const threadId = threadIdFromSendParams(params);
-      const forwarded = await this.forwardMessages(entity, {
-        messages: Number(cfg.sourceMessageId),
-        fromPeer: source,
-        ...(threadId > 1 ? { topMsgId: threadId, replyTo: params?.replyTo || threadId } : {}),
-      });
-      const result = firstForwardedResult(forwarded);
-      if (!result) throw new Error("Telegram did not confirm the forwarded post.");
+      const result = await forwardConfiguredPost(this, cfg, entity, params, { resolveSource });
       return completeExternalPersonalDispatch(dispatchHandle, result);
     } catch (err) {
       return failExternalPersonalDispatch(dispatchHandle, err);

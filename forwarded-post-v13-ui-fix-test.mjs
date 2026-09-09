@@ -54,6 +54,22 @@ const secondPass = decorateV13ForwardedPostMenu("12345", enabled, {
 });
 assert.equal(secondPass.reply_markup.inline_keyboard.flat().filter(button => String(button.callback_data || "").startsWith("fp_")).length, 2);
 
+
+const messyModePass = decorateV13ForwardedPostMenu("12345", {
+  ...enabled,
+  text: `${enabled.text.replace("Mode —", "Mode: —")}\n\n<b>Mode:</b> — Normal Post`,
+}, {
+  readConfig: () => ({
+    enabled: true,
+    sourcePeer: "@premiumsource",
+    sourceMessageId: 91,
+    sourceLabel: "Premium Source",
+  }),
+});
+const messyPlain = messyModePass.text.replace(/<[^>]+>/g, "").replace(/[*_`~]/g, "");
+assert.equal((messyPlain.match(/^Mode\s*:?\s*[—-]/gmi) || []).length, 1);
+assert.match(messyModePass.text, /Mode — Forwarded Post · Premium Source/);
+
 const unrelated = decorateV13ForwardedPostMenu("12345", {
   text: "📝 Posting Setup",
   reply_markup: currentMessageScreen.reply_markup,

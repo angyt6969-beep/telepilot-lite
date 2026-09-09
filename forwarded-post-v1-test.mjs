@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { withDispatchContext } from "./dispatch-context.js";
 import {
+  forwardConfiguredPost,
   installForwardedPostSend,
+  normalizeForwardedModeLine,
   parseTelegramMessageLink,
   sourceFromForwardedMessage,
   threadIdFromSendParams,
@@ -54,6 +56,25 @@ const decorated = __test.messageMenuPayload("12345", {
 assert.equal(decorated.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "fp_setup"), true);
 assert.match(decorated.text, /Mode — Normal Post/);
 
+
+const cleanedModes = normalizeForwardedModeLine([
+  "📝 Message",
+  "● Ready",
+  "",
+  "Mode — Normal Post",
+  "",
+  "Mode: — Normal Post",
+  "",
+  "<b>Mode:</b> — Forwarded Post · Old Source",
+].join("\n"), {
+  enabled: true,
+  sourcePeer: "@premiumsource",
+  sourceLabel: "Premium Source",
+});
+const plainModes = cleanedModes.replace(/<[^>]+>/g, "").replace(/[*_`~]/g, "");
+assert.equal((plainModes.match(/^Mode\s*:?\s*[—-]/gmi) || []).length, 1);
+assert.match(cleanedModes, /Mode — Forwarded Post · Premium Source/);
+
 let enabled = true;
 let originalCalls = 0;
 let forwardCall = null;
@@ -74,6 +95,17 @@ installForwardedPostSend(FakeClient, {
     : { enabled: false, sourcePeer: "@premiumsource", sourceMessageId: 91 },
 });
 const client = new FakeClient();
+
+const directForward = await forwardConfiguredPost(client, {
+  enabled: true,
+  sourcePeer: "@premiumsource",
+  sourceMessageId: 91,
+}, "me");
+assert.equal(directForward.id, 999);
+assert.equal(forwardCall.entity, "me");
+assert.equal(forwardCall.params.messages, 91);
+assert.equal(forwardCall.params.fromPeer, "resolved:@premiumsource");
+forwardCall = null;
 const forwarded = await withDispatchContext(
   { uid: "12345", senderType: "personal", destinationId: "-1001" },
   () => client.sendMessage("@destination", { message: "fallback", replyTo: { replyToMsgId: 77 } }),

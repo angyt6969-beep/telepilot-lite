@@ -142,4 +142,10 @@ assert.equal(privateSource.marker, "resolved-private-source");
 
 assert.equal(forwarded.__test.firstForwardedResult([[null], [{ id: 7 }]])?.id, 7);
 
+
+const proControlsSource = fs.readFileSync(new URL("./pro-controls.js", import.meta.url), "utf8");
+assert.match(proControlsSource, /const forwardedConfig = readForwardedPostConfig\(uid\)/);
+assert.match(proControlsSource, /await forwardConfiguredPost\(client, forwardedConfig, "me"\)/);
+assert.match(proControlsSource, /Forwarded Post requires a selected personal Telegram sender/);
+
 console.log("TelePilot forwarding deep-audit regression tests passed");

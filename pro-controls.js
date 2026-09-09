@@ -7,6 +7,7 @@ import { Api as MtApi, TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import { accountDisplayLabel, effectiveAccountIds, listAccounts, loadAccountSession, senderSummary, updateAccountStatus } from "./account-store.js";
 import { withDispatchContext } from "./dispatch-context.js";
+import { forwardConfiguredPost, readForwardedPostConfig } from "./forwarded-post-v1.js";
 import { reloadUserState } from "./runtime-hooks.js";
 import {
   defaultProSettings,
@@ -322,10 +323,102 @@ function toMtprotoEntities(entities = []) {
 }
 
 async function sendTest(ctx) {
-  const uid=uidOf(ctx),settings=readAppSettings(uid),pro=readProSettings(uid);if(!settings.adMessage)return ctx.answerCallbackQuery({text:"Create a message first.",show_alert:true});
-  const destination={id:String(ctx.chat.id),label:"Test preview",username:""},accounts=listAccounts(uid),ids=effectiveAccountIds(settings,null,accounts);await ctx.answerCallbackQuery({text:"Sending test…"});
-  if(accounts.length){let sent=0,failed=0;for(const id of ids){const account=accounts.find(a=>a.id===id);let client;try{client=await openPersonalClient(uid,id);const rendered=renderDynamicMessage(settings.adMessage,settings.adEntities||[],{pro,destination,sender:accountDisplayLabel(account)}),mt=toMtprotoEntities(rendered.entities);if(pro.media?.localPath&&fs.existsSync(pro.media.localPath))await client.sendFile("me",{file:pro.media.localPath,caption:rendered.text,...(mt.length?{formattingEntities:mt}:{}),forceDocument:pro.media.kind==="document",supportsStreaming:pro.media.kind==="video"});else await client.sendMessage("me",{message:rendered.text||"\u2063",...(mt.length?{formattingEntities:mt}:{})});sent++;}catch{failed++;}finally{try{await client?.disconnect();}catch{}}}await ctx.reply(`✅ Test complete — ${sent} sender${sent===1?"":"s"} received it in Saved Messages${failed?` • ${failed} failed`:""}.`);return;}
-  const rendered=renderDynamicMessage(settings.adMessage,settings.adEntities||[],{pro,destination,sender:"TelePilot Bot"});if(pro.media?.fileId){const options={...(rendered.text?{caption:rendered.text}:{}),...(rendered.entities.length?{caption_entities:rendered.entities}:{})};if(pro.media.kind==="photo")await ctx.api.sendPhoto(ctx.chat.id,pro.media.fileId,options);else if(pro.media.kind==="video")await ctx.api.sendVideo(ctx.chat.id,pro.media.fileId,{...options,supports_streaming:true});else if(pro.media.kind==="animation")await ctx.api.sendAnimation(ctx.chat.id,pro.media.fileId,options);else await ctx.api.sendDocument(ctx.chat.id,pro.media.fileId,options);}else await ctx.api.sendMessage(ctx.chat.id,rendered.text||"\u2063",rendered.entities.length?{entities:rendered.entities}:{});
+  const uid = uidOf(ctx);
+  const settings = readAppSettings(uid);
+  const pro = readProSettings(uid);
+  const forwardedConfig = readForwardedPostConfig(uid);
+  const forwarding = forwardedConfig.enabled === true;
+  const destination = { id: String(ctx.chat.id), label: "Test preview", username: "" };
+  const accounts = listAccounts(uid);
+  const ids = effectiveAccountIds(settings, null, accounts);
+
+  if (!forwarding && !settings.adMessage) {
+    return ctx.answerCallbackQuery({ text: "Create a message first.", show_alert: true });
+  }
+  if (forwarding && !ids.length) {
+    return ctx.answerCallbackQuery({
+      text: "Forwarded Post requires a selected personal Telegram sender.",
+      show_alert: true,
+    });
+  }
+
+  await ctx.answerCallbackQuery({ text: forwarding ? "Sending forwarded test…" : "Sending test…" });
+
+  if (ids.length) {
+    let sent = 0;
+    let failed = 0;
+    const errors = [];
+    for (const id of ids) {
+      const account = accounts.find(item => item.id === id);
+      let client;
+      try {
+        client = await openPersonalClient(uid, id);
+        if (forwarding) {
+          await forwardConfiguredPost(client, forwardedConfig, "me");
+        } else {
+          const rendered = renderDynamicMessage(settings.adMessage, settings.adEntities || [], {
+            pro,
+            destination,
+            sender: accountDisplayLabel(account),
+          });
+          const mt = toMtprotoEntities(rendered.entities);
+          if (pro.media?.localPath && fs.existsSync(pro.media.localPath)) {
+            await client.sendFile("me", {
+              file: pro.media.localPath,
+              caption: rendered.text,
+              ...(mt.length ? { formattingEntities: mt } : {}),
+              forceDocument: pro.media.kind === "document",
+              supportsStreaming: pro.media.kind === "video",
+            });
+          } else {
+            await client.sendMessage("me", {
+              message: rendered.text || "\u2063",
+              ...(mt.length ? { formattingEntities: mt } : {}),
+            });
+          }
+        }
+        sent++;
+      } catch (err) {
+        failed++;
+        if (errors.length < 3) errors.push(String(err?.message || err).slice(0, 180));
+      } finally {
+        try { await client?.disconnect(); } catch {}
+      }
+    }
+
+    if (forwarding) {
+      const summary = sent
+        ? `✅ Forwarded test complete — ${sent} sender${sent === 1 ? "" : "s"} received the real forwarded post in Saved Messages.`
+        : "❌ Forwarded test failed — no sender received the source post.";
+      const detail = errors.length ? `\n\n${errors.join("\n")}` : "";
+      await ctx.reply(`${summary}${failed ? `\n${failed} sender${failed === 1 ? "" : "s"} failed.` : ""}${detail}`);
+    } else {
+      await ctx.reply(`✅ Test complete — ${sent} sender${sent === 1 ? "" : "s"} received it in Saved Messages${failed ? ` • ${failed} failed` : ""}.`);
+    }
+    return;
+  }
+
+  const rendered = renderDynamicMessage(settings.adMessage, settings.adEntities || [], {
+    pro,
+    destination,
+    sender: "TelePilot Bot",
+  });
+  if (pro.media?.fileId) {
+    const options = {
+      ...(rendered.text ? { caption: rendered.text } : {}),
+      ...(rendered.entities.length ? { caption_entities: rendered.entities } : {}),
+    };
+    if (pro.media.kind === "photo") await ctx.api.sendPhoto(ctx.chat.id, pro.media.fileId, options);
+    else if (pro.media.kind === "video") await ctx.api.sendVideo(ctx.chat.id, pro.media.fileId, { ...options, supports_streaming: true });
+    else if (pro.media.kind === "animation") await ctx.api.sendAnimation(ctx.chat.id, pro.media.fileId, options);
+    else await ctx.api.sendDocument(ctx.chat.id, pro.media.fileId, options);
+  } else {
+    await ctx.api.sendMessage(
+      ctx.chat.id,
+      rendered.text || "\u2063",
+      rendered.entities.length ? { entities: rendered.entities } : {},
+    );
+  }
 }
 
 async function checkDestinationHealth(ctx) {
