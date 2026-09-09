@@ -917,7 +917,7 @@ async function botImportPublic(ctx, uid, parsed) {
   const botId = Number(ctx.me?.id || 0);
   let botMember;
   try { botMember = await ctx.api.getChatMember(chat.id, botId); } catch {}
-  if (!botMember || botMember.status !== "administrator") return { added: 0, duplicates: 0, failed: 1, attention: 0, error: `@${parsed.username} — add @${ctx.me?.username || "TelePilottBot"} as an admin first.` };
+  if (!botMember || botMember.status !== "administrator") return { added: 0, duplicates: 0, failed: 1, attention: 0, error: `@${parsed.username} — add @${ctx.me?.username || "telepilotsbot"} as an admin first.` };
   if (chat.type === "channel" && botMember.can_post_messages !== true) return { added: 0, duplicates: 0, failed: 1, attention: 0, error: `@${parsed.username} — give the bot permission to post messages.` };
   let ownerMember;
   try { ownerMember = await ctx.api.getChatMember(chat.id, Number(uid)); } catch {}

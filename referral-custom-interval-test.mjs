@@ -24,7 +24,7 @@ import { __test as referralTest, parseReferralPayload, recordStart, referralCoun
 
 {
   assert.equal(parseReferralPayload("/start ref_12345"), "12345");
-  assert.equal(parseReferralPayload("/start@TelePilottBot ref_987"), "987");
+  assert.equal(parseReferralPayload("/start@telepilotsbot ref_987"), "987");
   assert.equal(parseReferralPayload("/start garbage"), "");
 
   const first = recordStart("200", "/start ref_100", 1000, {

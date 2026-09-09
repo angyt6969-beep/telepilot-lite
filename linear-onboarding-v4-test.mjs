@@ -12,7 +12,7 @@ assert.equal(TUTORIAL_SLIDES, 5);
 assert.equal(TUTORIAL_PLANE_EMOJI_ID, "5231361378748472914");
 
 const slides = Array.from({ length: TUTORIAL_SLIDES }, (_, index) => tutorialScreen({
-  supportUsername: "noahxrp",
+  supportUsername: "vvschrome",
   mainChannelUsername: "TelePilotUpdates",
   accessActive: false,
   slide: index + 1,
@@ -55,10 +55,10 @@ assert.match(slides[4].text, /🔑 <b>Access:<\/b> — Key required/);
 const finalButtons = slides[4].other.reply_markup.inline_keyboard.flat();
 assert.equal(finalButtons.some(button => button.callback_data === "redeem_key"), true);
 assert.equal(finalButtons.find(button => button.callback_data === "redeem_key").style, "success");
-assert.equal(finalButtons.some(button => button.url === "https://t.me/noahxrp"), true);
+assert.equal(finalButtons.some(button => button.url === "https://t.me/vvschrome"), true);
 assert.equal(finalButtons.some(button => button.url === "https://t.me/TelePilotUpdates"), true);
 
-const activeFinal = tutorialScreen({ supportUsername: "noahxrp", accessActive: true, slide: 5 });
+const activeFinal = tutorialScreen({ supportUsername: "vvschrome", accessActive: true, slide: 5 });
 assert.match(activeFinal.text, /🟢 <b>Access:<\/b> — Active/);
 assert.equal(activeFinal.other.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "linear_onboarding_complete"), true);
 assert.equal(activeFinal.other.reply_markup.inline_keyboard.flat().some(button => button.callback_data === "redeem_key"), false);
@@ -68,29 +68,29 @@ const clampedHigh = tutorialScreen({ slide: 99 });
 assert.match(clampedLow.text, /Slide 1 of 5/);
 assert.match(clampedHigh.text, /Slide 5 of 5/);
 
-const redeem = redeemPromptScreen({ supportUsername: "noahxrp", mainChannelUsername: "TelePilotUpdates" });
+const redeem = redeemPromptScreen({ supportUsername: "vvschrome", mainChannelUsername: "TelePilotUpdates" });
 assert.match(redeem.text, /Tutorial:<\/b> — Complete/);
 assert.match(redeem.text, /Access:<\/b> — Waiting for key/);
-assert.match(redeem.text, /@noahxrp/);
+assert.match(redeem.text, /@vvschrome/);
 assert.match(redeem.text, /@TelePilotUpdates/);
 const redeemButtons = redeem.other.reply_markup.inline_keyboard.flat();
-assert.equal(redeemButtons.some(button => button.url === "https://t.me/noahxrp"), true);
+assert.equal(redeemButtons.some(button => button.url === "https://t.me/vvschrome"), true);
 assert.equal(redeemButtons.some(button => button.url === "https://t.me/TelePilotUpdates"), true);
 assert.equal(redeemButtons.some(button => /skip/i.test(button.text || "")), false);
 assert.ok(redeemButtons.every(button => button.icon_custom_emoji_id));
 
-const redeemWithoutChannel = redeemPromptScreen({ supportUsername: "noahxrp", mainChannelUsername: "" });
+const redeemWithoutChannel = redeemPromptScreen({ supportUsername: "vvschrome", mainChannelUsername: "" });
 assert.equal(redeemWithoutChannel.other.reply_markup.inline_keyboard.flat().some(button => /Main Channel/i.test(button.text || "")), false);
 
 const polishedRedeem = decorateLinearOnboardingPayload(
   "12345",
-  "🔑 REDEEM KEY\n\nSend your TelePilot access key below.\n\nNeed a key? Message @noahxrp to get yours.",
+  "🔑 REDEEM KEY\n\nSend your TelePilot access key below.\n\nNeed a key? Message @vvschrome to get yours.",
   { reply_markup: { inline_keyboard: [] } },
-  { supportUsername: "noahxrp", mainChannelUsername: "TelePilotUpdates" },
+  { supportUsername: "vvschrome", mainChannelUsername: "TelePilotUpdates" },
 );
 assert.match(polishedRedeem.text, /<b><i>Redeem TelePilot Key<\/i><\/b>/);
 assert.equal(polishedRedeem.other.parse_mode, "HTML");
-assert.equal(polishedRedeem.other.reply_markup.inline_keyboard.flat().some(button => button.url === "https://t.me/noahxrp"), true);
+assert.equal(polishedRedeem.other.reply_markup.inline_keyboard.flat().some(button => button.url === "https://t.me/vvschrome"), true);
 
 const replay = replayTutorialScreen(3);
 assert.match(replay.text, /Slide 3 of 5/);
@@ -112,7 +112,7 @@ const activated = decorateLinearOnboardingPayload(
   activationMarkup,
   {
     markComplete: uid => { markedUid = uid; },
-    supportUsername: "noahxrp",
+    supportUsername: "vvschrome",
     mainChannelUsername: "TelePilotUpdates",
   },
 );
@@ -140,16 +140,16 @@ const dashboard = decorateLinearOnboardingPayload(
   "12345",
   "✈️ TelePilot\n● READY\n\n✓ Sender  @example",
   dashboardPayload,
-  { supportUsername: "noahxrp", mainChannelUsername: "TelePilotUpdates", markComplete: () => {} },
+  { supportUsername: "vvschrome", mainChannelUsername: "TelePilotUpdates", markComplete: () => {} },
 );
-assert.match(dashboard.text, /Key \/ renewal: — Message @noahxrp\./);
+assert.match(dashboard.text, /Key \/ renewal: — Message @vvschrome\./);
 assert.match(dashboard.text, /Main channel: — Join @TelePilotUpdates/);
 const dashboardButtons = dashboard.other.reply_markup.inline_keyboard.flat();
-assert.equal(dashboardButtons.some(button => button.url === "https://t.me/noahxrp"), true);
+assert.equal(dashboardButtons.some(button => button.url === "https://t.me/vvschrome"), true);
 assert.equal(dashboardButtons.some(button => button.url === "https://t.me/TelePilotUpdates"), true);
 assert.equal(dashboardButtons.filter(button => button.url).every(button => button.icon_custom_emoji_id), true);
 const adminRow = dashboard.other.reply_markup.inline_keyboard.findIndex(row => row.some(button => button.callback_data === "admin"));
-const purchaseRow = dashboard.other.reply_markup.inline_keyboard.findIndex(row => row.some(button => button.url === "https://t.me/noahxrp"));
+const purchaseRow = dashboard.other.reply_markup.inline_keyboard.findIndex(row => row.some(button => button.url === "https://t.me/vvschrome"));
 assert.equal(purchaseRow < adminRow, true);
 assert.equal(dashboard.other.entities.some(entity => entity.type === "bold" && dashboard.text.slice(entity.offset, entity.offset + entity.length) === "Key / renewal:"), true);
 assert.equal(dashboard.other.entities.some(entity => entity.type === "italic" && dashboard.text.slice(entity.offset, entity.offset + entity.length) === "Main channel:"), true);
@@ -158,9 +158,9 @@ const secondPass = decorateLinearOnboardingPayload(
   "12345",
   dashboard.text,
   dashboard.other,
-  { supportUsername: "noahxrp", mainChannelUsername: "TelePilotUpdates", markComplete: () => {} },
+  { supportUsername: "vvschrome", mainChannelUsername: "TelePilotUpdates", markComplete: () => {} },
 );
 assert.equal((secondPass.text.match(/Key \/ renewal: —/g) || []).length, 1);
-assert.equal(secondPass.other.reply_markup.inline_keyboard.flat().filter(button => button.url === "https://t.me/noahxrp").length, 1);
+assert.equal(secondPass.other.reply_markup.inline_keyboard.flat().filter(button => button.url === "https://t.me/vvschrome").length, 1);
 
 console.log("linear onboarding multi-slide regression tests passed");

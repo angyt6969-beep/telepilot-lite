@@ -4,7 +4,7 @@ export const TUTORIAL_GET_KEY_EMOJI_ID = "5307843983102204243";
 const TUTORIAL_PLANE_EMOJI_ID = "5231361378748472914";
 const TUTORIAL_CHECK_EMOJI_ID = "5206607081334906820";
 const TUTORIAL_ACTION_EMOJI_ID = "5411590687663608498";
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
+const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "vvschrome").replace(/^@+/, "");
 
 function cloneOther(other) {
   if (!other?.reply_markup?.inline_keyboard) return other;

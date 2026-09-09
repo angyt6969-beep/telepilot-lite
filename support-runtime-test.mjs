@@ -34,7 +34,7 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
     id: 123456,
     is_bot: true,
     first_name: "TelePilot",
-    username: "TelePilottBot",
+    username: "telepilotsbot",
     can_join_groups: true,
     can_read_all_group_messages: false,
     supports_inline_queries: false,
@@ -72,7 +72,7 @@ bot.api.config.use(async (_prev, method, payload) => {
   return { ok: true, result: true };
 });
 
-function callbackUpdate(id, data, uid = 123, username = "noahxrp") {
+function callbackUpdate(id, data, uid = 123, username = "vvschrome") {
   return {
     update_id: id,
     callback_query: {

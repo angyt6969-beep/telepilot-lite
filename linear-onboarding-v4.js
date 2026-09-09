@@ -5,7 +5,7 @@ import { Api as GrammyApi } from "grammy";
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const USERS_DIR = path.join(DATA_DIR, "users");
 const ADMIN_FILE = path.join(DATA_DIR, "telepilot-admin.json");
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
+const SUPPORT_USERNAME = "vvschrome";
 const MAIN_CHANNEL_USERNAME = String(process.env.TELEPILOT_MAIN_CHANNEL_USERNAME || "").replace(/^@+/, "");
 
 // Known-good custom emoji IDs already supplied/used for TelePilot.
@@ -72,7 +72,7 @@ function accessActive(uid) {
 }
 
 function sellerUrl(username = SUPPORT_USERNAME) {
-  return `https://t.me/${String(username || "noahxrp").replace(/^@+/, "")}`;
+  return `https://t.me/${String(username || "vvschrome").replace(/^@+/, "")}`;
 }
 function channelUrl(username = MAIN_CHANNEL_USERNAME) {
   const clean = String(username || "").replace(/^@+/, "");

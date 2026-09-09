@@ -820,7 +820,7 @@ async function showAccess(ctx, state, locked = false) {
     ? `🔑 ACCESS\n\n✅ Active\nPlan: ${accessLabel(state)}\nExpires: ${formatAccessExpiry(state)}\n\nYou can redeem another key to extend your access.`
     : "🔐 TELEPILOT ACCESS\n\nAn access key is required to use TelePilot.\
 \
-Need a key? Message @noahxrp to get yours.";
+Need a key? Message @vvschrome to get yours.";
   const opts = { reply_markup: accessKeyboard(hasAccess(state)) };
   try {
     if (ctx.callbackQuery?.message) await ctx.editMessageText(text, opts);
@@ -904,10 +904,10 @@ function destinationLabel(destination) {
 function cleanDestinationError(err) {
   const code = telegramErrorCode(err);
   if (code.includes("BOT_WAS_KICKED") || code.includes("BOT WAS KICKED") || code.includes("KICKED FROM")) {
-    return "TelePilot is banned or removed from that group. Unban @TelePilottBot, add it again, make it an admin, then retry.";
+    return "TelePilot is banned or removed from that group. Unban @telepilotsbot, add it again, make it an admin, then retry.";
   }
   if (code.includes("CHAT_NOT_FOUND")) return "Telegram could not find that group/channel. Check the username or link.";
-  if (code.includes("FORBIDDEN")) return "TelePilot cannot access that group/channel. Make sure @TelePilottBot is added and is an admin.";
+  if (code.includes("FORBIDDEN")) return "TelePilot cannot access that group/channel. Make sure @telepilotsbot is added and is an admin.";
   return err?.message || "TelePilot cannot access that destination yet.";
 }
 function personalDialogPeerId(dialog) {
@@ -954,9 +954,9 @@ async function resolveDestination(target, ownerUid) {
   try { chat = await bot.api.getChat(target); } catch (err) { throw new Error(cleanDestinationError(err)); }
   if (!chat || !["group", "supergroup", "channel"].includes(chat.type)) throw new Error("That destination is not a Telegram group or channel.");
   let member;
-  try { member = await bot.api.getChatMember(chat.id, BOT_USER_ID); } catch { throw new Error("Add @TelePilottBot to that group/channel first, then try again."); }
-  if (member.status !== "administrator") throw new Error("Make @TelePilottBot an admin in that group/channel first.");
-  if (chat.type === "channel" && member.can_post_messages !== true) throw new Error("Give @TelePilottBot permission to post messages in that channel.");
+  try { member = await bot.api.getChatMember(chat.id, BOT_USER_ID); } catch { throw new Error("Add @telepilotsbot to that group/channel first, then try again."); }
+  if (member.status !== "administrator") throw new Error("Make @telepilotsbot an admin in that group/channel first.");
+  if (chat.type === "channel" && member.can_post_messages !== true) throw new Error("Give @telepilotsbot permission to post messages in that channel.");
   if (ownerUid) {
     let ownerMember;
     try { ownerMember = await bot.api.getChatMember(chat.id, Number(ownerUid)); } catch { throw new Error("I could not verify that you are an admin of that destination."); }
@@ -2336,7 +2336,7 @@ bot.command("addhere", async ctx => {
     try { botMember = await bot.api.getChatMember(ctx.chat.id, BOT_USER_ID); }
     catch { return ctx.reply("I couldn't verify TelePilot's permissions in this group."); }
     if (botMember.status !== "administrator") {
-      return ctx.reply("Make @TelePilottBot an admin in this group first.");
+      return ctx.reply("Make @telepilotsbot an admin in this group first.");
     }
   }
 
@@ -2379,7 +2379,7 @@ bot.callbackQuery("redeem_key", async ctx => {
   await ctx.editMessageText(
     "🔑 REDEEM KEY\n\nSend your TelePilot access key below.\
 \
-Need a key? Message @noahxrp to get yours.\n\nExample: TP-XXXXX-XXXXX-XXXXX-XXXXX",
+Need a key? Message @vvschrome to get yours.\n\nExample: TP-XXXXX-XXXXX-XXXXX-XXXXX",
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "access") },
   );
 });
@@ -2459,7 +2459,7 @@ bot.callbackQuery("add_group", async ctx => {
   const selectedPersonal = effectiveAccountIds(state, null, accounts);
   const instructions = selectedPersonal.length
     ? "➕ ADD DESTINATIONS\n\nPaste one or many Telegram destinations, one per line:\n• @username or t.me/group\n• private t.me/+ invite links\n• t.me/addlist/... shared folders\n\nTelePilot will join missing groups with your selected personal sender account(s). Forum groups will ask you to choose a posting topic. Join requests and verification-required groups stay Pending until they are ready."
-    : "➕ ADD DESTINATIONS\n\nPaste public @usernames or t.me links, one per line.\n\nAutomatic joining, private invite links and Addlists require a selected personal sender account. Open Accounts first if you want TelePilot to join destinations for you. TelePilot Bot destinations still require @TelePilottBot to be added with posting permission.";
+    : "➕ ADD DESTINATIONS\n\nPaste public @usernames or t.me links, one per line.\n\nAutomatic joining, private invite links and Addlists require a selected personal sender account. Open Accounts first if you want TelePilot to join destinations for you. TelePilot Bot destinations still require @telepilotsbot to be added with posting permission.";
   await ctx.editMessageText(
     instructions,
     { reply_markup: new InlineKeyboard().text("⬅️ Cancel", "groups") },

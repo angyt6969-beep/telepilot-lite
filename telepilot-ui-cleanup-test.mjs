@@ -17,7 +17,7 @@ const dashboard = cleanupTelePilotUi([
   "✈️ TelePilot",
   "💡 SETUP",
   "",
-  "✓ Sender  @noahxrp",
+  "✓ Sender  @vvschrome",
   "✓ Message  Ready · 595 chars",
   "! Destinations  0 ready / 0 total",
   "✓ Timing  every 30 min",
@@ -25,19 +25,19 @@ const dashboard = cleanupTelePilotUi([
   "✓ No destination issues",
   "Complete the missing setup items above.",
   "",
-  "🔑 Key / renewal: — TelePilot Checkout or @noahxrp.",
+  "🔑 Key / renewal: — TelePilot Checkout or @vvschrome.",
 ].join("\n"), dashboardMarkup);
 
 assert.match(dashboard.text, /<b><i>TelePilot<\/i><\/b>/);
 assert.match(dashboard.text, /<b>Status:<\/b> — <b>SETUP<\/b>/);
-assert.match(dashboard.text, /<b>Sender:<\/b> — @noahxrp/);
+assert.match(dashboard.text, /<b>Sender:<\/b> — @vvschrome/);
 assert.match(dashboard.text, /<b>Message:<\/b> — Ready/);
 assert.doesNotMatch(dashboard.text, /595 chars/);
 assert.match(dashboard.text, /<b>Destinations:<\/b> — Not set/);
 assert.match(dashboard.text, /<b>Timing:<\/b> — Every 30 min/);
 assert.match(dashboard.text, /<i>Add a destination to continue\.<\/i>/);
 assert.match(dashboard.text, new RegExp(`emoji-id="5307843983102204243"`));
-assert.match(dashboard.text, /<b>Access:<\/b> — TelePilot Checkout or @noahxrp\./);
+assert.match(dashboard.text, /<b>Access:<\/b> — TelePilot Checkout or @vvschrome\./);
 assert.doesNotMatch(dashboard.text, /No destination issues/);
 assert.doesNotMatch(dashboard.text, /✓|! Destinations/);
 assert.equal(dashboard.other.parse_mode, "HTML");
@@ -49,7 +49,7 @@ assert.equal(dashboard.other.reply_markup.inline_keyboard.flat().find(button => 
 
 const smartPreview = cleanupTelePilotUi([
   "👁 Smart preview",
-  "Sender — @noahxrp",
+  "Sender — @vvschrome",
   "Message — 595 chars",
   "Destinations — 3 active / 3 saved",
   "Interval — 30 min",
@@ -131,7 +131,7 @@ const activityText = [
   "📊 Activity",
   "",
   "Posting  Running",
-  "Senders  @noahxrp",
+  "Senders  @vvschrome",
   "Next  10 min",
   "Recent  4 successful",
 ].join("\n");
@@ -140,7 +140,7 @@ const activity = cleanupTelePilotUi(activityText, {
   entities: [{ type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "activity-title" }],
 });
 assert.match(activity.text, /Posting: — Running/);
-assert.match(activity.text, /Senders: — @noahxrp/);
+assert.match(activity.text, /Senders: — @vvschrome/);
 assert.match(activity.text, /Next: — 10 min/);
 assert.equal(activity.other.parse_mode, undefined);
 assert.equal(activity.other.reply_markup.inline_keyboard[0][0].text, "Dashboard");

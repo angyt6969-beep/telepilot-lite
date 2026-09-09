@@ -6,7 +6,7 @@ import { createPaymentOrder, refreshPaymentOrder, paymentAllowed, startPaymentWo
 import { decryptIssuedKey } from "./payment-key-issuer.js";
 
 const PUBLIC_URL = process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "");
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
+const SUPPORT_USERNAME = "vvschrome";
 const PAYMENT_MODE = String(process.env.NOWPAYMENTS_MODE || "disabled").toLowerCase();
 
 export function checkoutUrlForUid(uid, options = {}) {
@@ -55,7 +55,7 @@ function publicOrder(order) {
   };
 }
 function expiredPage() {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TelePilot Checkout</title><style>body{margin:0;background:#05080d;color:#f5f8fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:grid;place-items:center;padding:24px}.box{max-width:440px;background:#111820;border:1px solid #263545;border-radius:22px;padding:28px;box-shadow:0 24px 70px #0008}a{color:#49bfff}</style></head><body><div class="box"><h1>✈️ TelePilot Checkout</h1><p>This checkout link is missing or expired.</p><p>Open <a href="https://t.me/TelePilottBot">@TelePilottBot</a> and press <b>Get a Key</b> again, or message <a href="https://t.me/${SUPPORT_USERNAME}">@${SUPPORT_USERNAME}</a>.</p></div></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TelePilot Checkout</title><style>body{margin:0;background:#05080d;color:#f5f8fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:grid;place-items:center;padding:24px}.box{max-width:440px;background:#111820;border:1px solid #263545;border-radius:22px;padding:28px;box-shadow:0 24px 70px #0008}a{color:#49bfff}</style></head><body><div class="box"><h1>✈️ TelePilot Checkout</h1><p>This checkout link is missing or expired.</p><p>Open <a href="https://t.me/telepilotsbot">@telepilotsbot</a> and press <b>Get a Key</b> again, or message <a href="https://t.me/${SUPPORT_USERNAME}">@${SUPPORT_USERNAME}</a>.</p></div></body></html>`;
 }
 function checkoutPage() {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>TelePilot Checkout</title><style>

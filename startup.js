@@ -5,7 +5,6 @@ import { installLegalPages } from "./legal-pages.js";
 import { installEmojiIdTool } from "./emoji-id-tool.js";
 import { installInteractionEnhancements } from "./interaction-enhancements.js";
 import { installMediaClearControl } from "./media-clear-control.js";
-import { installLinearOnboardingV4, installLinearOnboardingV4Ui } from "./linear-onboarding-v4.js";
 import { installDestinationsV2, destinationsHomeScreen } from "./destinations-v2.js";
 import { installDestinationHealthV3 } from "./destination-health-v3.js";
 import { installDestinationMembershipV4 } from "./destination-membership-v4.js";
@@ -105,10 +104,6 @@ installV1Controls(Bot);
 installPauseResumeBot(Bot);
 installV1Extras(Bot);
 installSupportCenterEarly(Bot, installSupportCenter);
-// New users follow one fixed path: Tutorial -> Redeem Key -> Dashboard. The old
-// interactive setup tutorial remains only as a compatibility data helper and is
-// no longer registered as an onboarding UI.
-installLinearOnboardingV4(Bot);
 installUxNavigation(Bot);
 installUxV13PolishNavigation(Bot);
 installUxV13Navigation(Bot);
@@ -193,10 +188,6 @@ installDestinationsV2Copy(Api);
 installUxV13(Api);
 installUxV12(Api);
 installUiEnhancements(Api);
-// Apply the mandatory onboarding/activation/dashboard polish after the standard
-// UI stack has been built. It keeps the v1.3 dashboard intact and only appends
-// access/community controls or replaces the legacy post-redemption tutorial fork.
-installLinearOnboardingV4Ui(Api);
 // Referral and canonical interval display sit outside the standard UI stack so their new controls flow through the existing premium emoji/typography layers.
 installIntervalDisplayUi(Api);
 installReferralUi(Api);

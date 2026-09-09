@@ -46,7 +46,7 @@ const slide5 = isolateTutorialPayload(
       inline_keyboard: [
         [{ text: "📊 Dashboard", callback_data: "v1_dashboard_v13" }],
         [{ text: "Redeem Key", callback_data: "redeem_key" }],
-        [{ text: "Get a Key", url: "https://t.me/noahxrp", icon_custom_emoji_id: "old" }],
+        [{ text: "Get a Key", url: "https://t.me/vvschrome", icon_custom_emoji_id: "old" }],
       ],
     },
   },

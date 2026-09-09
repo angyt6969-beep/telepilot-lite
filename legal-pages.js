@@ -1,6 +1,6 @@
 import http from "node:http";
 
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
+const SUPPORT_USERNAME = "vvschrome";
 const SUPPORT_URL = `https://t.me/${SUPPORT_USERNAME}`;
 const LAST_UPDATED = "5 September 2026";
 
@@ -79,7 +79,7 @@ const PAGES = {
   support: {
     title: "Support",
     badge: "TelePilot help",
-    lead: "Use the Support screen inside @TelePilottBot for the fastest help. Each report receives a diagnostic case ID without exposing authentication secrets.",
+    lead: "Use the Support screen inside @telepilotsbot for the fastest help. Each report receives a diagnostic case ID without exposing authentication secrets.",
     body: `
 <div class="notice"><strong>Never send a Telegram login code, 2-Step Verification password, raw Telegram session, bot token or full TelePilot access key to support.</strong></div>
 <h2>What you can report</h2>

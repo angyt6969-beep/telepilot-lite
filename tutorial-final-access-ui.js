@@ -2,11 +2,9 @@ import { Api } from "grammy";
 import { checkoutUrlForUid } from "./crypto-checkout-web.js";
 import { FREE_TRIAL_EMOJI_ID, freeTrialUrlForUid } from "./free-trial.js";
 
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
-const SUPPORT_URL = `https://t.me/${SUPPORT_USERNAME}`;
-const TUTORIAL_GET_KEY_EMOJI_ID = "5307843983102204243";
-const TUTORIAL_CHECK_EMOJI_ID = "5206607081334906820";
-const TUTORIAL_ACTION_EMOJI_ID = "5411590687663608498";
+export const TELEPILOT_OWNER_USERNAME = "vvschrome";
+const BUY_KEY_EMOJI_ID = "5307843983102204243";
+const REDEEM_KEY_EMOJI_ID = "5206607081334906820";
 
 function cloneOther(other) {
   const next = other && typeof other === "object" ? { ...other } : {};
@@ -19,78 +17,81 @@ function cloneOther(other) {
   return next;
 }
 
-function isFinalTutorial(text) {
-  return /Slide\s+5\s+of\s+5/i.test(String(text || ""));
+function callbackSet(other) {
+  return new Set((other?.reply_markup?.inline_keyboard || []).flat().map(button => String(button?.callback_data || "")).filter(Boolean));
 }
 
-function replaceClosingCopy(text) {
-  const value = String(text || "");
-  const closing = `<i>Redeem an existing key, purchase a key, claim your free 1-day tutorial key, or contact @${SUPPORT_USERNAME}.</i>`;
-  if (/<i>Open Dashboard to start building your setup\.<\/i>/i.test(value)) {
-    return value.replace(/<i>Open Dashboard to start building your setup\.<\/i>/i, closing);
-  }
-  if (/<i>Redeem a key to continue\.[\s\S]*?<\/i>/i.test(value)) {
-    return value.replace(/<i>Redeem a key to continue\.[\s\S]*?<\/i>/i, closing);
-  }
-  return `${value}\n\n${closing}`;
+export function isInactiveAccessScreen(text, other) {
+  const callbacks = callbackSet(other);
+  if (!callbacks.has("redeem_key") || callbacks.has("home")) return false;
+  return /(?:^|\n)\s*🔑\s*ACCESS\b/i.test(String(text || ""));
 }
 
-export function finalTutorialAccessPayload(chatId, text, other, options = {}) {
+export function accessStartPayload(chatId, text, other, options = {}) {
   const uid = String(chatId || "");
-  if (!/^\d+$/.test(uid) || !isFinalTutorial(text)) return { text, other };
+  if (!/^\d+$/.test(uid) || !isInactiveAccessScreen(text, other)) return { text, other };
 
   const checkoutUrl = String(options.checkoutUrl || checkoutUrlForUid(uid, options));
-  const trialUrl = String(options.freeTrialUrl || freeTrialUrlForUid(uid, options));
+  const freeTrialUrl = String(options.freeTrialUrl || freeTrialUrlForUid(uid, options));
   const next = cloneOther(other);
   next.parse_mode = "HTML";
+  next.entities = undefined;
   next.reply_markup = {
     ...(next.reply_markup || {}),
     inline_keyboard: [
       [{
-        text: "Redeem a Key",
+        text: "Redeem Key",
         callback_data: "redeem_key",
-        icon_custom_emoji_id: TUTORIAL_CHECK_EMOJI_ID,
+        icon_custom_emoji_id: REDEEM_KEY_EMOJI_ID,
         style: "success",
       }],
       [{
-        text: "Purchase a Key",
+        text: "Buy Key",
         url: checkoutUrl,
-        icon_custom_emoji_id: TUTORIAL_GET_KEY_EMOJI_ID,
+        icon_custom_emoji_id: BUY_KEY_EMOJI_ID,
+        style: "primary",
       }],
       [{
-        text: "Claim your Free 1 day key!",
-        url: trialUrl,
+        text: "Free 1-Day Key",
+        url: freeTrialUrl,
         icon_custom_emoji_id: FREE_TRIAL_EMOJI_ID,
-      }],
-      [{
-        text: `Contact @${SUPPORT_USERNAME}`,
-        url: SUPPORT_URL,
-        icon_custom_emoji_id: TUTORIAL_ACTION_EMOJI_ID,
-      }],
-      [{
-        text: "Back",
-        callback_data: "linear_tutorial:4",
-        icon_custom_emoji_id: TUTORIAL_ACTION_EMOJI_ID,
       }],
     ],
   };
-  return { text: replaceClosingCopy(text), other: next };
+
+  return {
+    text: [
+      "✈️ <b><i>TelePilot Access</i></b>",
+      "",
+      "Choose how you want to unlock TelePilot.",
+      "",
+      "<b>Redeem Key</b> — use an existing access key.",
+      "<b>Buy Key</b> — purchase TelePilot access.",
+      "<b>Free 1-Day Key</b> — claim your one-time free key.",
+      "",
+      "<i>Owner & support: @" + TELEPILOT_OWNER_USERNAME + "</i>",
+    ].join("\n"),
+    other: next,
+  };
 }
+
+// Compatibility export for the existing regression import name.
+export const finalTutorialAccessPayload = accessStartPayload;
 
 export function installTutorialFinalAccessUi(ApiClass = Api) {
   if (!ApiClass?.prototype || ApiClass.prototype.__telepilotTutorialFinalAccessUiInstalled) return false;
   const originalSend = ApiClass.prototype.sendMessage;
   const originalEdit = ApiClass.prototype.editMessageText;
   if (typeof originalSend !== "function" || typeof originalEdit !== "function") {
-    throw new Error("Unsupported grammY Api shape for final tutorial access UI");
+    throw new Error("Unsupported grammY Api shape for TelePilot access start UI");
   }
   Object.defineProperty(ApiClass.prototype, "__telepilotTutorialFinalAccessUiInstalled", { value: true });
   ApiClass.prototype.sendMessage = function(chatId, text, other, ...rest) {
-    const result = finalTutorialAccessPayload(chatId, text, other);
+    const result = accessStartPayload(chatId, text, other);
     return originalSend.call(this, chatId, result.text, result.other, ...rest);
   };
   ApiClass.prototype.editMessageText = function(chatId, messageId, text, other, ...rest) {
-    const result = finalTutorialAccessPayload(chatId, text, other);
+    const result = accessStartPayload(chatId, text, other);
     return originalEdit.call(this, chatId, messageId, result.text, result.other, ...rest);
   };
   return true;

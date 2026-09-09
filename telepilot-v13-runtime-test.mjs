@@ -8,7 +8,7 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-v13-runtime-"));
 process.env.DATA_DIR = temp;
 process.env.TELEPILOT_SECURITY_SECRET ||= "v13-runtime-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz";
 process.env.TELEPILOT_SESSION_KEY_B64 ||= Buffer.alloc(32, 13).toString("base64");
-process.env.TELEPILOT_SUPPORT_USERNAME ||= "noahxrp";
+process.env.TELEPILOT_SUPPORT_USERNAME ||= "vvschrome";
 
 // Test double: prevent network polling while preserving the real grammY middleware router.
 Bot.prototype.start = async function startForTest() { return undefined; };
@@ -22,7 +22,7 @@ const bot = new Bot("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", {
     id: 123456,
     is_bot: true,
     first_name: "TelePilot",
-    username: "TelePilottBot",
+    username: "telepilotsbot",
     can_join_groups: true,
     can_read_all_group_messages: false,
     supports_inline_queries: false,

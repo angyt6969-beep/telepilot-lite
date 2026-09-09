@@ -6,14 +6,14 @@ Telegram-first posting controller deployed on Railway.
 
 TelePilot uses access keys and supports two posting identities:
 
-- **Bot posting** — `@TelePilottBot` sends scheduled messages.
+- **Bot posting** — `@telepilotsbot` sends scheduled messages.
 - **Personal account posting** — an authorized user can optionally connect a personal Telegram account and TelePilot sends through that account.
 
 Personal-account connection is initiated from the bot. The phone number is deleted from the bot chat after it is used to request a login code. The Telegram login code and 2FA password are entered only on TelePilot's short-lived HTTPS connection page and are not sent as bot chat messages.
 
 ## Trust, privacy and support
 
-TelePilot exposes branded public pages at `/privacy`, `/terms`, and `/support`. The secure connection page links to those pages and identifies the public Telegram support contact as `@noahxrp` by default.
+TelePilot exposes branded public pages at `/privacy`, `/terms`, and `/support`. The secure connection page links to those pages and identifies the public Telegram support contact as `@vvschrome` by default.
 
 Users can open `/support` or use the Support button in Tools to create a support case for login, posting, access-key, security, privacy/data, or other issues. Cases receive a `TP-SUP-...` diagnostic ID and store only a limited safe diagnostic summary. Login codes, 2FA passwords, raw Telegram sessions, API secrets, bot tokens and full access keys are not intentionally attached to support cases.
 
@@ -63,7 +63,7 @@ Railway supplies `RAILWAY_PUBLIC_DOMAIN` and `PORT`. `PUBLIC_URL` can be set exp
 Recommended production variables:
 
 - `TELEPILOT_SESSION_KEY_B64` — base64-encoded 32-byte session-encryption master key
-- `TELEPILOT_SUPPORT_USERNAME` — public Telegram support username; defaults to `noahxrp`
+- `TELEPILOT_SUPPORT_USERNAME` — public Telegram support username; defaults to `vvschrome`
 
 Optional:
 

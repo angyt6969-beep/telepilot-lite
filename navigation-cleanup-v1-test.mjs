@@ -127,7 +127,7 @@ assert.deepEqual(tutorial.other.reply_markup.inline_keyboard.flat().map(button =
 // captured first; Activity keeps its real Dashboard callback underneath Back.
 const chatId = 8646767923;
 const messageId = 101;
-const dashboardText = "✈️ TelePilot\n\nStatus: — READY\nSender: — @noahxrp";
+const dashboardText = "✈️ TelePilot\n\nStatus: — READY\nSender: — @vvschrome";
 const dashboardMarkup = {
   inline_keyboard: [
     [{ text: "Posting Setup", callback_data: "v1_posting_setup_v13" }, { text: "Activity", callback_data: "v1_activity_v13" }],

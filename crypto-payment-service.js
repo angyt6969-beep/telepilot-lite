@@ -55,7 +55,7 @@ export async function deliverPaymentKey(order, key, options = {}) {
     reply_markup: {
       inline_keyboard: [
         [{ text: "📋 Copy key", copy_text: { text: key } }],
-        [{ text: "✈️ Open TelePilot", url: "https://t.me/TelePilottBot" }],
+        [{ text: "✈️ Open TelePilot", url: "https://t.me/telepilotsbot" }],
       ],
     },
   }, options);

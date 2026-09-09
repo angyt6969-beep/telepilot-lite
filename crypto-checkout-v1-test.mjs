@@ -8,7 +8,7 @@ process.env.DATA_DIR = temp;
 process.env.TELEPILOT_SECURITY_SECRET = "checkout-test-secret-".padEnd(64, "x");
 process.env.TELEPILOT_PAYMENT_TEST_UIDS = "12345";
 process.env.NOWPAYMENTS_MODE = "sandbox";
-process.env.TELEPILOT_SUPPORT_USERNAME = "noahxrp";
+process.env.TELEPILOT_SUPPORT_USERNAME = "vvschrome";
 
 const store = await import("./crypto-checkout-store.js");
 const provider = await import("./nowpayments-client.js");
@@ -155,14 +155,14 @@ assert.equal(recovered.key, recoveryIssued.key);
 assert.equal(recoveryDelivered.length, 1);
 assert.equal(recoveryDelivered[0], recoveryIssued.key);
 
-const markup = { reply_markup: { inline_keyboard: [[{ text: "Get a Key", url: "https://t.me/noahxrp", icon_custom_emoji_id: "old" }]] } };
-const decorated = botUi.decorateCryptoCheckoutLinks("12345", "Need one? Message @noahxrp.", markup, { publicUrl: "https://telepilot.example", secret });
+const markup = { reply_markup: { inline_keyboard: [[{ text: "Get a Key", url: "https://t.me/vvschrome", icon_custom_emoji_id: "old" }]] } };
+const decorated = botUi.decorateCryptoCheckoutLinks("12345", "Need one? Message @vvschrome.", markup, { publicUrl: "https://telepilot.example", secret });
 const buttons = decorated.other.reply_markup.inline_keyboard.flat();
 const getKey = buttons.find(button => button.text === "Get a Key");
 assert.ok(getKey.url.startsWith("https://telepilot.example/checkout?t="));
 assert.equal(getKey.url.includes("12345"), false);
 assert.equal(getKey.icon_custom_emoji_id, "5307843983102204243");
-assert.equal(buttons.some(button => button.url === "https://t.me/noahxrp" && /Message/.test(button.text)), true);
+assert.equal(buttons.some(button => button.url === "https://t.me/vvschrome" && /Message/.test(button.text)), true);
 assert.match(decorated.text, /TelePilot Checkout/);
 
 fs.rmSync(temp, { recursive: true, force: true });

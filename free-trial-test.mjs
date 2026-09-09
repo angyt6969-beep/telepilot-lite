@@ -7,7 +7,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "telepilot-free-trial-"));
 process.env.DATA_DIR = root;
 process.env.TELEPILOT_SECURITY_SECRET = "free-trial-regression-secret-0123456789-abcdefghijklmnopqrstuvwxyz";
 process.env.PUBLIC_URL = "https://telepilot.example";
-process.env.TELEPILOT_SUPPORT_USERNAME = "noahxrp";
+process.env.TELEPILOT_SUPPORT_USERNAME = "vvschrome";
 process.env.TELEPILOT_FREE_TRIAL_CHANNEL_USERNAME = "telepilott";
 
 const mod = await import(`./free-trial.js?test=${Date.now()}`);
@@ -22,26 +22,22 @@ try {
   tokenParts[3] = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
   assert.equal(mod.readFreeTrialToken(tokenParts.join("."), { now: now + 1000 }), null, "tampered token must be rejected");
   assert.equal(mod.readFreeTrialToken(token, { now: now + 3 * 60 * 60_000 }), null, "expired token must be rejected");
-
-  assert.equal(mod.readFreeTrialTutorial(uid).eligible, false, "new users must not start eligible");
-  assert.equal(mod.advanceFreeTrialTutorial(uid, 5, { now }).eligible, false, "jumping directly to the final slide must not grant the reward");
-  for (const slide of [2, 3, 4]) assert.equal(mod.advanceFreeTrialTutorial(uid, slide, { now }).eligible, false);
-  const completed = mod.advanceFreeTrialTutorial(uid, 5, { now });
-  assert.equal(completed.eligible, true, "sequential tutorial completion should grant claim eligibility");
-  assert.equal(completed.furthestSlide, 5);
+  const directClaim = await mod.claimFreeTrial(uid, { now, membershipChecker: async () => true });
+  assert.equal(directClaim.ok, true, "a brand-new account must be able to claim without completing a tutorial");
+  assert.match(directClaim.key, /^TP-/);
 
   const original = {
     reply_markup: {
       inline_keyboard: [
         [{ text: "Redeem Key", callback_data: "redeem_key" }],
-        [{ text: "Get / Renew Key", url: "https://t.me/noahxrp" }, { text: "Main Channel", url: "https://t.me/telepilott" }],
+        [{ text: "Get / Renew Key", url: "https://t.me/vvschrome" }, { text: "Main Channel", url: "https://t.me/telepilott" }],
         [{ text: "Back", callback_data: "back" }],
       ],
     },
   };
   const decorated = mod.decorateFreeTrialButton(uid, "Access", original, { publicUrl: "https://telepilot.example", now });
   const rows = decorated.other.reply_markup.inline_keyboard;
-  assert.equal(rows[2][0].text, "Claim your Free 1 day key!", "free key button must be immediately under the purchase row");
+  assert.equal(rows[2][0].text, "Free 1-Day Key", "free key button must be immediately under the purchase row");
   assert.equal(rows[2][0].icon_custom_emoji_id, "4983746717313664194", "requested premium emoji ID must be preserved");
   const claimUrl = new URL(rows[2][0].url);
   assert.equal(claimUrl.pathname, "/free-trial");

@@ -64,7 +64,7 @@ function normalizeExistingButtons(other) {
 
 function displaySender(raw) {
   const value = String(raw || "").trim();
-  if (!value || value === "Bot posting" || value === "@TelePilottBot") return "TelePilot Bot";
+  if (!value || value === "Bot posting" || value === "@telepilotsbot") return "TelePilot Bot";
   return value;
 }
 
@@ -76,7 +76,7 @@ function dashboardMessageLabel(raw) {
 
 function transformDashboard(text, other) {
   const running = text.includes("🟢 Running");
-  const senderRaw = lineValue(text, "👤 Posting as: ") || "@TelePilottBot";
+  const senderRaw = lineValue(text, "👤 Posting as: ") || "@telepilotsbot";
   const sender = displaySender(senderRaw);
   const access = lineValue(text, "🔑 Access: ") || "Active";
   const message = lineValue(text, "📝 Message: ");

@@ -1,6 +1,6 @@
 import { checkoutUrlForUid } from "./crypto-checkout-web.js";
 
-const SUPPORT_USERNAME = String(process.env.TELEPILOT_SUPPORT_USERNAME || "noahxrp").replace(/^@+/, "");
+const SUPPORT_USERNAME = "vvschrome";
 const SUPPORT_URL = `https://t.me/${SUPPORT_USERNAME}`;
 export const CHECKOUT_GET_KEY_EMOJI_ID = "5307843983102204243";
 
