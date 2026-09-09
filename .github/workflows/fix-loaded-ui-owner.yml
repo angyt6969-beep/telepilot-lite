@@ -1,0 +1,70 @@
+name: Fix loaded TelePilot UI owner
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-loaded-ui-owner.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix loaded UI owner
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('telepilot-ui-cleanup.js')
+          s = p.read_text()
+
+          old = '''function buttonStyle(button) {
+            if (button?.style) return button.style;
+            const value = `${button?.text || ""} ${button?.callback_data || ""}`.toLowerCase();
+'''
+          new = '''function buttonStyle(button) {
+            const callback = String(button?.callback_data || "").toLowerCase();
+            if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") return undefined;
+            if (button?.style) return button.style;
+            const value = `${button?.text || ""} ${button?.callback_data || ""}`.toLowerCase();
+'''
+          if old not in s:
+              raise SystemExit('buttonStyle anchor missing')
+          s = s.replace(old, new, 1)
+
+          old2 = '''function cleanButtonText(button) {
+            let text = String(button?.text || "");
+'''
+          new2 = '''function cleanButtonText(button) {
+            const callback = String(button?.callback_data || "").toLowerCase();
+            if (callback === "v1_tools" || callback === "v1_dest_add_v13" || callback === "v1_history") delete button.style;
+            let text = String(button?.text || "");
+'''
+          if old2 not in s:
+              raise SystemExit('cleanButtonText anchor missing')
+          s = s.replace(old2, new2, 1)
+
+          p.write_text(s)
+          PY
+
+          node --check telepilot-ui-cleanup.js
+          grep -q 'v1_dest_add_v13' telepilot-ui-cleanup.js
+          grep -q 'v1_history' telepilot-ui-cleanup.js
+
+      - name: Commit loaded owner fix
+        shell: bash
+        run: |
+          rm .github/workflows/fix-loaded-ui-owner.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add telepilot-ui-cleanup.js .github/workflows/fix-loaded-ui-owner.yml
+          git commit -m "Fix gray Advanced Add Import and History in loaded UI owner"
+          git push origin HEAD:main
