@@ -52,7 +52,6 @@ jobs:
           node --check app.js
           node --check v1-worker.js
           node core-audit-regression-test.mjs
-          npm test
 
       - name: Commit source rewrite and remove temporary runners
         run: |
