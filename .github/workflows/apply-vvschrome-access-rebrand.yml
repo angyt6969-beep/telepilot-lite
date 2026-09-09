@@ -22,9 +22,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Fix helper quoting and apply source rewrite
+      - name: Prepare helper and apply source rewrite
         run: |
-          python3 -c 'from pathlib import Path; p=Path("scripts/apply-vvschrome-access-rebrand.mjs"); s=p.read_text(); s=s.replace("      `<i>Owner & support: @${TELEPILOT_OWNER_USERNAME}</i>`,", "      \"<i>Owner & support: @\" + TELEPILOT_OWNER_USERNAME + \"</i>\","); p.write_text(s)'
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("scripts/apply-vvschrome-access-rebrand.mjs")
+          s = p.read_text()
+          s = s.replace("      `<i>Owner & support: @${TELEPILOT_OWNER_USERNAME}</i>`,", "      \"<i>Owner & support: @\" + TELEPILOT_OWNER_USERNAME + \"</i>\",")
+          s = s.replace('if (entry.name === ".git" || entry.name === "node_modules") continue;', 'if ([".git", ".github", "node_modules"].includes(entry.name)) continue;')
+          s = s.replace('if ([".git", "node_modules"].includes(path.basename(target))) return;', 'if ([".git", ".github", "node_modules"].includes(path.basename(target))) return;')
+          p.write_text(s)
+          PY
           node --check scripts/apply-vvschrome-access-rebrand.mjs
           node scripts/apply-vvschrome-access-rebrand.mjs
       - name: Install dependencies
