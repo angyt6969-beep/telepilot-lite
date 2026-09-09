@@ -3,7 +3,10 @@ import { Api, Bot } from "grammy";
 const NAV_BACK = "telepilot_nav_back";
 const BACK_LABEL = "𝙂𝙤 𝙗𝙖𝙘𝙠";
 const MAX_HISTORY = 20;
-const stateByMessage = new Map();
+// TelePilot uses one private-chat UI panel, but that panel can be replaced with a
+// fresh Telegram message after user input. Navigation therefore belongs to the
+// chat, not to one transient message id.
+const stateByChat = new Map();
 const restoring = new Set();
 const LEADING_DECORATION_RE = /^(?:(?:\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?|[←→↩↪＋+✓✔◀▶])\s*)+/u;
 
@@ -60,8 +63,8 @@ function identity(text, other) {
   return `${title}|${callbacks}`;
 }
 
-function keyOf(chatId, messageId) {
-  return `${String(chatId)}:${String(messageId)}`;
+function keyOf(chatId, _messageId) {
+  return String(chatId);
 }
 
 function snapshot(text, other) {
@@ -69,10 +72,10 @@ function snapshot(text, other) {
 }
 
 function stateFor(key) {
-  let state = stateByMessage.get(key);
+  let state = stateByChat.get(key);
   if (!state) {
     state = { stack: [], current: null, pending: null };
-    stateByMessage.set(key, state);
+    stateByChat.set(key, state);
   }
   return state;
 }
@@ -112,8 +115,7 @@ export function applyGoBackButton(text, other, hasHistory) {
   const next = cloneOther(other);
   const rows = next?.reply_markup?.inline_keyboard ? [...next.reply_markup.inline_keyboard] : [];
 
-  // The dashboard is the root page. It must never render a Back control, even if
-  // an old message still carries one or the in-memory history stack is populated.
+  // The dashboard is the root page. It must never render a Back control.
   if (isDashboardRoot(text)) {
     const rootRows = rows.filter(row => !(row.length === 1 && (String(row[0]?.callback_data || "") === NAV_BACK || isBackLabel(row[0]))));
     next.reply_markup = { ...(next.reply_markup || {}), inline_keyboard: rootRows };
@@ -122,9 +124,8 @@ export function applyGoBackButton(text, other, hasHistory) {
 
   let parentCallback = "";
 
-  // Find the real parent from the bottom upward, remove it from its old position,
-  // and rebuild it as the final row. This keeps Back deterministic across restarts
-  // and also guarantees that inherited premium icons/styles cannot leak into it.
+  // Keep a deterministic parent as a fallback for a fresh process with no
+  // history. During a normal session, the exact history stack takes precedence.
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index];
     if (row?.length !== 1) continue;
@@ -137,8 +138,6 @@ export function applyGoBackButton(text, other, hasHistory) {
     break;
   }
 
-  // Remove any stale Back rows left by older renders so exactly one clean Back
-  // control can be appended at the very bottom.
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index];
     if (row?.length !== 1) continue;
@@ -151,6 +150,24 @@ export function applyGoBackButton(text, other, hasHistory) {
 
   next.reply_markup = { ...(next.reply_markup || {}), inline_keyboard: rows };
   return { text, other: next };
+}
+
+function preferExactPreviousPage(rendered, state) {
+  const previous = state?.stack?.at?.(-1) || null;
+  // Dashboard really is the previous page in this one case, so the direct
+  // callback is equivalent and remains restart-safe.
+  if (!previous || isDashboardRoot(previous.text)) return rendered;
+
+  const next = { text: rendered.text, other: cloneOther(rendered.other) };
+  const rows = next?.other?.reply_markup?.inline_keyboard || [];
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row?.length !== 1 || !isBackLabel(row[0])) continue;
+    rows[index] = [cleanBackButton(NAV_BACK)];
+    return next;
+  }
+  rows.push([cleanBackButton(NAV_BACK)]);
+  return next;
 }
 
 export function cleanActivityControls(text, other) {
@@ -174,9 +191,6 @@ export function cleanActivityControls(text, other) {
       if (isPostingHistory) {
         if (historyKept) continue;
         historyKept = true;
-        // The production history page is registered on the legacy-but-active
-        // "history" callback in pro-controls.js. Canonicalize every Activity
-        // history button to that known working route while removing duplicates.
         button.callback_data = "history";
         button.text = "Posting History";
         delete button.style;
@@ -189,6 +203,18 @@ export function cleanActivityControls(text, other) {
   return { text, other: next };
 }
 
+function pushHistory(state, page) {
+  if (!page || page.identity === state?.current?.identity && state.stack.at(-1)?.identity === page.identity) return;
+  if (state.stack.at(-1)?.identity === page.identity) return;
+  state.stack.push(page);
+  if (state.stack.length > MAX_HISTORY) state.stack.splice(0, state.stack.length - MAX_HISTORY);
+}
+
+function renderFromState(base, state) {
+  const rendered = applyGoBackButton(base.text, base.other, state.stack.length > 0);
+  return preferExactPreviousPage(rendered, state);
+}
+
 function prepareOutgoing(chatId, messageId, text, other) {
   const result = cleanActivityControls(text, other);
   if (!isTelePilotUi(result.text, result.other) || isTutorial(result.text, result.other)) return result;
@@ -197,22 +223,48 @@ function prepareOutgoing(chatId, messageId, text, other) {
   const state = stateFor(key);
   const base = snapshot(result.text, result.other);
 
+  if (isDashboardRoot(base.text)) {
+    state.stack = [];
+    state.pending = null;
+    state.current = base;
+    return applyGoBackButton(base.text, base.other, false);
+  }
+
   if (restoring.has(key)) {
     restoring.delete(key);
     state.pending = null;
     state.current = base;
   } else if (state.pending) {
-    if (state.pending.identity !== base.identity) {
-      state.stack.push(state.pending);
-      if (state.stack.length > MAX_HISTORY) state.stack.splice(0, state.stack.length - MAX_HISTORY);
-    }
+    if (state.pending.identity !== base.identity) pushHistory(state, state.pending);
     state.pending = null;
     state.current = base;
   } else {
     state.current = base;
   }
 
-  return applyGoBackButton(base.text, base.other, state.stack.length > 0);
+  return renderFromState(base, state);
+}
+
+function prepareSentOutgoing(chatId, text, other) {
+  const result = cleanActivityControls(text, other);
+  if (!isTelePilotUi(result.text, result.other) || isTutorial(result.text, result.other)) return result;
+
+  const key = keyOf(chatId, 0);
+  const state = stateFor(key);
+  const base = snapshot(result.text, result.other);
+
+  if (isDashboardRoot(base.text)) {
+    state.stack = [];
+    state.pending = null;
+    state.current = base;
+    return applyGoBackButton(base.text, base.other, false);
+  }
+
+  const previous = state.pending || state.current;
+  if (previous && previous.identity !== base.identity) pushHistory(state, previous);
+  state.pending = null;
+  state.current = base;
+  return renderFromState(base, state);
 }
 
 function captureIncoming(ctx) {
@@ -287,13 +339,9 @@ export function installNavigationHistoryApi(ApiClass = Api) {
   if (typeof originalSendMessage !== "function" || typeof originalEditMessageText !== "function") throw new Error("Unsupported grammY Api shape for navigation history");
   Object.defineProperty(ApiClass.prototype, "__telepilotNavigationHistoryApiInstalled", { value: true });
 
-  ApiClass.prototype.sendMessage = async function(chatId, text, other, ...rest) {
-    const response = await originalSendMessage.call(this, chatId, text, other, ...rest);
-    const messageId = response?.message_id;
-    if (messageId && isTelePilotUi(text, other) && !isTutorial(text, other)) {
-      stateFor(keyOf(chatId, messageId)).current = snapshot(text, other);
-    }
-    return response;
+  ApiClass.prototype.sendMessage = function(chatId, text, other, ...rest) {
+    const result = prepareSentOutgoing(chatId, text, other);
+    return originalSendMessage.call(this, chatId, result.text, result.other, ...rest);
   };
 
   ApiClass.prototype.editMessageText = function(chatId, messageId, text, other, ...rest) {
@@ -311,6 +359,7 @@ export const __test = {
   isTelePilotUi,
   isExplicitForwardNavigationButton,
   prepareOutgoing,
+  prepareSentOutgoing,
   snapshot,
   stateFor,
   keyOf,
