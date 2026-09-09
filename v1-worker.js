@@ -41,7 +41,22 @@ function deliveryId(destination,accountId){return `${destinationId(destination)}
 function toMtEntities(entities=[]){const out=[];for(const entity of entities){const base={offset:Number(entity?.offset||0),length:Number(entity?.length||0)};try{if(entity?.type==="bold")out.push(new MtApi.MessageEntityBold(base));else if(entity?.type==="italic")out.push(new MtApi.MessageEntityItalic(base));else if(entity?.type==="underline")out.push(new MtApi.MessageEntityUnderline(base));else if(entity?.type==="strikethrough")out.push(new MtApi.MessageEntityStrike(base));else if(entity?.type==="spoiler")out.push(new MtApi.MessageEntitySpoiler(base));else if(entity?.type==="code")out.push(new MtApi.MessageEntityCode(base));else if(entity?.type==="pre")out.push(new MtApi.MessageEntityPre({...base,language:entity.language||""}));else if(entity?.type==="text_link")out.push(new MtApi.MessageEntityTextUrl({...base,url:entity.url||""}));else if(entity?.type==="custom_emoji"&&/^\d+$/.test(String(entity.custom_emoji_id||"")))out.push(new MtApi.MessageEntityCustomEmoji({...base,documentId:bigInt(entity.custom_emoji_id)}));}catch{}}return out;}
 async function openPersonalClient(uid,account){const client=new TelegramClient(new StringSession(loadAccountSession(uid,account.id)),API_ID,API_HASH,{connectionRetries:5,floodSleepThreshold:60});client.__telepilotOwnerUid=String(uid);client.__telepilotAccountId=String(account.id);await client.connect();if(!(await client.checkAuthorization()))throw new Error("Personal account session is no longer authorized.");const me=await client.getMe();updateAccountStatus(uid,account.id,{telegramId:me?.id,username:me?.username,firstName:me?.firstName,lastName:me?.lastName,status:"connected",lastError:"",lastVerifiedAt:Date.now()});return client;}
 function savedInputPeer(destination){const id=String(destination?.id||"").trim(),type=String(destination?.type||"").toLowerCase(),accessHash=String(destination?.accessHash??"").trim();if(type==="group"&&/^-\d+$/.test(id)){return new MtApi.InputPeerChat({chatId:bigInt(id.slice(1))});}if(/^-100\d+$/.test(id)&&/^-?\d+$/.test(accessHash)&&accessHash){return new MtApi.InputPeerChannel({channelId:bigInt(id.slice(4)),accessHash:bigInt(accessHash)});}if(/^-(?!100)\d+$/.test(id)){return new MtApi.InputPeerChat({chatId:bigInt(id.slice(1))});}return null;}
-async function personalTarget(client,destination,dialogCache){if(destination?.username)return destination.username;const direct=savedInputPeer(destination);if(direct)return direct;if(!dialogCache.value)dialogCache.value=await client.getDialogs({limit:1000});const wanted=String(destination?.id||"").replace(/^-100/,"").replace(/^-/,"");for(const dialog of dialogCache.value){const ids=[dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v).replace(/\D/g,""));if(wanted&&ids.includes(wanted))return dialog;}throw new Error(`Could not resolve ${destination?.label||destination?.id||"destination"}.`);}
+async function personalTarget(client, destination, dialogCache) {
+  const direct = savedInputPeer(destination);
+  if (direct) return direct;
+  if (destination?.username) {
+    try { return await client.getInputEntity(destination.username); } catch {}
+  }
+  if (!dialogCache.value) dialogCache.value = await client.getDialogs({ limit: 1000 });
+  const wanted = String(destination?.id || "").replace(/^-100/, "").replace(/^-/, "");
+  for (const dialog of dialogCache.value) {
+    const ids = [dialog?.id, dialog?.entity?.id, dialog?.inputEntity?.chatId, dialog?.inputEntity?.channelId]
+      .filter(value => value !== undefined && value !== null)
+      .map(value => String(value).replace(/\D/g, ""));
+    if (wanted && ids.includes(wanted)) return dialog?.inputEntity || dialog?.entity || dialog;
+  }
+  throw new Error(`Could not resolve ${destination?.label || destination?.id || "destination"}.`);
+}
 function isPartialDeliveryError(err){return err?.__telepilotPartialDelivery===true;}
 function accountStatusPatchForSendError(err,now=Date.now()){if(!isFatalSessionError(err))return null;const message=String(err?.errorMessage||err?.message||err).slice(0,180);return{status:"needs-reconnect",lastError:message,lastVerifiedAt:now};}
 function rememberDelivered(list,key){if(!list.includes(key))list.push(key);}
@@ -59,7 +74,7 @@ async function sendCycle(uid,settings,bot,options={}){
       if(usesBotSender(settings,destination,accounts)){
         const key=deliveryId(destination,"");if(delivered.has(key))continue;
         if(destination.topicRequired===true&&!Number(destination.topicId||0)){skipped++;continue;}
-        try{const opts={...(settings.adEntities?.length?{entities:settings.adEntities}:{}),...(Number(destination.topicId||0)>1?{message_thread_id:Number(destination.topicId)}:{})};const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,opts));if(result?.__telepilotSkipped)skipped++;else sent++;rememberDelivered(newlyDelivered,key);}catch(err){failed++;if(isPartialDeliveryError(err))rememberDelivered(newlyDelivered,key);errors.push(String(err?.description||err?.message||err).slice(0,180));}
+        try{const opts={...(settings.adEntities?.length?{entities:settings.adEntities}:{}),...(Number(destination.topicId||0)>1?{message_thread_id:Number(destination.topicId)}:{})};const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"bot",senderLabel:"TelePilot Bot",forcedTemplateId,autoDisableEligible:true},()=>bot.api.sendMessage(destination.id,settings.adMessage,opts));if(result?.__telepilotSkipped)skipped++;else{sent++;rememberDelivered(newlyDelivered,key);}}catch(err){failed++;if(isPartialDeliveryError(err))rememberDelivered(newlyDelivered,key);errors.push(String(err?.description||err?.message||err).slice(0,180));}
         continue;
       }
       const accountIds=effectiveAccountIds(settings,destination,accounts);
@@ -73,7 +88,7 @@ async function sendCycle(uid,settings,bot,options={}){
           if(!client){client=await openPersonalClient(uid,account);clients.set(account.id,client);dialogCaches.set(account.id,{value:null});}
           const entity=await personalTarget(client,destination,dialogCaches.get(account.id));
           const result=await withDispatchContext({uid:String(uid),destinationId:destinationId(destination),cycleId,senderType:"personal",senderLabel:accountDisplayLabel(account),accountId:String(account.id),forcedTemplateId,autoDisableEligible:accountIds.length===1},()=>client.sendMessage(entity,{message:settings.adMessage,...(settings.adEntities?.length?{formattingEntities:toMtEntities(settings.adEntities)}:{}),...(Number(destination.topicId||0)>1?{replyTo:new MtApi.InputReplyToMessage({replyToMsgId:Number(destination.topicId)})}:{})}));
-          if(result?.__telepilotSkipped)skipped++;else sent++;rememberDelivered(newlyDelivered,key);
+          if(result?.__telepilotSkipped)skipped++;else{sent++;rememberDelivered(newlyDelivered,key);}
         }catch(err){failed++;if(isPartialDeliveryError(err))rememberDelivered(newlyDelivered,key);const message=String(err?.errorMessage||err?.message||err).slice(0,180);errors.push(`${accountDisplayLabel(account)}: ${message}`);const accountPatch=accountStatusPatchForSendError(err);if(accountPatch)updateAccountStatus(uid,account.id,accountPatch);else recordDestinationFailure(uid,destination,account.id,err);}
       }
     }
@@ -81,8 +96,88 @@ async function sendCycle(uid,settings,bot,options={}){
   }finally{for(const client of clients.values())try{await client.disconnect();}catch{}}
 }
 function scheduledRun(pro,rule,now){if(rule?.enabled===false||!/^\d{2}:\d{2}$/.test(String(rule?.time||"")))return null;const offset=Number(pro.schedule?.utcOffsetMinutes||0), localNow=new Date(now+offset*60_000),[h,m]=String(rule.time).split(":").map(Number);const localRun=new Date(Date.UTC(localNow.getUTCFullYear(),localNow.getUTCMonth(),localNow.getUTCDate(),h,m));const days=Array.isArray(rule.days)?rule.days.map(Number):[0,1,2,3,4,5,6];if(!days.includes(localRun.getUTCDay()))return null;const runAt=localRun.getTime()-offset*60_000;if(now<runAt||now-runAt>EXACT_CATCHUP_MS)return null;return{runAt,key:`${dateKey(localRun)}|${rule.time}`};}
-async function processExact(uid,settings,bot,now){const pro=readV1(uid);for(const rule of pro.exactTimes||[]){const due=scheduledRun(pro,rule,now);if(!due||String(rule.lastRunKey||"")===due.key)continue;const oldDelivered=String(rule.deliveryKey||"")===due.key&&Array.isArray(rule.delivered)?rule.delivered:[];const result=await sendCycle(uid,settings,bot,{templateId:rule.templateId,cycleId:`exact:${rule.id}:${due.key}`,delivered:oldDelivered});const latest=readV1(uid),stored=latest.exactTimes.find(item=>String(item.id)===String(rule.id));if(!stored)continue;const merged=[...new Set([...oldDelivered,...result.delivered])];stored.deliveryKey=due.key;stored.delivered=merged;stored.lastAttemptAt=Date.now();stored.lastError=result.errors[0]||"";if(result.failed===0){stored.lastRunKey=due.key;stored.delivered=[];}writeV1(uid,latest);}}
-async function processOneTime(uid,settings,bot,now){const due=(readV1(uid).oneTimeJobs||[]).filter(job=>(!job.status||job.status==="pending")&&Number(job.runAt||0)>0&&Number(job.runAt)<=now&&Number(job.nextAttemptAt||0)<=now).map(job=>({id:String(job.id),templateId:String(job.templateId||""),delivered:Array.isArray(job.delivered)?job.delivered:[],attempts:Number(job.attempts||0)}));for(const job of due){const result=await sendCycle(uid,settings,bot,{templateId:job.templateId,cycleId:`once:${job.id}`,delivered:job.delivered});const latest=readV1(uid),stored=latest.oneTimeJobs.find(item=>String(item.id)===job.id);if(!stored)continue;stored.delivered=[...new Set([...(job.delivered||[]),...result.delivered])];stored.attempts=job.attempts+1;stored.error=result.errors[0]||"";if(result.failed===0){stored.status="done";stored.completedAt=Date.now();stored.delivered=[];}else if(stored.attempts>=3){stored.status="failed";stored.completedAt=Date.now();}else{stored.status="pending";stored.nextAttemptAt=Date.now()+Math.min(10*60_000,60_000*(2**(stored.attempts-1)));}writeV1(uid,latest);}}
+function exactCycleComplete(result) {
+  return Number(result?.failed || 0) === 0 && Number(result?.skipped || 0) === 0;
+}
+function applyOneTimeOutcome(stored, job, result, now = Date.now()) {
+  stored.delivered = [...new Set([...(job.delivered || []), ...(result.delivered || [])])];
+  stored.error = result.errors?.[0] || (result.skipped ? `${result.skipped} delivery${result.skipped === 1 ? " is" : "ies are"} waiting to become ready.` : "");
+
+  if (Number(result.failed || 0) === 0 && Number(result.skipped || 0) === 0) {
+    stored.status = "done";
+    stored.completedAt = now;
+    stored.nextAttemptAt = 0;
+    stored.delivered = [];
+    return stored;
+  }
+
+  if (Number(result.failed || 0) === 0) {
+    stored.attempts = Number(job.attempts || 0);
+    stored.status = "pending";
+    stored.completedAt = 0;
+    stored.nextAttemptAt = now + 60_000;
+    return stored;
+  }
+
+  stored.attempts = Number(job.attempts || 0) + 1;
+  if (stored.attempts >= 3) {
+    stored.status = "failed";
+    stored.completedAt = now;
+    stored.nextAttemptAt = 0;
+  } else {
+    stored.status = "pending";
+    stored.completedAt = 0;
+    stored.nextAttemptAt = now + Math.min(10 * 60_000, 60_000 * (2 ** (stored.attempts - 1)));
+  }
+  return stored;
+}
+async function processExact(uid, settings, bot, now) {
+  const pro = readV1(uid);
+  for (const rule of pro.exactTimes || []) {
+    const due = scheduledRun(pro, rule, now);
+    if (!due || String(rule.lastRunKey || "") === due.key) continue;
+    const oldDelivered = String(rule.deliveryKey || "") === due.key && Array.isArray(rule.delivered) ? rule.delivered : [];
+    const result = await sendCycle(uid, settings, bot, {
+      templateId: rule.templateId,
+      cycleId: `exact:${rule.id}:${due.key}`,
+      delivered: oldDelivered,
+    });
+    const latest = readV1(uid);
+    const stored = latest.exactTimes.find(item => String(item.id) === String(rule.id));
+    if (!stored) continue;
+    stored.deliveryKey = due.key;
+    stored.delivered = [...new Set([...oldDelivered, ...(result.delivered || [])])];
+    stored.lastAttemptAt = Date.now();
+    stored.lastError = result.errors[0] || (result.skipped ? `${result.skipped} delivery${result.skipped === 1 ? " is" : "ies are"} waiting to become ready.` : "");
+    if (exactCycleComplete(result)) {
+      stored.lastRunKey = due.key;
+      stored.delivered = [];
+    }
+    writeV1(uid, latest);
+  }
+}
+async function processOneTime(uid, settings, bot, now) {
+  const due = (readV1(uid).oneTimeJobs || [])
+    .filter(job => (!job.status || job.status === "pending") && Number(job.runAt || 0) > 0 && Number(job.runAt) <= now && Number(job.nextAttemptAt || 0) <= now)
+    .map(job => ({
+      id: String(job.id),
+      templateId: String(job.templateId || ""),
+      delivered: Array.isArray(job.delivered) ? job.delivered : [],
+      attempts: Number(job.attempts || 0),
+    }));
+  for (const job of due) {
+    const result = await sendCycle(uid, settings, bot, {
+      templateId: job.templateId,
+      cycleId: `once:${job.id}`,
+      delivered: job.delivered,
+    });
+    const latest = readV1(uid);
+    const stored = latest.oneTimeJobs.find(item => String(item.id) === job.id);
+    if (!stored) continue;
+    applyOneTimeOutcome(stored, job, result);
+    writeV1(uid, latest);
+  }
+}
 async function flushAlerts(uid,bot){const current=readV1(uid),alerts=(current.pendingAlerts||[]).slice(0,3),sent=[];for(const alert of alerts){try{await bot.api.sendMessage(uid,alert.text);sent.push(String(alert.id));}catch{break;}}if(!sent.length)return;const latest=readV1(uid);latest.pendingAlerts=(latest.pendingAlerts||[]).filter(a=>!sent.includes(String(a.id)));writeV1(uid,latest);}
 async function accessReminder(uid,settings,bot,now){if(isAdmin(uid)||settings.accessLifetime||settings.accessRevoked||!settings.accessUntil)return;const remaining=Number(settings.accessUntil)-now;if(remaining<=0||remaining>3*86_400_000)return;const pro=readV1(uid),days=Math.max(1,Math.ceil(remaining/86_400_000)),key=`${dateKey(localDate(pro,now))}|${days}`;if(pro.reminders?.lastAccessKey===key)return;try{await bot.api.sendMessage(uid,`💎 TelePilot Access\n\nYour access expires in ${days} day${days===1?"":"s"}.\n\nYour saved setup remains on TelePilot if you renew later.`);}catch{return;}const latest=readV1(uid);latest.reminders.lastAccessKey=key;writeV1(uid,latest);}
 function currentWeekKey(local){const copy=new Date(local.getTime());copy.setUTCDate(copy.getUTCDate()-copy.getUTCDay());return dateKey(copy);}
@@ -92,4 +187,4 @@ async function processUser(uid,bot){const now=Date.now(),settings=readAppSetting
 async function tick(bot){if(ticking)return;ticking=true;try{const users=listUserIds();for(let i=0;i<users.length;i+=USER_CONCURRENCY){const batch=users.slice(i,i+USER_CONCURRENCY);await Promise.allSettled(batch.map(uid=>processUser(uid,bot)));}}finally{ticking=false;}}
 export function startV1Worker(){if(!BOT_TOKEN||!API_ID||!API_HASH){console.warn("TelePilot v1 worker disabled: missing Telegram credentials");return null;}const bot=new Bot(BOT_TOKEN),run=()=>void tick(bot).catch(err=>console.error("TelePilot v1 worker failed:",err?.message||err));const initial=setTimeout(run,15_000),timer=setInterval(run,TICK_MS);initial.unref?.();timer.unref?.();console.log("TelePilot v1 multi-account scheduler enabled");return timer;}
 
-export const __test={savedInputPeer,isPartialDeliveryError,accountStatusPatchForSendError};
+export const __test={savedInputPeer,isPartialDeliveryError,accountStatusPatchForSendError,exactCycleComplete,applyOneTimeOutcome};

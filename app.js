@@ -180,6 +180,7 @@ function normalizeSavedGroups(value) {
       label: String(item.label || item.title || id).slice(0, 120),
       type: String(item.type || "group"),
       username: item.username ? String(item.username) : "",
+      accessHash: String(item.accessHash || "").slice(0, 100),
       accountMode: ["inherit", "bot", "all", "selected"].includes(item.accountMode) ? item.accountMode : "inherit",
       accountIds: [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String))],
       topicId: Number.isInteger(Number(item.topicId)) && Number(item.topicId) > 0 ? Number(item.topicId) : null,
@@ -975,19 +976,47 @@ function suspendPostingLoop(state) {
   state.postingTimer = null;
 }
 async function resolvePersonalTarget(client, destination, uid, accountId) {
-  if (destination.username) return destination.username;
   const cacheKey = `${uid}:${accountId}:${destination.id}`;
   const cached = personalTargetCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PERSONAL_TARGET_CACHE_MS) return cached.entity;
-  const dialogs = await client.getDialogs({});
+
+  const id = String(destination?.id || "").trim();
+  const accessHash = String(destination?.accessHash || "").trim();
+  if (/^-100\d+$/.test(id) && /^-?\d+$/.test(accessHash) && accessHash) {
+    const entity = new Api.InputPeerChannel({
+      channelId: bigInt(id.slice(4)),
+      accessHash: bigInt(accessHash),
+    });
+    personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+    return entity;
+  }
+  if (/^-(?!100)\d+$/.test(id)) {
+    const entity = new Api.InputPeerChat({ chatId: bigInt(id.slice(1)) });
+    personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+    return entity;
+  }
+
+  if (destination?.username) {
+    try {
+      const entity = await client.getInputEntity(destination.username);
+      personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+      return entity;
+    } catch {}
+  }
+
+  const dialogs = await client.getDialogs({ limit: 1000 });
+  const target = id.replace(/^-100/, "").replace(/^-/, "");
   for (const dialog of dialogs) {
-    const candidates = [dialog?.id,dialog?.entity?.id,dialog?.inputEntity?.chatId,dialog?.inputEntity?.channelId].filter(v=>v!==undefined&&v!==null).map(v=>String(v));
-    const target = String(destination.id).replace(/^-100/, "").replace(/^-/, "");
-    if (candidates.includes(String(destination.id)) || candidates.some(value => value.replace(/\D/g, "") === target)) {
-      personalTargetCache.set(cacheKey, { at: Date.now(), entity: dialog }); return dialog;
+    const candidates = [dialog?.id, dialog?.entity?.id, dialog?.inputEntity?.chatId, dialog?.inputEntity?.channelId]
+      .filter(value => value !== undefined && value !== null)
+      .map(value => String(value));
+    if (candidates.includes(id) || candidates.some(value => value.replace(/\D/g, "") === target)) {
+      const entity = dialog?.inputEntity || dialog?.entity || dialog;
+      personalTargetCache.set(cacheKey, { at: Date.now(), entity });
+      return entity;
     }
   }
-  throw new Error("This account could not resolve that private destination. Open the group in Telegram and try again.");
+  throw new Error("This sender account could not resolve the saved Telegram destination.");
 }
 function isFatalPersonalSessionError(err) { return isFatalSessionError(err); }
 async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now()}`) {
@@ -1014,6 +1043,7 @@ async function sendCycleBody(state, cycleId = `interval:${state.uid}:${Date.now(
     }
     if (!ids.length) continue;
     for (const accountId of ids) {
+      if (!state.posting || !hasAccess(state)) break;
       const account = accountById.get(String(accountId));
       if (!account) { failed++; continue; }
       if (!destinationAccountReady(target, account.id)) continue;
@@ -2021,6 +2051,7 @@ bot.callbackQuery(/^admin_user_reset_confirm:(\d+):(\d+)$/, async ctx => {
   target.adMessage = "";
   target.adEntities = [];
   target.groups = [];
+  target.intervalSeconds = 30 * 60;
   target.intervalMinutes = 30;
   target.lastRunAt = null;
   target.lastCycleSuccess = 0;
