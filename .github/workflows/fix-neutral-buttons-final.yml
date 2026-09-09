@@ -69,3 +69,5 @@ jobs:
           git add global-ui-polish.js .github/workflows/fix-neutral-buttons-final.yml
           git commit -m "Enforce gray Advanced Add Import and History buttons"
           git push origin HEAD:main
+
+# trigger 2
