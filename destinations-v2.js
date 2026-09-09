@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import bigInt from "big-integer";
 import { InlineKeyboard } from "grammy";
-import { TelegramClient } from "teleproto";
+import { Api, TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import {
   accountDisplayLabel,
@@ -556,18 +557,48 @@ function detailScreen(uid, group, page = 0, manage = false) {
   };
 }
 
-async function entityForSavedGroup(client, group) {
-  const username = String(group?.username || "").replace(/^@/, "");
+function savedChannelId(group) {
+  const raw = String(group?.id || "").trim();
+  if (/^-100\d+$/.test(raw)) return raw.slice(4);
+  const numeric = digits(raw);
+  return numeric || "";
+}
+function validLong(value) { return /^-?\d+$/.test(String(value || "").trim()); }
+function persistResolvedTopicPeer(uid, groupId, peer) {
+  const channelId = String(peer?.channelId?.toString?.() ?? peer?.channelId ?? "");
+  const accessHash = String(peer?.accessHash?.toString?.() ?? peer?.accessHash ?? "");
+  if (!validLong(channelId) || !validLong(accessHash)) return;
+  const settings = readAppSettings(uid);
+  const groups = Array.isArray(settings.groups) ? settings.groups.slice() : [];
+  const index = groups.findIndex(item => String(item?.id || "") === String(groupId));
+  if (index < 0) return;
+  if (String(groups[index]?.accessHash || "") === accessHash) return;
+  groups[index] = { ...groups[index], accessHash };
+  writeAppSettings(uid, { ...settings, groups });
+  syncUserGroups(uid);
+}
+async function topicPeerForGroup(uid, client, group) {
+  const channelId = savedChannelId(group);
+  const accessHash = String(group?.accessHash || "").trim();
+  if (validLong(channelId) && validLong(accessHash)) {
+    return new Api.InputPeerChannel({ channelId: bigInt(channelId), accessHash: bigInt(accessHash) });
+  }
+
+  const username = String(group?.username || "").replace(/^@/, "").trim();
   if (username) {
-    try { return await client.getEntity(`@${username}`); } catch {}
+    const peer = await client.getInputEntity(`@${username}`);
+    persistResolvedTopicPeer(uid, group.id, peer);
+    return peer;
   }
-  const target = digits(group?.id);
-  const dialogs = await client.getDialogs({ limit: 500 });
-  for (const dialog of dialogs || []) {
-    const entity = dialog?.entity || dialog;
-    if (entityKey(entity) === target) return entity;
+
+  const sourceSlug = String(group?.sourceSlug || "").replace(/^@/, "").trim();
+  if (/^[A-Za-z0-9_]{5,32}$/.test(sourceSlug)) {
+    const peer = await client.getInputEntity(`@${sourceSlug}`);
+    persistResolvedTopicPeer(uid, group.id, peer);
+    return peer;
   }
-  return null;
+
+  throw new Error("Saved Telegram peer is incomplete. Remove and re-add this destination once.");
 }
 function topicAccountFor(settings, group, accounts) {
   const routedIds = new Set(effectiveAccountIds(settings, group, accounts).map(String));
@@ -586,11 +617,19 @@ async function topicsForGroup(uid, group) {
   let client;
   try {
     client = await openAccountClient(uid, account);
-    const entity = await entityForSavedGroup(client, group);
-    if (!entity) throw new Error("Open or join this group in Telegram first");
-    const result = await client.getForumTopics(entity, { limit: 100 });
-    return (Array.isArray(result?.topics) ? result.topics : []).map(topic => ({ id: Number(topic?.id || 0), title: String(topic?.title || `Topic ${topic?.id || ""}`).slice(0, 100) })).filter(topic => topic.id > 0);
-  } finally { try { await client?.disconnect(); } catch {} }
+    const peer = await topicPeerForGroup(uid, client, group);
+    const result = await client.getForumTopics(peer, { limit: 100 });
+    const topics = (Array.isArray(result?.topics) ? result.topics : [])
+      .map(topic => ({ id: Number(topic?.id || 0), title: String(topic?.title || `Topic ${topic?.id || ""}`).slice(0, 100) }))
+      .filter(topic => topic.id > 0);
+    if (!topics.length) throw new Error("Telegram returned no forum topics for this group.");
+    return topics;
+  } catch (err) {
+    const message = errorText(err);
+    throw new Error(message || "Could not load forum topics");
+  } finally {
+    try { await client?.disconnect(); } catch {}
+  }
 }
 async function topicScreen(uid, group, page = 0) {
   const topics = await topicsForGroup(uid, group);
