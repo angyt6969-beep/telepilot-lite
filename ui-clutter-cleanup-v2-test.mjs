@@ -58,7 +58,7 @@ const posting = cleanupUiClutterV2(42, "📝 Posting Setup\n\nSender: — @sende
 assert.deepEqual(callbacks(posting), ["message", "interval", "v1_setups_v13", "v1_tools", "v1_dashboard_v13"]);
 assert.equal(plain(posting.text).includes("Smart Preview"), false);
 assert.equal(buttons(posting).find(item => item.callback_data === "v1_tools")?.text, "Advanced");
-assert.equal(buttons(posting).find(item => item.callback_data === "v1_tools")?.style, "primary");
+assert.equal(buttons(posting).find(item => item.callback_data === "v1_tools")?.style, undefined);
 assert.equal(lastRow(posting)[0]?.text, __test.BACK_TEXT);
 assert.equal(lastRow(posting)[0]?.style, undefined);
 assert.equal(lastRow(posting)[0]?.icon_custom_emoji_id, undefined);
@@ -74,13 +74,15 @@ const activityOther = other([
   [button("📁 Destinations", "v1_destinations_v13"), button("👤 Accounts", "v1_accounts_v13")],
   [button("📊 Dashboard", "v1_dashboard_v13")],
 ]);
-const activity = cleanupUiClutterV2(42, "📊 Activity\n\nPosting: — 🟢 Running\nNext: — 12m\nDestination health: — 4 ready / 6 total\nNeeds attention: — 2\n\nRecent\n✅ @group · 2m ago", activityOther);
+const activity = cleanupUiClutterV2(42, "📊 Activity\n\nPosting: — 🟢 Running\nNext: — 12m\nDestination health: — 4 ready / 6 total\nNeeds attention: — 2\nSent today: — ✅ 17\nFailed today: — ❌ 2\n\nRecent\n✅ @group · 2m ago", activityOther);
 assert.deepEqual(callbacks(activity), ["v1_pause_menu_v13", "history", "d5_issues:0", "v1_dashboard_v13"]);
 assert.equal(callbacks(activity).includes("v1_retry_failed_v13"), false);
 assert.equal(callbacks(activity).includes("v1_fix_issues_v13"), false);
 assert.match(plain(activity.text), /Attention: — 2 destinations need review/);
 assert.match(plain(activity.text), /Open Issues to fix them/);
-assert.equal(buttons(activity).find(item => item.callback_data === "history")?.style, "primary");
+assert.match(plain(activity.text), /Sent today: — 17/);
+assert.match(plain(activity.text), /Failed today: — 2/);
+assert.equal(buttons(activity).find(item => item.callback_data === "history")?.style, undefined);
 assert.equal(lastRow(activity)[0]?.text, __test.BACK_TEXT);
 
 const cleanActivity = cleanupUiClutterV2(42, "📊 Activity\n\nPosting: — ⚪ Stopped\nNext: — —\nDestination health: — 6 ready / 6 total\nNeeds attention: — 0\n\nRecent\nNo posting history yet.", activityOther);
@@ -97,7 +99,7 @@ const destinationOther = other([
 const destinations = cleanupUiClutterV2(42, "🗂 Destination Hub\n\nSaved: — 12\nReady: — 9\nChoose topic: — 1\nNeeds attention: — 3\n\nTelePilot only uses chats you already have access to.", destinationOther);
 assert.deepEqual(callbacks(destinations), ["d2_add", "d2_browse:0", "d2_topics:0", "d5_issues:0", "v1_dest_more_v2", "v1_dashboard_v13"]);
 assert.equal(buttons(destinations).find(item => item.callback_data === "d2_add")?.text, "Add / Import");
-assert.equal(buttons(destinations).find(item => item.callback_data === "d2_add")?.style, "primary");
+assert.equal(buttons(destinations).find(item => item.callback_data === "d2_add")?.style, undefined);
 assert.equal(callbacks(destinations).includes("d2_refresh"), false, "less-used Check Access moves under More");
 assert.equal(callbacks(destinations).includes("d2_manage:0"), false, "Manage moves under More");
 assert.match(plain(destinations.text), /Open Issues to fix them/);

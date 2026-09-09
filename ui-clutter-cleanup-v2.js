@@ -203,7 +203,7 @@ function compactPostingSetup(text, other) {
     ],
     [
       cleanActionButton(buttonByData(other, "v1_setups_v13"), "Setups", "v1_setups_v13"),
-      cleanActionButton(buttonByData(other, "v1_tools"), "Advanced", "v1_tools", "primary"),
+      cleanActionButton(buttonByData(other, "v1_tools"), "Advanced", "v1_tools"),
     ],
     [backButton("v1_dashboard_v13")],
   ];
@@ -227,6 +227,8 @@ function compactActivity(text, other) {
     `<b>Next:</b> — ${esc(next)}`,
     `<b>Destinations:</b> — ${esc(destinations)}`,
     attention ? `<b>Attention:</b> — ${attention} destination${attention === 1 ? "" : "s"} need review` : null,
+    `<b>Sent today:</b> — ${firstNumber(metric(lines, "Sent today"))}`,
+    `<b>Failed today:</b> — ${firstNumber(metric(lines, "Failed today"))}`,
     last ? `<b>Last:</b> — ${esc(last)}` : null,
     "",
     `<i>${attention ? "Open Issues to fix them." : "Everything looks normal."}</i>`,
@@ -238,7 +240,7 @@ function compactActivity(text, other) {
   } else if (/running|live/i.test(posting)) {
     rows.push([cleanActionButton(buttonByData(other, "v1_pause_menu_v13"), "Pause", "v1_pause_menu_v13")]);
   }
-  rows.push([cleanActionButton(buttonByData(other, "history", "v1_history") || buttonByText(other, /history/i), "History", "history", "primary")]);
+  rows.push([cleanActionButton(buttonByData(other, "history", "v1_history") || buttonByText(other, /history/i), "History", "history")]);
   if (attention) rows.push([cleanActionButton(buttonByData(other, "d5_issues:0", "v1_dest_issues_v13") || buttonByText(other, /issues/i), "Issues", "d5_issues:0")]);
   rows.push([backButton("v1_dashboard_v13")]);
   return htmlPage(text, other, "📊", "Activity", body, rows);
@@ -265,7 +267,7 @@ function compactDestinations(text, other) {
   const addTemplate = buttonByData(other, "d2_add", "v1_dest_add_v13") || buttonByText(other, /add/i);
   const browseTemplate = buttonByData(other, "d2_browse:0", "v1_dest_browse_v13") || buttonByText(other, /browse/i);
   const rows = [[
-    cleanActionButton(addTemplate, "Add / Import", String(addTemplate?.callback_data || "d2_add"), "primary"),
+    cleanActionButton(addTemplate, "Add / Import", String(addTemplate?.callback_data || "d2_add")),
     cleanActionButton(browseTemplate, "Browse", String(browseTemplate?.callback_data || "d2_browse:0")),
   ]];
   const attentionRow = [];
