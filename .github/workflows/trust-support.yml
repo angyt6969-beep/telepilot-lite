@@ -25,7 +25,7 @@ jobs:
       DATA_DIR: /tmp/telepilot-trust-ci
       TELEPILOT_SECURITY_SECRET: ci-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       TELEPILOT_SESSION_KEY_B64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
-      TELEPILOT_SUPPORT_USERNAME: noahxrp
+      TELEPILOT_SUPPORT_USERNAME: vvschrome
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,7 +48,7 @@ jobs:
           import { injectConnectTrustLinks, renderLegalPage } from './legal-pages.js';
           for (const page of ['privacy', 'terms', 'support']) {
             const html = renderLegalPage(page);
-            if (!html.includes('TelePilot') || !html.includes('@noahxrp')) throw new Error(`bad ${page} page`);
+            if (!html.includes('TelePilot') || !html.includes('@vvschrome')) throw new Error(`bad ${page} page`);
           }
           const input = '<!doctype html><title>TelePilot Connect</title><main><div class="footer">TELEPILOT • SECURE CONNECTION</div></main>';
           const output = injectConnectTrustLinks(input);
