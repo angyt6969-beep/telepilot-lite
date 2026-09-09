@@ -19,7 +19,7 @@ jobs:
       DATA_DIR: /tmp/telepilot-v12-ci
       TELEPILOT_SECURITY_SECRET: v12-regression-security-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       TELEPILOT_SESSION_KEY_B64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      TELEPILOT_SUPPORT_USERNAME: noahxrp
+      TELEPILOT_SUPPORT_USERNAME: vvschrome
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
