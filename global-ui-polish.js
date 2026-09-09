@@ -301,6 +301,9 @@ function semanticEmojiForButton(button) {
 
 function buttonStyle(button) {
   if (button?.style) return button.style;
+  const callback = String(button?.callback_data || "").toLowerCase();
+  // Ordinary navigation/setup controls stay neutral gray.
+  if (callback === "v1_tools" || callback === "v1_dest_add_v13") return undefined;
   const haystack = `${button?.callback_data || ""} ${button?.text || ""}`.toLowerCase();
   if (/stop|delete|remove|clear|revoke|disconnect|reset|cancel|discard/.test(haystack)) return "danger";
   if (/confirm|save|done|apply|approve|start|launch|redeem|finish|complete/.test(haystack)) return "success";
